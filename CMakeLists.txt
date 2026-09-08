@@ -112,6 +112,16 @@ endif()
 # Python when configuring with -DJPLAY_BUNDLE_PYTHON=OFF).
 option(JPLAY_BUNDLE_PYTHON
     "Download a pinned CPython and bundle it with the install (see cmake/bundle_python.cmake)" ON)
+
+# Two last-resort fallbacks can be baked into the binary as string literals: the
+# dev Python home and the NDI SDK bin dir. Both are absolute paths belonging to
+# whatever machine compiled the code, so in anything shipped they are dead
+# weight and leak the build layout. Off by default -- the normal build already
+# copies pyhome and the NDI DLL next to the executable, so resolvePythonHome()
+# and the OS loader find them with no hint. Turn on for a dev tree where those
+# copies are deliberately absent.
+option(JPLAY_EMBED_BUILD_PATHS
+    "Bake build-machine fallback paths (dev Python home, NDI SDK bin dir) into the binary" OFF)
 if(JPLAY_BUNDLE_PYTHON)
     include("${CMAKE_SOURCE_DIR}/cmake/bundle_python.cmake")
 endif()
@@ -264,9 +274,12 @@ else()
     set(JPLAY_PYTHON_STDLIB_REL "lib/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}")
 endif()
 target_compile_definitions(jplay PRIVATE
-    JPLAY_DEV_PYTHONHOME="${JPLAY_DEV_PYTHONHOME}"
     JPLAY_PYTHON_BUNDLE_NAME="pyhome"
     JPLAY_PYTHON_STDLIB_REL="${JPLAY_PYTHON_STDLIB_REL}")
+if(JPLAY_EMBED_BUILD_PATHS)
+    target_compile_definitions(jplay PRIVATE
+        JPLAY_DEV_PYTHONHOME="${JPLAY_DEV_PYTHONHOME}")
+endif()
 
 add_dependencies(jplay jplay_version) # Version.h before App_About.cpp compiles
 
@@ -304,12 +317,14 @@ target_link_libraries(jplay PRIVATE unofficial::shaderc::shaderc)
 if(JPLAY_ENABLE_NDI)
     target_include_directories(jplay PRIVATE "${NDI_INCLUDE_DIR}")
     target_compile_definitions(jplay PRIVATE JPLAY_ENABLE_NDI)
-    if(WIN32)
-        target_compile_definitions(jplay PRIVATE
-            JPLAY_NDI_BIN_DIR="${NDI_SDK_DIR}/Bin/x64")
-    else()
-        target_compile_definitions(jplay PRIVATE
-            JPLAY_NDI_BIN_DIR="${NDI_SDK_DIR}/lib/x86_64-linux-gnu")
+    if(JPLAY_EMBED_BUILD_PATHS)
+        if(WIN32)
+            target_compile_definitions(jplay PRIVATE
+                JPLAY_NDI_BIN_DIR="${NDI_SDK_DIR}/Bin/x64")
+        else()
+            target_compile_definitions(jplay PRIVATE
+                JPLAY_NDI_BIN_DIR="${NDI_SDK_DIR}/lib/x86_64-linux-gnu")
+        endif()
     endif()
 endif()
 

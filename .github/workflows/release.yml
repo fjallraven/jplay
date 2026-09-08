@@ -22,7 +22,8 @@ concurrency:
 
 env:
   # Pinned so a release is built against the same ports the project was
-  # developed against. Bump deliberately, then re-test.
+  # developed against. Bump deliberately, then re-test -- and keep it in step
+  # with the "baseline" in vcpkg-configuration.json.
   VCPKG_COMMIT: 32305df7d0b9a308e6ac454dd98ebfe550342c09
 
 jobs:
@@ -142,10 +143,12 @@ jobs:
           else
             generator=(-G Ninja -DCMAKE_BUILD_TYPE=Release)
           fi
+          # overlay-ports (the custom OTIO port, which upstream vcpkg does not
+          # carry) and overlay-triplets both come from vcpkg-configuration.json,
+          # so neither needs a flag here.
           cmake -S . -B build "${generator[@]}" \
             -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/vcpkg/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
-            -DVCPKG_OVERLAY_TRIPLETS="$GITHUB_WORKSPACE/custom-triplets" \
             -DJPLAY_VERSION="$VERSION" \
             -DJPLAY_BUNDLE_PYTHON=ON
 
