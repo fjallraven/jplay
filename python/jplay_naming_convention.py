@@ -200,7 +200,7 @@ def decorate_pickers(info, states):
                 batch = []
         if batch:
             yield [{"key": "version", "options": batch}]
-jplay.register_callback("decorate_pickers", decorate_pickers)
+# jplay.register_callback("decorate_pickers", decorate_pickers)
 
 # Demo for the global Proxy dropdown (see createclips, which renders a
 # half-resolution sibling of every clip into a "proxy" subfolder next to it).
@@ -208,11 +208,11 @@ jplay.register_callback("decorate_pickers", decorate_pickers)
 # representation and resolve_proxy_path against wherever that farm publishes it.
 def list_proxy_modes():
     return [{"value": "proxy", "label": "Proxy (Half Res)"}]
-jplay.register_callback("list_proxy_modes", list_proxy_modes)
+# jplay.register_callback("list_proxy_modes", list_proxy_modes)
 
 def resolve_proxy_path(path, mode):
     if mode != "proxy":
         return None
     candidate = os.path.join(os.path.dirname(path), "proxy", os.path.basename(path))
     return candidate if os.path.exists(candidate) else None
-jplay.register_callback("resolve_proxy_path", resolve_proxy_path)
+# jplay.register_callback("resolve_proxy_path", resolve_proxy_path)
