@@ -308,8 +308,7 @@ def _identity(em, name):
 # ─────────────────── matching ───────────────────
 
 def _norm(path):
-    """Forward-slash form of a path, so the regexes see one separator on either
-    platform: r"D:\\show\\house\\school3" -> "D:/show/house/school3"."""
+    """Forward-slash form of a path, so the regexes see one separator on either platform"""
     return path.replace("\\", "/")
 
 

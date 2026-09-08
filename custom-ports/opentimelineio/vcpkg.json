@@ -2,6 +2,8 @@
   "name": "opentimelineio",
   "version": "0.16.0",
   "description": "Open Source API and interchange format for editorial timeline information.",
+  "homepage": "https://github.com/AcademySoftwareFoundation/OpenTimelineIO",
+  "license": "Apache-2.0",
   "dependencies": [
     {
       "name": "vcpkg-cmake",
@@ -10,6 +12,8 @@
     {
       "name": "vcpkg-cmake-config",
       "host": true
-    }
+    },
+    "imath",
+    "rapidjson"
   ]
 }

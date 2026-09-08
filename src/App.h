@@ -1959,9 +1959,7 @@ private:
     // Load no longer scans for missing files: the timeline appears instantly and
     // a source is only discovered missing lazily, when the cache/playback fails
     // to open it (Media::openFailed()). Such clips render red and, when clicked,
-    // open the Missing Source modal. Relocating one learns a path-prefix
-    // substitution (e.g. "D:" -> "C:\dev") that resolveMissingWithRules() then
-    // auto-applies to every other clip that later turns up missing.
+    // open the Missing Source modal.
     enum class LoadOrigin { Project, Otio, Directory };
     struct RelocateRule { std::string oldPrefix, newPrefix; };
     LoadOrigin loadOrigin_ = LoadOrigin::Project;

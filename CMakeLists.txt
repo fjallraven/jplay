@@ -1,6 +1,15 @@
 cmake_minimum_required(VERSION 3.21)
 project(JPlay VERSION 0.1.0 LANGUAGES CXX)
-set(JPLAY_VERSION_STRING "${PROJECT_VERSION}-dev")
+# Release builds pass the tag in as -DJPLAY_VERSION=1.2.3; a plain local configure
+# falls back to the project version marked -dev, so an unstamped build never
+# claims to be a release in the About panel.
+set(JPLAY_VERSION "" CACHE STRING
+    "Version string to stamp into the build (default: <project version>-dev)")
+if(JPLAY_VERSION)
+    set(JPLAY_VERSION_STRING "${JPLAY_VERSION}")
+else()
+    set(JPLAY_VERSION_STRING "${PROJECT_VERSION}-dev")
+endif()
 
 if(WIN32)
     enable_language(RC)
@@ -49,11 +58,8 @@ find_package(freetype REQUIRED)
 find_package(Threads REQUIRED)
 find_package(RapidJSON CONFIG REQUIRED)
 
-if(WIN32)
-    find_package(unofficial-shaderc CONFIG REQUIRED)
-else()
-    find_package(Shaderc CONFIG REQUIRED)
-endif()
+# vcpkg's shaderc port exports a single config package on every platform.
+find_package(unofficial-shaderc CONFIG REQUIRED)
 
 
 # NDI
@@ -116,9 +122,6 @@ set(MDI_DEFINES "${CMAKE_SOURCE_DIR}/src/IconsMaterialDesignIcons.h")
 set(MDI_GEN_DIR "${CMAKE_BINARY_DIR}/generated")
 set(MDI_HEADER  "${MDI_GEN_DIR}/icon_font_data.h")
 set(MDI_SCRIPT  "${CMAKE_SOURCE_DIR}/tools/gen_icon_font.py")
-if(WIN32)
-    set(VCPKG_TARGET_TRIPLET "x64-windows-release")
-endif()
 
 if(WIN32)
     list(GET FFMPEG_INCLUDE_DIRS 0 _ffmpeg_include)
@@ -272,7 +275,7 @@ target_compile_definitions(jplay PRIVATE
     JPLAY_BUILD_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
     JPLAY_OTIO_VERSION="${JPLAY_OTIO_VERSION}")
 
-target_include_directories(jplay PRIVATE ${FFMPEG_INCLUDE_DIRS} ${MDI_GEN_DIR} ${SHADERC_INCLUDE_DIR}
+target_include_directories(jplay PRIVATE ${FFMPEG_INCLUDE_DIRS} ${MDI_GEN_DIR}
     ${RAPIDJSON_INCLUDE_DIRS})
 target_link_directories(jplay PRIVATE ${FFMPEG_LIBRARY_DIRS})
 target_link_libraries(jplay PRIVATE    
@@ -294,15 +297,7 @@ if(WIN32)
 endif()
 
 # shaderc
-if(WIN32)
-    target_link_libraries(jplay PRIVATE
-        unofficial::shaderc::shaderc
-    )
-else()
-    target_link_libraries(jplay PRIVATE
-        ${SHADERC_LIBRARIES}
-    )
-endif()
+target_link_libraries(jplay PRIVATE unofficial::shaderc::shaderc)
 
 
 # NDI

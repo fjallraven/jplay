@@ -5,9 +5,15 @@ vcpkg_from_github(
     SHA512 c9bfe4c2bbed034beaf04e94977adecc622f6c22f0674cecd959d0aa4df48f78c78fd2e1c0fc59a0b35db5915188640e4a2c0201338ebdd7e57ee1b5467a8a61
     HEAD_REF main
 )
+# OTIO_AUTOMATIC_SUBMODULES=OFF leaves src/deps/rapidjson empty, but the build
+# still #includes "rapidjson/..." through that path. Stage the headers from the
+# rapidjson port (a declared dependency, so it is installed before this runs)
+# into the submodule tree. CURRENT_INSTALLED_DIR keeps this triplet-agnostic --
+# never hardcode a machine-local vcpkg root here.
 if(NOT EXISTS "${SOURCE_PATH}/src/deps/rapidjson/include/rapidjson")
     message(STATUS "Injecting external RapidJSON headers into OTIO submodule tree...")
-    file(COPY "D:/sdk/vcpkg/installed/x64-windows-release/include/rapidjson" DESTINATION "${SOURCE_PATH}/src/deps/rapidjson/include")
+    file(COPY "${CURRENT_INSTALLED_DIR}/include/rapidjson"
+         DESTINATION "${SOURCE_PATH}/src/deps/rapidjson/include")
 endif()
 vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
