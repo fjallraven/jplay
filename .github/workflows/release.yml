@@ -90,7 +90,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build nasm autoconf autoconf-archive automake libtool pkg-config \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
-            libxfixes-dev libxss-dev libxkbcommon-dev libxinerama-dev \
+            libxfixes-dev libxtst-dev libxss-dev libxkbcommon-dev libxinerama-dev \
             libwayland-dev wayland-protocols libegl1-mesa-dev libgl1-mesa-dev \
             libasound2-dev libpulse-dev libudev-dev libdbus-1-dev \
             libibus-1.0-dev libltdl-dev
@@ -233,6 +233,30 @@ jobs:
             ${{ env.STAGE }}.tar.gz
           if-no-files-found: error
           retention-days: 14
+      - name: Collect vcpkg logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          set -uo pipefail
+          logs=$(find vcpkg/buildtrees -maxdepth 3 -name '*.log' -printf '%T@ %p\n' 2>/dev/null \
+                 | sort -rn | head -n 12 | cut -d' ' -f2-)
+          if [ -z "$logs" ]; then
+            echo "No vcpkg logs found under vcpkg/buildtrees."
+            exit 0
+          fi
+          while IFS= read -r f; do
+            printf '\n===== %s =====\n' "$f"
+            tail -n 200 "$f"
+          done <<< "$logs"
+
+      - name: Upload vcpkg logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vcpkg-logs-${{ matrix.name }}
+          path: vcpkg/buildtrees/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   release:
     needs: [version, build]
