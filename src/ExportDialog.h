@@ -142,5 +142,8 @@ private:
     // Collect export range from UI fields.
     void exportRange(int64_t& outStart, int64_t& outEnd) const;
 
-    static std::string ffmpegPath(); // "ffmpeg" on Linux/Mac, "ffmpeg.exe" on Windows
+    // Bundled ffmpeg beside the executable if present, else the bare name for
+    // PATH lookup. ffmpegCmd() is the same thing quoted for a popen() string.
+    static std::string ffmpegPath();
+    static std::string ffmpegCmd();
 };

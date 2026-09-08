@@ -20,6 +20,7 @@ concurrency:
 
 env:
   VCPKG_COMMIT: 32305df7d0b9a308e6ac454dd98ebfe550342c09
+  FFMPEG_TAG: autobuild-2026-09-07-15-39
 
 jobs:
   # Resolve the version once, so both platforms stamp and name identically.
@@ -67,9 +68,13 @@ jobs:
           - name: windows-x64
             os: windows-2022
             triplet: x64-windows-release
+            ffmpeg_asset: ffmpeg-n8.1.2-51-g7ba069f4f1-win64-gpl-8.1.zip
+            ffmpeg_sha256: 31db3d064365ee28dbef2b773f7cc53078a10aee56d4c905454ed3dd0a666d9c
           - name: linux-x64
             os: ubuntu-22.04
             triplet: jplay-x64-linux
+            ffmpeg_asset: ffmpeg-n8.1.2-51-g7ba069f4f1-linux64-gpl-8.1.tar.xz
+            ffmpeg_sha256: 3c1bcdda51f9446a6112a0f1bb9d90f20454eaf06bd2333bb87675fb0e8d3300
     env:
       VERSION: ${{ needs.version.outputs.version }}
       STAGE: jplay-${{ needs.version.outputs.version }}-${{ matrix.name }}
@@ -83,7 +88,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ninja-build nasm autoconf automake libtool pkg-config \
+            ninja-build nasm autoconf autoconf-archive automake libtool pkg-config \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
             libxfixes-dev libxss-dev libxkbcommon-dev libxinerama-dev \
             libwayland-dev wayland-protocols libegl1-mesa-dev libgl1-mesa-dev \
@@ -138,6 +143,63 @@ jobs:
       - name: Install
         shell: bash
         run: cmake --install build --config Release --prefix "dist/$STAGE"
+
+      # Movie export drives a separate ffmpeg process, so the encoder set comes from
+      # this GPL build rather than the LGPL libavcodec jplay links. Keeping it a
+      # separate program is what confines GPL to this binary. Static build: no
+      # sibling DLLs to collide with our own avcodec.
+      - name: Bundle GPL ffmpeg
+        shell: bash
+        env:
+          ASSET: ${{ matrix.ffmpeg_asset }}
+          SHA256: ${{ matrix.ffmpeg_sha256 }}
+        run: |
+          set -euo pipefail
+          curl -sSL --fail --retry 3 -o "$ASSET"             "https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_TAG/$ASSET"
+          echo "$SHA256  $ASSET" | sha256sum -c -
+          mkdir -p ffmpeg-gpl
+          case "$ASSET" in
+            *.zip)    7z x -y -offmpeg-gpl "$ASSET" > /dev/null ;;
+            *.tar.xz) tar -xJf "$ASSET" -C ffmpeg-gpl ;;
+          esac
+          exe=$(find ffmpeg-gpl -type f \( -name ffmpeg -o -name ffmpeg.exe \) | head -n1)
+          lic=$(find ffmpeg-gpl -type f -name 'LICENSE*' | head -n1)
+          if [ -z "$exe" ] || [ -z "$lic" ]; then
+            echo "ffmpeg or its licence missing from $ASSET"; exit 1
+          fi
+          cp "$exe" "dist/$STAGE/"
+          chmod +x "dist/$STAGE/$(basename "$exe")"
+          cp "$lic" "dist/$STAGE/FFMPEG-LICENSE.txt"
+          echo "FFMPEG_EXE=$(basename "$exe")" >> "$GITHUB_ENV"
+          cat > "dist/$STAGE/FFMPEG-README.txt" <<EOF
+          jplay bundles a GPL-licensed ffmpeg, invoked as a separate program to
+          encode movie exports. jplay itself links the LGPL FFmpeg libraries and is
+          not covered by the GPL.
+
+          Binary: BtbN/FFmpeg-Builds release $FFMPEG_TAG, asset $ASSET
+          sha256: $SHA256
+          Corresponding source and build scripts:
+            https://github.com/BtbN/FFmpeg-Builds/releases/tag/$FFMPEG_TAG
+          EOF
+
+      - name: Verify bundled ffmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          cfg=$("dist/$STAGE/$FFMPEG_EXE" -hide_banner -version)
+          for want in --enable-gpl --enable-libx264 --enable-libx265 --enable-libmp3lame; do
+            case "$cfg" in
+              *"$want"*) ;;
+              *) echo "bundled ffmpeg is missing $want"; exit 1 ;;
+            esac
+          done
+          case "$cfg" in
+            *--enable-nonfree*)
+              echo "bundled ffmpeg is nonfree and cannot be redistributed"; exit 1 ;;
+          esac
+          enc=$("dist/$STAGE/$FFMPEG_EXE" -hide_banner -encoders -v quiet | tail -n +11 | wc -l)
+          dec=$("dist/$STAGE/$FFMPEG_EXE" -hide_banner -decoders -v quiet | tail -n +11 | wc -l)
+          echo "GPL ffmpeg OK: $enc encoders, $dec decoders."
 
       - name: Check bundled libraries resolve (Linux)
         if: runner.os == 'Linux'

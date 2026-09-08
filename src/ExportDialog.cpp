@@ -14,6 +14,7 @@
 #include <Imath/half.h>
 
 #include <SDL3/SDL_dialog.h>
+#include <SDL3/SDL_filesystem.h>
 
 #include <algorithm>
 #include <array>
@@ -73,16 +74,38 @@ static std::string runAndCapture(const std::string& cmd) {
 
 // ─── FFmpeg discovery ────────────────────────────────────────────────────────
 
+// The release archive ships a GPL ffmpeg beside the executable, since that is the
+// only build guaranteed to carry libx264/libx265/libmp3lame. Prefer it over a
+// bare name: PATH resolution only finds an ffmpeg the user installed themselves,
+// and /bin/sh never searches the executable's own directory.
 std::string ExportDialog::ffmpegPath() {
 #ifdef _WIN32
-    return "ffmpeg";   // cmd.exe finds ffmpeg.exe on PATH automatically
+    static constexpr const char* kExe = "ffmpeg.exe";
 #else
-    return "ffmpeg";
+    static constexpr const char* kExe = "ffmpeg";
 #endif
+    // Probed once: a bundled binary cannot appear or vanish mid-session.
+    static const std::string resolved = [] {
+        if (const char* base = SDL_GetBasePath()) { // exe dir, trailing sep; do not free
+            std::error_code ec;
+            std::string sibling = std::string(base) + kExe;
+            if (fs::exists(sibling, ec))
+                return sibling;
+        }
+        return std::string(kExe); // fall back to PATH
+    }();
+    return resolved;
+}
+
+// Shell token for the program, quoted because the install directory may contain
+// spaces. Every command below is assembled as a string for popen(), so the
+// quoting has to live here rather than in an argv array.
+std::string ExportDialog::ffmpegCmd() {
+    return "\"" + ffmpegPath() + "\"";
 }
 
 bool ExportDialog::ffmpegAvailable() {
-    std::string out = runAndCapture(ffmpegPath() + " -version 2>&1");
+    std::string out = runAndCapture(ffmpegCmd() + " -version 2>&1");
     return out.find("ffmpeg version") != std::string::npos;
 }
 
@@ -100,7 +123,7 @@ std::vector<ExportDialog::CodecInfo> ExportDialog::queryVideoEncoders() {
         {"mpeg4",     "MPEG-4"},
     }};
 
-    std::string out = runAndCapture(ffmpegPath() + " -encoders -v quiet 2>&1");
+    std::string out = runAndCapture(ffmpegCmd() + " -encoders -v quiet 2>&1");
     std::vector<CodecInfo> result;
     for (const auto& [id, label] : kWanted) {
         if (out.find(id) != std::string::npos)
@@ -119,7 +142,7 @@ std::vector<ExportDialog::FormatInfo> ExportDialog::queryContainerFormats() {
         {"mxf",      "MXF"},
     }};
 
-    std::string out = runAndCapture(ffmpegPath() + " -formats -v quiet 2>&1");
+    std::string out = runAndCapture(ffmpegCmd() + " -formats -v quiet 2>&1");
     std::vector<FormatInfo> result;
     for (const auto& [id, label] : kWanted) {
         if (out.find(id) != std::string::npos)
@@ -673,7 +696,7 @@ void ExportDialog::runMovieExport(int64_t startFrame, int64_t endFrame) {
 
     // Build ffmpeg command reading raw RGBA from stdin.
     std::ostringstream cmd;
-    cmd << ffmpegPath()
+    cmd << ffmpegCmd()
         << " -y -f rawvideo -pix_fmt rgba"
         << " -video_size " << outW << "x" << outH
         << " -framerate " << fps_
@@ -895,7 +918,7 @@ void ExportDialog::runImageExport(int64_t startFrame, int64_t endFrame) {
             int fh = frame ? frame->height : outH;
 
             std::ostringstream cmd;
-            cmd << ffmpegPath()
+            cmd << ffmpegCmd()
                 << " -y -f rawvideo -pix_fmt rgba"
                 << " -video_size " << fw << "x" << fh
                 << " -framerate 1 -i pipe:0"
