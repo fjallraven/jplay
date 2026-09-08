@@ -3395,7 +3395,7 @@ void App::addDissolveAtClipOut(int aClipId) {
             setStatus("DISSOLVE ALREADY ON THIS CUT", 3000);
             return;
         }
-    // Premiere's default: one second, split evenly across the cut, then clamped to
+    // The default: one second, split evenly across the cut, then clamped to
     // whatever handle each side actually has.
     const int64_t want = std::max<int64_t>((int64_t)std::llround(timeline_.fps > 0.0 ? timeline_.fps : 24.0), 2);
     int64_t maxIn = 0, maxOut = 0;
@@ -3757,8 +3757,8 @@ void App::updateTransitionResize(float mouseX) {
             timeline_.transitionLimits(*sp.a, *sp.b, maxIn, maxOut);
             const int64_t f = (int64_t)std::llround(xToFrame(mouseX));
             // Each edge moves its own side of the cut. The other side stays put, so
-            // dragging turns a centred dissolve into an off-centre one exactly the
-            // way Premiere's alignment does — there is no separate alignment state.
+            // dragging turns a centred dissolve into an off-centre one — there is
+            // no separate alignment state.
             if (resizeTransEdge_ == 0)
                 resizeTransNewIn_ = std::clamp<int64_t>(sp.cut - f, 0, maxIn);
             else

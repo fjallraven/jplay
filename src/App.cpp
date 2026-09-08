@@ -1819,8 +1819,8 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
             deleteSelectedClip();
         break;
     case SDLK_D: { // disable/enable a clip (hidden clips let a lower track show through)
-        // Ctrl+D is Premiere's "apply default transition": a dissolve on the cut
-        // nearest the playhead.
+        // Ctrl+D applies the default transition: a dissolve on the cut nearest
+        // the playhead.
         if (ctrl) {
             addDissolveAtPlayhead();
             break;
@@ -1840,15 +1840,15 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
     }
     case SDLK_C:
         if (ctrl) copySelectedClips();
-        // Razor tool, Premiere's binding - but not while compact, where the tool
-        // buttons are hidden and there are no track rows to cut in.
+        // Razor tool - but not while compact, where the tool buttons are hidden
+        // and there are no track rows to cut in.
         else if (!compactTimeline_) setTimelineTool(TimelineTool::Razor);
         break;
     case SDLK_V:
         if (ctrl) pasteClips();
-        // Bare V selects the cursor tool (Premiere's binding); the sequence
-        // view-filter popup it used to open moved onto Shift+V, which was already
-        // opening it too - the case did not test shift.
+        // Bare V selects the cursor tool; the sequence view-filter popup it used
+        // to open moved onto Shift+V, which was already opening it too - the case
+        // did not test shift.
         else if (shift) openSequenceMenu();
         else setTimelineTool(TimelineTool::Cursor);
         break;

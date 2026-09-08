@@ -567,9 +567,9 @@ bool App::gradeHandleEvent(const SDL_Event& e) {
 
 // ─── Player exposure / gamma ─────────────────────────────────────────────────
 // The same two values the Basic tool's Gain and Gamma sliders drive, reachable
-// from the player without opening the panel (RV's approach: incremental keys, a
-// hold-a-key-and-drag virtual slider, and a bypass for the A/B). Ranges match the
-// sliders in renderGradeBasic so the panel and the player can't disagree.
+// from the player without opening the panel: incremental keys, a hold-a-key-and-drag
+// virtual slider, and a bypass for the A/B. Ranges match the sliders in
+// renderGradeBasic so the panel and the player can't disagree.
 namespace {
 constexpr float kGainLo = -5.0f, kGainHi = 5.0f;
 constexpr float kGammaLo = 0.1f, kGammaHi = 4.0f;

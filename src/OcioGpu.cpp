@@ -230,9 +230,9 @@ bool OcioGpu::init(SDL_Renderer* renderer) {
 
     p_glGenFramebuffers(1, &fbo_);
 
-    // Escape hatch for the staged-upload path, mirroring RV's -noPBO: if a driver
-    // mishandles mapped unpack buffers, JPLAY_NO_PBO=1 reverts to uploading
-    // straight from host memory. Also the A/B for measuring what staging buys.
+    // Escape hatch for the staged-upload path: if a driver mishandles mapped
+    // unpack buffers, JPLAY_NO_PBO=1 reverts to uploading straight from host
+    // memory. Also the A/B for measuring what staging buys.
     const char* noPbo = SDL_getenv("JPLAY_NO_PBO");
     pboEnabled_ = !(noPbo && *noPbo && *noPbo != '0');
 

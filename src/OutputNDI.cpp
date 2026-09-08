@@ -33,12 +33,9 @@ typedef const NDIlib_v5* (*PFN_load)(void);
 //
 // RGBA and BGRA are 8-bit only in the NDI SDK, so an HDR signal has to go out as
 // P216 — the SDK's 16-bit semi-planar YCbCr 4:2:2 format — with an
-// <ndi_color_info> tag naming the transfer/matrix/primaries. OpenRV's NDI plugin
-// (src/plugins/output/NDI) is the reference for the container: its device layer
-// only packs and tags, leaving the display transform to the colour pipeline
-// upstream, and its P216 writer fixes the 16-bit level convention we follow
-// below. RV's own plugin is SDR-only (it never writes ndi_color_info), so the
-// transfer encodes and the metadata here are ours.
+// <ndi_color_info> tag naming the transfer/matrix/primaries. The device layer here
+// only packs and tags, leaving the display transform to the colour pipeline upstream;
+// the 16-bit level convention it writes is the studio-swing one fixed below.
 // ---------------------------------------------------------------------------
 
 // NDI's HDR tags. The value vocabulary comes from the runtime's string table and the
@@ -139,11 +136,10 @@ const float* hlgTable() {
     return lut.data();
 }
 
-// 16-bit narrow-range (studio-swing) YCbCr quantisers, matching OpenRV's P216
-// writer (TwkFB/FastConversion.cpp): luma 4096..60160 and chroma 4096..61440 about
-// a neutral of 32768 — i.e. the 8-bit 64..235 / 16..240 levels shifted up 8 bits.
-// Rounding is RV's clampAndRoundToUInt16: the inputs here are always non-negative
-// after the clamp, so +0.5f and truncate does it without a call into libm.
+// 16-bit narrow-range (studio-swing) YCbCr quantisers: luma 4096..60160 and chroma
+// 4096..61440 about a neutral of 32768 — i.e. the 8-bit 64..235 / 16..240 levels
+// shifted up 8 bits. The inputs here are always non-negative after the clamp, so
+// +0.5f and truncate rounds without a call into libm.
 inline uint16_t clampRound(float v) {
     if (v <= 0.0f) return 0;
     if (v >= 65535.0f) return 65535;
@@ -156,9 +152,8 @@ inline uint16_t quantC(float c) { return clampRound(c * 57344.0f + 32768.0f); } 
 //
 // The encode costs ~40 ms/frame at 1080p and ~160 ms at 4K single-threaded — enough
 // to halve the playback rate on its own — and every row is independent, so it is split
-// the way OpenRV splits its own P216 writer (a TwkFB::ThreadPool fan-out joined by a
-// TaskGroup barrier). This brings 1080p to ~5 ms and 4K to ~14 ms. The join is a hard
-// barrier, so no band outlives the caller's buffers.
+// into bands across the thread pool. This brings 1080p to ~5 ms and 4K to ~14 ms. The
+// join is a hard barrier, so no band outlives the caller's buffers.
 template <typename Fn>
 void parallelRows(int h, Fn fn) {
     unsigned n = std::thread::hardware_concurrency();
@@ -182,8 +177,8 @@ void parallelRows(int h, Fn fn) {
 // Encode `srcW` x `h` scRGB half pixels into `out` as P216: a 16-bit luma plane of
 // `h` rows followed by a 16-bit interleaved Cb,Cr plane of `h` rows, both with a
 // stride of `outW` samples. Chroma is horizontally halved by averaging each pixel
-// pair (RV drops the odd sample instead; averaging costs nothing here and keeps
-// saturated edges from aliasing). Returns the encoded width, which is `srcW`
+// pair rather than dropping the odd sample — averaging costs nothing here and keeps
+// saturated edges from aliasing. Returns the encoded width, which is `srcW`
 // rounded down to even — 4:2:2 has no way to represent a lone final column.
 int encodeP216(const Imath::half* src, int srcW, int h, OutputTransfer xfer,
                float refWhiteNits, std::vector<uint8_t>& out) {

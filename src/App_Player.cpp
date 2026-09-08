@@ -1415,9 +1415,9 @@ void App::renderPlayer() {
                     nitHeatmapShown_ = didNit;
                 }
 
-                // Gain is a scene-linear operation (Nuke-style, in stops), so it is
-                // applied by the OCIO GPU pass (before the display transform) rather
-                // than in the display-referred grade post-pass. This flag tracks that
+                // Gain is a scene-linear operation (in stops), so it is applied by
+                // the OCIO GPU pass (before the display transform) rather than in
+                // the display-referred grade post-pass. This flag tracks that
                 // so the post-pass doesn't apply it a second time on the 8-bit output.
                 bool gainHandledUpstream = false;
                 if (!didNit && ocioActive && !csMixed) {

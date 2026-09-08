@@ -101,8 +101,8 @@ public:
     // The colour space a media's pixels should be interpreted in when the user has
     // not named one explicitly. Resolved against the active config, in order:
     //
-    //  1. The config's file rules (Config::getColorSpaceFromFilepath) — the same
-    //     mechanism Nuke, Hiero and RV resolve a file's colour space with. A show
+    //  1. The config's file rules (Config::getColorSpaceFromFilepath) — the
+    //     standard OCIO mechanism for resolving a file's colour space. A show
     //     config that has been set up at all answers here, so it wins outright.
     //  2. The container's own colour tags, for a file the rules matched only by
     //     their catch-all default. A stream tagged smpte2084 is not sRGB, and a

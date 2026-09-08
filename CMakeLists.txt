@@ -107,11 +107,12 @@ endif()
 # Embedded MDI icon font: scan the source for ICON_MDI_* identifiers and subset
 # materialdesignicons-webfont.ttf down to just those glyphs (the full font is
 # ~1.3 MB / 7400 glyphs). The generated header lands in the build tree and is
-# picked up by App.cpp's #include "icon_font_data.h". Needs fontTools, which the
-# bundled interpreter brings along (or `pip install fonttools` into the system
-# Python when configuring with -DJPLAY_BUNDLE_PYTHON=OFF).
+# picked up by App.cpp's #include "icon_font_data.h". Needs fontTools, which
+# cmake/python_buildtools.cmake installs into the build tree (or `pip install
+# fonttools` into the system Python when configuring with
+# -DJPLAY_BUNDLE_PYTHON=OFF).
 option(JPLAY_BUNDLE_PYTHON
-    "Download a pinned CPython and bundle it with the install (see cmake/bundle_python.cmake)" ON)
+    "Ship a Python home with the install and install fonttools for the build" ON)
 
 # Two last-resort fallbacks can be baked into the binary as string literals: the
 # dev Python home and the NDI SDK bin dir. Both are absolute paths belonging to
@@ -122,11 +123,21 @@ option(JPLAY_BUNDLE_PYTHON
 # copies are deliberately absent.
 option(JPLAY_EMBED_BUILD_PATHS
     "Bake build-machine fallback paths (dev Python home, NDI SDK bin dir) into the binary" OFF)
-if(JPLAY_BUNDLE_PYTHON)
-    include("${CMAKE_SOURCE_DIR}/cmake/bundle_python.cmake")
-endif()
+# The interpreter comes from vcpkg along with everything else, so there is
+# nothing to download. Ignore any venv active in the shell and the Windows
+# registry, so a developer's shell state cannot change which Python gets
+# embedded. PYBIND11_FINDPYTHON makes pybind11 resolve the interpreter through
+# FindPython rather than picking one itself, which would link two of them.
+set(Python3_FIND_REGISTRY NEVER)
+set(Python3_FIND_VIRTUALENV STANDARD)
+set(Python_FIND_REGISTRY NEVER)
+set(Python_FIND_VIRTUALENV STANDARD)
+set(PYBIND11_FINDPYTHON ON)
 find_package(Python3 COMPONENTS Interpreter Development.Embed REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)
+if(JPLAY_BUNDLE_PYTHON)
+    include("${CMAKE_SOURCE_DIR}/cmake/python_buildtools.cmake")
+endif()
 set(MDI_TTF     "${CMAKE_SOURCE_DIR}/materialdesignicons-webfont.ttf")
 set(MDI_DEFINES "${CMAKE_SOURCE_DIR}/src/IconsMaterialDesignIcons.h")
 set(MDI_GEN_DIR "${CMAKE_BINARY_DIR}/generated")
@@ -398,14 +409,6 @@ if(WIN32 AND EXISTS "${JPLAY_DEV_PYTHONHOME}/DLLs")
             -P "${CMAKE_SOURCE_DIR}/cmake/copy_dir_if_missing.cmake")
 endif()
 
-if(WIN32 AND JPLAY_BUNDLE_PYTHON)
-    file(GLOB JPLAY_PYTHON_DLLS "${JPLAY_PYTHON_ROOT}/python*.dll"
-                                "${JPLAY_PYTHON_ROOT}/vcruntime*.dll")
-    add_custom_command(TARGET jplay POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${JPLAY_PYTHON_DLLS} "$<TARGET_FILE_DIR:jplay>")
-endif()
-
 add_custom_command(TARGET jplay POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_SOURCE_DIR}/python" "$<TARGET_FILE_DIR:jplay>/python")
@@ -437,9 +440,6 @@ else()
         RUNTIME DESTINATION "${JPLAY_INSTALL_DIR}")
 
     set(JPLAY_DEP_DIRS ${FFMPEG_LIBRARY_DIRS})
-    if(JPLAY_BUNDLE_PYTHON)
-        list(APPEND JPLAY_DEP_DIRS "${JPLAY_PYTHON_ROOT}/lib")
-    endif()
     if(SDL3_DIR)
         cmake_path(GET SDL3_DIR PARENT_PATH _p)        # .../<libdir>/cmake
         cmake_path(GET _p PARENT_PATH _libdir)         # .../<libdir>
@@ -465,17 +465,21 @@ else()
     endif()
 endif()
 
+# Trim what an embedded interpreter in a media player never touches. Lib/test
+# alone is ~31 MB. Excluded at install time rather than deleted from the
+# interpreter's own stdlib, which lives in vcpkg_installed and is restored
+# wholesale from the binary cache. Naming a directory drops its contents too.
 if(WIN32 OR JPLAY_BUNDLE_PYTHON)
     install(DIRECTORY "${Python3_STDLIB}/"
-        DESTINATION "${JPLAY_INSTALL_DIR}/pyhome/${JPLAY_PYTHON_STDLIB_REL}")
-endif()
-if(JPLAY_BUNDLE_PYTHON)
-    if(WIN32)
-        install(FILES ${JPLAY_PYTHON_DLLS} DESTINATION "${JPLAY_INSTALL_DIR}")
-    else()
-        file(GLOB JPLAY_LIBPYTHON "${JPLAY_PYTHON_ROOT}/lib/libpython*.so.*")
-        install(FILES ${JPLAY_LIBPYTHON} DESTINATION "${JPLAY_INSTALL_DIR}")
-    endif()
+        DESTINATION "${JPLAY_INSTALL_DIR}/pyhome/${JPLAY_PYTHON_STDLIB_REL}"
+        PATTERN "test"        EXCLUDE
+        PATTERN "tests"       EXCLUDE
+        PATTERN "idlelib"     EXCLUDE
+        PATTERN "tkinter"     EXCLUDE
+        PATTERN "turtledemo"  EXCLUDE
+        PATTERN "ensurepip"   EXCLUDE
+        PATTERN "lib2to3"     EXCLUDE
+        PATTERN "pydoc_data"  EXCLUDE)
 endif()
 
 

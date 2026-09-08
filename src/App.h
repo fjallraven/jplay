@@ -2104,7 +2104,7 @@ private:
     // Reports why it can't via setStatus.
     void addDissolveAtClipOut(int aClipId);
     // Add a dissolve on the cut nearest the playhead, on the playhead's clip's
-    // track (Premiere's Ctrl+D).
+    // track (Ctrl+D).
     void addDissolveAtPlayhead();
     void deleteSelectedTransition();
     // Set a clip's head/tail fade, clamped to Timeline::fadeLimit. `frames` of 0

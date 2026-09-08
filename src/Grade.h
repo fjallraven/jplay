@@ -74,7 +74,7 @@ struct State {
     // Basic correction
     float temperature = 0.0f; // -100..100  (cool blue .. warm amber)
     float tint = 0.0f;        // -100..100  (green .. magenta)
-    float gain = 0.0f;        // -5..5 f-stops (scene-linear multiply before OCIO; Nuke-style gain)
+    float gain = 0.0f;        // -5..5 f-stops (scene-linear multiply before OCIO)
     float gamma = 1.0f;       // 0.1..4 midtone power (display-referred)
     float saturation = 0.0f;  // -100..100
 
