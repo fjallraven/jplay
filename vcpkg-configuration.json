@@ -1,0 +1,8 @@
+{
+  "default-registry": {
+    "kind": "builtin"
+  },
+  "overlay-ports": [
+    "./custom-ports"
+  ]
+}
