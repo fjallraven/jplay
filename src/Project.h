@@ -6,10 +6,10 @@
 #include <string>
 #include <vector>
 
-// Binary project file ("JPLY"). Layout, little-endian. Only the current version
-// (34) loads; the (vN+) tags record which version first wrote each field.
+// Binary project file ("JPLY"). Layout, little-endian. Only version 35 loads;
+// any other version is rejected outright, so there is no migration path.
 //   char[4]   magic "JPLY"
-//   u32       version (34)
+//   u32       version (35)
 //   f64       fps
 //   i64       playhead, inPoint, outPoint
 //   i32       trackCount           (single unified track stack)
@@ -26,12 +26,12 @@
 //     i32       width, height
 //     i64       frameCount
 //     f64       fps
-//     f32       pixelAspect          (v28+; pixel width / height, 1 = square)
+//     f32       pixelAspect          (pixel width / height, 1 = square)
 //     u64       freshHash
 //     u8        pickersResolved
 //     u32       pickerCount
 //     u32+str   pickerKey[pickerCount]
-//     u32+str   colorSpace           (v32+; explicit OCIO input space, "" = auto)
+//     u32+str   colorSpace           (explicit OCIO input space, "" = auto)
 //   u32       shotCount
 //   per shot:
 //     i32       id
@@ -41,8 +41,7 @@
 //   per sequence:
 //     i32       id
 //     u32+str   name
-//     i32       projectId            (v29+; index into the project table, -1 = none;
-//                                     was a u32+str project name in v22..v28)
+//     i32       projectId            (index into the project table, -1 = none)
 //     u32       shotIdCount
 //     i32       shotId[shotIdCount]
 //     u32       clipCount
@@ -53,10 +52,10 @@
 //       i64     timelineStart, duration, sourceOffset
 //       i32     shotId (-1 = none)
 //       u8      hidden
-//       u8      audio                 (v18+; 1 = clip lives on an audio track)
-//       i64     fadeInFrames          (v25+; head/tail opacity ramps, 0 = none)
+//       u8      audio                 (1 = clip lives on an audio track)
+//       i64     fadeInFrames          (head/tail opacity ramps, 0 = none)
 //       i64     fadeOutFrames
-//       i32     linkedTo              (v26+; parent clip this one follows, 0 = none)
+//       i32     linkedTo              (parent clip this one follows, 0 = none)
 //       i64     linkOffset            (start relative to that parent)
 //       u32     annotFrameCount
 //       per annotated source frame:
@@ -66,39 +65,38 @@
 //           f32     r, g, b
 //           u32     pointCount
 //           f32     x, y, hw          (pointCount times)
-//       f32     volumeBase            (v34+; dB, 0 = unity)
+//       f32     volumeBase            (dB, 0 = unity)
 //       u8      volumeInterp          (Curve::Interp; 0 = linear, 1 = smooth)
 //       u32     volumePointCount
 //       per volume point:
 //         i64     sourceFrame
 //         f32     dB
-//     u32     transitionCount         (v24+; dissolves on this sequence's cuts)
+//     u32     transitionCount         (dissolves on this sequence's cuts)
 //     per transition:
 //       i32     id
 //       i32     aClipId, bClipId      (the cut is aClipId's end; no stored position)
 //       i64     inFrames, outFrames
 //   u32+str   projectId
-//   i32       viewSeqIdx (v14+; -1 = All)
-//   f64       letterboxRatio (v17+; target aspect W/H, 0 = off)
-//   f32       letterboxOpacity (v17+; matte bar opacity 0..1)
-//   u8        ocioEnabled (v20+)
-//   i32       viewProjId (v29+; project view scope, -1 = none. v27..v28 wrote a
-//                         u32+str project name plus a u32-counted list of the
-//                         project names that had been opened whole)
-//   u32       projectCount (v29+; the project table Sequence::projectId indexes)
+//   i32       viewSeqIdx (-1 = All)
+//   f64       letterboxRatio (target aspect W/H, 0 = off)
+//   f32       letterboxOpacity (matte bar opacity 0..1)
+//   u8        ocioEnabled
+//   i32       viewProjId (project view scope, -1 = none)
+//   u32       projectCount (the project table Sequence::projectId indexes)
 //   per project:
 //     i32       id
 //     u32+str   name
 //     u32+str   path
 //     u8        openedWhole
-//   u32       trackNameCount (v30+; custom track labels, one per row, empty = the
-//                             row's derived name)
+//   u32       trackNameCount (custom track labels, one per row, empty = the row's
+//                             derived name)
 //   u32+str   trackName[trackNameCount]
-//   u32       disabledTrackCount (v31+; one flag per row, non-zero = row switched
-//                                 off, its clips skipped in compositing and audio)
+//   u32       disabledTrackCount (one flag per row, non-zero = row switched off,
+//                                 its clips skipped in compositing and audio)
 //   u8        disabledTrack[disabledTrackCount]
-//   u32+str   ocioView (v33+; the OCIO view transform the project was reviewed
-//                       through, "" = the config's default view)
+//   u32+str   ocioView (the OCIO view transform the project was reviewed through,
+//                       "" = the config's default view)
+//   u32+str   proxyMode (the media-representation mode last selected, "" = Full)
 namespace Project {
 
 // The view scope that was in force when the project was saved: either a single

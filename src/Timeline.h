@@ -491,16 +491,13 @@ struct Timeline {
     }
 
     // The project a file maps to, matched on path so two same-stem files stay
-    // apart. A record with no path of its own can only be matched by name — which
-    // is what an older project file's sequences migrate to.
+    // apart. `name` takes no part in the match; it is accepted so that
+    // projectIdForPath below can pass both through and name a new record.
     const SourceProject* findProjectByPath(const std::string& path,
-                                           const std::string& name) const {
+                                           const std::string& /*name*/) const {
         if (!path.empty())
             for (const auto& p : projects)
                 if (p.path == path) return &p;
-        if (!name.empty())
-            for (const auto& p : projects)
-                if (p.path.empty() && p.name == name) return &p;
         return nullptr;
     }
 

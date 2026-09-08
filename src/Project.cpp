@@ -121,7 +121,7 @@ static bool saveTo(std::ostream& os, const Timeline& tl, const std::string& proj
         const int64_t off = seqStoreOffset(i);
         writeRaw(os, (int32_t)s.id);
         writeStr(os, s.name);
-        writeRaw(os, (int32_t)s.projectId); // v29: was the project's name in v22..28
+        writeRaw(os, (int32_t)s.projectId);
         writeRaw(os, (uint32_t)s.bgColor);
         writeRaw(os, (uint32_t)s.shotIds.size());
         for (int sid : s.shotIds)
@@ -136,10 +136,10 @@ static bool saveTo(std::ostream& os, const Timeline& tl, const std::string& proj
             writeRaw(os, c.sourceOffset);
             writeRaw(os, (int32_t)c.shotId);
             writeRaw(os, (uint8_t)(c.hidden ? 1 : 0));
-            writeRaw(os, (uint8_t)(c.audio ? 1 : 0)); // v18: audio-track clip
-            writeRaw(os, c.fadeInFrames);             // v25: opacity ramps
+            writeRaw(os, (uint8_t)(c.audio ? 1 : 0)); // audio-track clip
+            writeRaw(os, c.fadeInFrames);             // opacity ramps
             writeRaw(os, c.fadeOutFrames);
-            writeRaw(os, (int32_t)c.linkedTo);        // v26: audio follows video
+            writeRaw(os, (int32_t)c.linkedTo);        // audio follows video
             writeRaw(os, c.linkOffset);
             // Pencil annotations, keyed by source frame.
             writeRaw(os, (uint32_t)c.annotations.size());
@@ -158,8 +158,8 @@ static bool saveTo(std::ostream& os, const Timeline& tl, const std::string& proj
                     }
                 }
             }
-            // Volume automation (v34+). Written last in the clip record so the
-            // reader's annotation path is untouched.
+            // Volume automation. Written last in the clip record, after the
+            // annotations.
             writeRaw(os, c.volume.base);
             writeRaw(os, (uint8_t)c.volume.interp);
             writeRaw(os, (uint32_t)c.volume.pts.size());
@@ -168,8 +168,8 @@ static bool saveTo(std::ostream& os, const Timeline& tl, const std::string& proj
                 writeRaw(os, p.v);
             }
         }
-        // Dissolves on this sequence's cuts (v24+). Positions are implied by the
-        // clip pair, so nothing here needs the storage offset.
+        // Dissolves on this sequence's cuts. Positions are implied by the clip
+        // pair, so nothing here needs the storage offset.
         writeRaw(os, (uint32_t)s.transitions.size());
         for (const auto& t : s.transitions) {
             writeRaw(os, (int32_t)t.id);
@@ -182,10 +182,10 @@ static bool saveTo(std::ostream& os, const Timeline& tl, const std::string& proj
 
     writeStr(os, projectId);
     writeRaw(os, (int32_t)view.seqIdx);
-    writeRaw(os, tl.letterboxRatio);   // v17+
-    writeRaw(os, tl.letterboxOpacity); // v17+
-    writeRaw(os, (uint8_t)(tl.ocioEnabled ? 1 : 0)); // v20+
-    writeRaw(os, (int32_t)view.projId);              // v29+
+    writeRaw(os, tl.letterboxRatio);
+    writeRaw(os, tl.letterboxOpacity);
+    writeRaw(os, (uint8_t)(tl.ocioEnabled ? 1 : 0));
+    writeRaw(os, (int32_t)view.projId);
     // The project table Sequence::projectId indexes. Written last so a reader that
     // stops early still gets a usable timeline, as every trailer field before it.
     writeRaw(os, (uint32_t)tl.projects.size());
@@ -195,7 +195,7 @@ static bool saveTo(std::ostream& os, const Timeline& tl, const std::string& proj
         writeStr(os, p.path);
         writeRaw(os, (uint8_t)(p.openedWhole ? 1 : 0));
     }
-    // Custom track labels (v30+), one per track row; empty = the derived name.
+    // Custom track labels, one per track row; empty = the derived name.
     {
         uint32_t nameCount =
             (uint32_t)std::min(tl.trackNames.size(), (size_t)std::max(tl.trackCount, 0));
@@ -203,7 +203,7 @@ static bool saveTo(std::ostream& os, const Timeline& tl, const std::string& proj
         for (uint32_t i = 0; i < nameCount; ++i)
             writeStr(os, tl.trackNames[i]);
     }
-    // Disabled track rows (v31+), one flag per track row.
+    // Disabled track rows, one flag per track row.
     {
         uint32_t offCount =
             (uint32_t)std::min(tl.disabledTracks.size(), (size_t)std::max(tl.trackCount, 0));
@@ -211,8 +211,8 @@ static bool saveTo(std::ostream& os, const Timeline& tl, const std::string& proj
         for (uint32_t i = 0; i < offCount; ++i)
             writeRaw(os, tl.disabledTracks[i]);
     }
-    writeStr(os, tl.ocioView); // v33+
-    writeStr(os, tl.proxyMode); // v35+
+    writeStr(os, tl.ocioView);
+    writeStr(os, tl.proxyMode);
 
     os.flush();
     if (!os) {
@@ -260,7 +260,7 @@ static bool loadFrom(std::istream& is, Timeline& tl, int& nextClipId, int& nextS
     }
     for (uint32_t i = 0; i < mediaCount; ++i) {
         bool ok = false;
-        auto m = Media::deserialize(is, version, ok);
+        auto m = Media::deserialize(is, ok);
         if (!ok) {
             err = "corrupt project file (media table)";
             return false;

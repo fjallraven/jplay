@@ -154,7 +154,7 @@ public:
     static uint64_t freshHashFromFiles(const std::vector<std::string>& files);
 
     void serialize(std::ostream& os) const;
-    static std::shared_ptr<Media> deserialize(std::istream& is, uint32_t version, bool& ok);
+    static std::shared_ptr<Media> deserialize(std::istream& is, bool& ok);
 
 private:
     const std::string id_;

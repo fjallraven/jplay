@@ -290,13 +290,13 @@ void Media::serialize(std::ostream& os) const {
     writeRaw(os, (uint32_t)applicablePickers_.size());
     for (const auto& k : applicablePickers_)
         writeStr(os, k);
-    // Explicit input colour space (v32+); "" = resolved from the OCIO config. Only
-    // the override is stored — the resolved answer belongs to one config and is
+    // Explicit input colour space; "" = resolved from the OCIO config. Only the
+    // override is stored — the resolved answer belongs to one config and is
     // recomputed on load.
     writeStr(os, colorSpaceOverride());
 }
 
-std::shared_ptr<Media> Media::deserialize(std::istream& is, uint32_t version, bool& ok) {
+std::shared_ptr<Media> Media::deserialize(std::istream& is, bool& ok) {
     ok = false;
     std::string id, path, name;
     uint8_t type = 0;
@@ -321,9 +321,8 @@ std::shared_ptr<Media> Media::deserialize(std::istream& is, uint32_t version, bo
     if (!readRaw(is, i.width) || !readRaw(is, i.height) || !readRaw(is, i.frameCount) ||
         !readRaw(is, i.fps))
         return nullptr;
-    // Pixel aspect (v28+). Older files load square, which is what every source
-    // but an anamorphic EXR is; the real value returns with the next probe.
-    if (version >= 28 && !readRaw(is, i.pixelAspect))
+    // Pixel aspect: pixel width / height, 1 = square.
+    if (!readRaw(is, i.pixelAspect))
         return nullptr;
     if (!readRaw(is, i.freshHash))
         return nullptr;
@@ -348,9 +347,9 @@ std::shared_ptr<Media> Media::deserialize(std::istream& is, uint32_t version, bo
             m->setApplicablePickers(std::move(keys));
     }
 
-    // Explicit input colour space (v32+). Older projects carry none, which is the
-    // same as "resolve from the config" — so they open colour-managed by default.
-    if (version >= 32) {
+    // Explicit input colour space. Empty is the same as "resolve from the
+    // config", which is how a project with no override opens colour-managed.
+    {
         std::string cs;
         if (!readStr(is, cs))
             return nullptr;
