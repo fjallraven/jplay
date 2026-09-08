@@ -1,0 +1,215 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to stamp (e.g. 1.2.0-rc1). Blank = 0.0.0-<branch>.<sha>.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  VCPKG_COMMIT: 32305df7d0b9a308e6ac454dd98ebfe550342c09
+
+jobs:
+  # Resolve the version once, so both platforms stamp and name identically.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      is_release: ${{ steps.v.outputs.is_release }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+            is_release=true
+          elif [ -n "$INPUT_VERSION" ]; then
+            version="$INPUT_VERSION"
+            is_release=false
+          else
+            version="0.0.0-${GITHUB_REF_NAME//\//-}.${GITHUB_SHA::7}"
+            is_release=false
+          fi
+          # Anything carrying a pre-release suffix (1.2.0-rc1) is not "latest".
+          case "$version" in
+            *-*) prerelease=true ;;
+            *)   prerelease=false ;;
+          esac
+          printf 'version=%s\n'    "$version"    >> "$GITHUB_OUTPUT"
+          printf 'is_release=%s\n' "$is_release" >> "$GITHUB_OUTPUT"
+          printf 'prerelease=%s\n' "$prerelease" >> "$GITHUB_OUTPUT"
+          printf 'Building **%s** (release=%s, prerelease=%s)\n' \
+            "$version" "$is_release" "$prerelease" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: version
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-2022
+            triplet: x64-windows-release
+          - name: linux-x64
+            os: ubuntu-22.04
+            triplet: jplay-x64-linux
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      STAGE: jplay-${{ needs.version.outputs.version }}-${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # SDL3, vulkan-loader and ffmpeg all build against system headers here.
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build nasm autoconf automake libtool pkg-config \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+            libxfixes-dev libxss-dev libxkbcommon-dev libxinerama-dev \
+            libwayland-dev wayland-protocols libegl1-mesa-dev libgl1-mesa-dev \
+            libasound2-dev libpulse-dev libudev-dev libdbus-1-dev \
+            libibus-1.0-dev libltdl-dev
+
+      - name: Checkout vcpkg
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 1
+
+      - name: Bootstrap vcpkg (Linux)
+        if: runner.os == 'Linux'
+        run: ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: Bootstrap vcpkg (Windows)
+        if: runner.os == 'Windows'
+        run: .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-cache
+          key: vcpkg-${{ matrix.name }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'custom-ports/**', 'custom-triplets/**') }}
+          restore-keys: |
+            vcpkg-${{ matrix.name }}-${{ env.VCPKG_COMMIT }}-
+
+      - name: Configure
+        shell: bash
+        env:
+          VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-cache,readwrite
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/vcpkg-cache"
+          if [ "$RUNNER_OS" = Windows ]; then
+            generator=(-A x64)
+          else
+            generator=(-G Ninja -DCMAKE_BUILD_TYPE=Release)
+          fi
+          cmake -S . -B build "${generator[@]}" \
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
+            -DJPLAY_VERSION="$VERSION" \
+            -DJPLAY_BUNDLE_PYTHON=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Install
+        shell: bash
+        run: cmake --install build --config Release --prefix "dist/$STAGE"
+
+      - name: Check bundled libraries resolve (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          missing=$(ldd "dist/$STAGE/jplay" | grep 'not found' || true)
+          if [ -n "$missing" ]; then
+            echo "Unresolved shared libraries:"
+            echo "$missing"
+            exit 1
+          fi
+          echo "All shared libraries resolve."
+
+      - name: Archive (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: dist
+        run: 7z a -tzip -mx=7 "../$STAGE.zip" "$STAGE" > /dev/null
+
+      - name: Archive (Linux)
+        if: runner.os == 'Linux'
+        working-directory: dist
+        run: tar -czf "../$STAGE.tar.gz" "$STAGE"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.STAGE }}
+          path: |
+            ${{ env.STAGE }}.zip
+            ${{ env.STAGE }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: [version, build]
+    if: needs.version.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          ls -l artifacts
+          flags=(--draft)
+          if [ "$PRERELEASE" = true ]; then
+            flags+=(--prerelease)
+          fi
+          prev=$(git tag --list 'v*' --sort=-v:refname \
+                 | grep -vx "$GITHUB_REF_NAME" | head -n1 || true)
+          if [ "$PRERELEASE" != true ] && [ -n "$prev" ]; then
+            flags+=(--generate-notes)
+            echo "Generating notes against previous tag $prev."
+          else
+            flags+=(--notes "jplay $VERSION")
+            echo "Skipping generated notes (prerelease=$PRERELEASE, previous tag='$prev')."
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "jplay $VERSION" \
+            "${flags[@]}" \
+            artifacts/*
