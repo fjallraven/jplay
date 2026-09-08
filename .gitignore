@@ -1,6 +1,6 @@
 build
-testdata
-vcpkg_installed
 __pycache__/
 *.pyc
 *.pyo
+.vscode/
+dist/
