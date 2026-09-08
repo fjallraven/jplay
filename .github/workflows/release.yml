@@ -1,7 +1,5 @@
 name: release
 
-# Tagging v* cuts a release; workflow_dispatch builds the same archives from any
-# branch without publishing, which is how a release is rehearsed before merging.
 on:
   push:
     tags:
@@ -21,9 +19,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Pinned so a release is built against the same ports the project was
-  # developed against. Bump deliberately, then re-test -- and keep it in step
-  # with the "baseline" in vcpkg-configuration.json.
   VCPKG_COMMIT: 32305df7d0b9a308e6ac454dd98ebfe550342c09
 
 jobs:
@@ -70,14 +65,9 @@ jobs:
       matrix:
         include:
           - name: windows-x64
-            # Pinned rather than windows-latest so a rebuild of the same tag
-            # uses the same MSVC. Bump when GitHub retires the image.
             os: windows-2022
             triplet: x64-windows-release
           - name: linux-x64
-            # Oldest supported runner on purpose: it fixes the minimum glibc
-            # (2.35) the released binary needs, so it still starts on RHEL 9 /
-            # Debian 12 era workstations.
             os: ubuntu-22.04
             triplet: jplay-x64-linux
     env:
@@ -116,8 +106,6 @@ jobs:
         if: runner.os == 'Windows'
         run: .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
 
-      # A cold dependency build is long (ffmpeg, OCIO, OpenEXR, shaderc); cache
-      # the compiled packages, keyed on everything that can change their ABI.
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         with:
@@ -129,23 +117,15 @@ jobs:
       - name: Configure
         shell: bash
         env:
-          # `clear` drops the default per-user cache dir, which is not persisted.
           VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-cache,readwrite
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/vcpkg-cache"
           if [ "$RUNNER_OS" = Windows ]; then
-            # No -G: CMake defaults to the newest Visual Studio on the image,
-            # which keeps a runner-image bump from also needing a generator
-            # string edited here. The VS generator supplies its own MSVC
-            # environment, so no developer-prompt step is needed.
             generator=(-A x64)
           else
             generator=(-G Ninja -DCMAKE_BUILD_TYPE=Release)
           fi
-          # overlay-ports (the custom OTIO port, which upstream vcpkg does not
-          # carry) and overlay-triplets both come from vcpkg-configuration.json,
-          # so neither needs a flag here.
           cmake -S . -B build "${generator[@]}" \
             -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/vcpkg/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
@@ -159,8 +139,6 @@ jobs:
         shell: bash
         run: cmake --install build --config Release --prefix "dist/$STAGE"
 
-      # The runner has no display, so this checks only the loader path: every
-      # bundled shared library must resolve. It does not exercise startup.
       - name: Check bundled libraries resolve (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -177,8 +155,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         working-directory: dist
-        # 7-Zip rather than Compress-Archive: the bundled Python stdlib is
-        # thousands of small files and Compress-Archive takes minutes on it.
         run: 7z a -tzip -mx=7 "../$STAGE.zip" "$STAGE" > /dev/null
 
       - name: Archive (Linux)
@@ -205,15 +181,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # --generate-notes diffs against the previous tag
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
-      # Created as a draft: the notes and both archives can be checked before
-      # anything is public. Drop --draft to publish automatically.
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -222,9 +196,18 @@ jobs:
         run: |
           set -euo pipefail
           ls -l artifacts
-          flags=(--draft --generate-notes)
+          flags=(--draft)
           if [ "$PRERELEASE" = true ]; then
             flags+=(--prerelease)
+          fi
+          prev=$(git tag --list 'v*' --sort=-v:refname \
+                 | grep -vx "$GITHUB_REF_NAME" | head -n1 || true)
+          if [ "$PRERELEASE" != true ] && [ -n "$prev" ]; then
+            flags+=(--generate-notes)
+            echo "Generating notes against previous tag $prev."
+          else
+            flags+=(--notes "jplay $VERSION")
+            echo "Skipping generated notes (prerelease=$PRERELEASE, previous tag='$prev')."
           fi
           gh release create "$GITHUB_REF_NAME" \
             --title "jplay $VERSION" \
