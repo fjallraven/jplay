@@ -192,7 +192,7 @@ if(JPLAY_BUNDLE_PYTHON)
     include("${CMAKE_SOURCE_DIR}/cmake/python_buildtools.cmake")
 endif()
 set(MDI_TTF     "${CMAKE_SOURCE_DIR}/materialdesignicons-webfont.ttf")
-set(MDI_DEFINES "${CMAKE_SOURCE_DIR}/src/IconsMaterialDesignIcons.h")
+set(MDI_DEFINES "${CMAKE_SOURCE_DIR}/src/ui/IconsMaterialDesignIcons.h")
 set(MDI_GEN_DIR "${CMAKE_BINARY_DIR}/generated")
 set(MDI_HEADER  "${MDI_GEN_DIR}/icon_font_data.h")
 set(MDI_SCRIPT  "${CMAKE_SOURCE_DIR}/tools/gen_icon_font.py")
@@ -221,7 +221,7 @@ if(WIN32)
     )
 endif()
 
-file(GLOB MDI_SCAN_SOURCES CONFIGURE_DEPENDS
+file(GLOB_RECURSE MDI_SCAN_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/src/*.cpp" "${CMAKE_SOURCE_DIR}/src/*.h")
 list(REMOVE_ITEM MDI_SCAN_SOURCES "${MDI_DEFINES}")
 
@@ -259,74 +259,74 @@ if(WIN32)
 endif()
 
 add_executable(jplay WIN32
-    src/main.cpp
-    src/App.cpp
-    src/App_Timeline.cpp
-    src/App_TimelineClip.cpp
-    src/App_CurveLane.cpp
-    src/App_Player.cpp
-    src/App_PixelInspector.cpp
-    src/App_ProjectExplorer.cpp
-    src/App_NavPanel.cpp
-    src/App_Project.cpp
-    src/App_Overview.cpp
-    src/App_Layout.cpp
-    src/App_Inspector.cpp
-    src/App_Grade.cpp
-    src/App_Draw.cpp
-    src/App_TopBar.cpp
-    src/App_Letterbox.cpp
-    src/App_Ocio.cpp
-    src/App_ProxyMenu.cpp
-    src/App_SequenceMenu.cpp
-    src/App_TechCheck.cpp
-    src/App_ClipSource.cpp
-    src/App_Settings.cpp
-    src/App_Review.cpp
-    src/App_Sync.cpp
-    src/App_Control.cpp
-    src/ControlServer.cpp
-    src/App_Help.cpp
-    src/App_About.cpp
-    src/AppIcon.cpp
-    src/RevealFile.cpp
-    src/IconFont.cpp
-    src/TextFont.cpp
-    src/ThumbnailCache.cpp
-    src/Menu.cpp
-    src/Dropdown.cpp
-    src/ContextMenu.cpp
-    src/TitleBar.cpp
-    src/VideoSource.cpp
-    src/AudioSource.cpp
-    src/AudioEngine.cpp
-    src/WaveformCache.cpp
-    src/ExrSource.cpp
-    src/StillSource.cpp
-    src/ImageSeq.cpp
-    src/OcioManager.cpp
-    src/OcioGpu.cpp
-    src/GradeGpu.cpp
-    src/HdrColorPass.cpp
-    src/Output.cpp
-    src/OutputNDI.cpp
-    src/OutputDeckLink.cpp
-    src/Media.cpp
-    src/ProxyMode.cpp
-    src/MediaScan.cpp
-    src/FrameCache.cpp
-    src/Project.cpp
-    src/SharedProjects.cpp
-    src/SyncSession.cpp
-    src/OtioImport.cpp
-    src/OtioExport.cpp
-    src/Widgets.cpp
-    src/ExportDialog.cpp
-    src/UserData.cpp
-    src/Preferences.cpp
-    src/PythonStartup.cpp
-    src/PythonBridge.cpp
-    src/WorkQueue.cpp
+    src/app/main.cpp
+    src/app/App.cpp
+    src/timeline/App_Timeline.cpp
+    src/timeline/App_TimelineClip.cpp
+    src/timeline/App_CurveLane.cpp
+    src/stage/App_Player.cpp
+    src/stage/App_PixelInspector.cpp
+    src/panels/App_ProjectExplorer.cpp
+    src/panels/App_NavPanel.cpp
+    src/app/App_Project.cpp
+    src/stage/App_Overview.cpp
+    src/app/App_Layout.cpp
+    src/stage/App_Inspector.cpp
+    src/panels/App_Grade.cpp
+    src/panels/App_Draw.cpp
+    src/topbar/App_TopBar.cpp
+    src/stage/App_Letterbox.cpp
+    src/topbar/App_Ocio.cpp
+    src/topbar/App_ProxyMenu.cpp
+    src/topbar/App_SequenceMenu.cpp
+    src/panels/App_TechCheck.cpp
+    src/panels/App_ClipSource.cpp
+    src/panels/App_Settings.cpp
+    src/stage/App_Review.cpp
+    src/panels/App_Sync.cpp
+    src/app/App_Control.cpp
+    src/io/ControlServer.cpp
+    src/app/App_Help.cpp
+    src/app/App_About.cpp
+    src/ui/AppIcon.cpp
+    src/io/RevealFile.cpp
+    src/ui/IconFont.cpp
+    src/ui/TextFont.cpp
+    src/media/ThumbnailCache.cpp
+    src/ui/Menu.cpp
+    src/ui/Dropdown.cpp
+    src/ui/ContextMenu.cpp
+    src/ui/TitleBar.cpp
+    src/media/VideoSource.cpp
+    src/media/AudioSource.cpp
+    src/media/AudioEngine.cpp
+    src/media/WaveformCache.cpp
+    src/media/ExrSource.cpp
+    src/media/StillSource.cpp
+    src/media/ImageSeq.cpp
+    src/color/OcioManager.cpp
+    src/color/OcioGpu.cpp
+    src/color/GradeGpu.cpp
+    src/color/HdrColorPass.cpp
+    src/output/Output.cpp
+    src/output/OutputNDI.cpp
+    src/output/OutputDeckLink.cpp
+    src/media/Media.cpp
+    src/media/ProxyMode.cpp
+    src/media/MediaScan.cpp
+    src/media/FrameCache.cpp
+    src/project/Project.cpp
+    src/project/SharedProjects.cpp
+    src/io/SyncSession.cpp
+    src/project/OtioImport.cpp
+    src/project/OtioExport.cpp
+    src/ui/Widgets.cpp
+    src/ui/ExportDialog.cpp
+    src/project/UserData.cpp
+    src/project/Preferences.cpp
+    src/io/PythonStartup.cpp
+    src/io/PythonBridge.cpp
+    src/io/WorkQueue.cpp
     ${MDI_HEADER}
     ${JPLAY_RC}
 )
@@ -352,8 +352,21 @@ target_compile_definitions(jplay PRIVATE
     JPLAY_BUILD_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
     JPLAY_OTIO_VERSION="${JPLAY_OTIO_VERSION}")
 
+# Every src/ subdirectory is on the include path, so a header is included by
+# bare name -- #include "App.h", not "../app/App.h" -- from anywhere in the
+# tree. That keeps includes independent of where a file sits, which is what
+# lets sources be regrouped by pure rename: a fork carrying local changes
+# rebases across a move without its #include lines conflicting. Keep it that
+# way; a path-qualified include would tie the file to its directory again.
+file(GLOB JPLAY_SRC_DIRS LIST_DIRECTORIES true "${CMAKE_SOURCE_DIR}/src/*")
+foreach(_d ${JPLAY_SRC_DIRS})
+    if(IS_DIRECTORY "${_d}")
+        list(APPEND JPLAY_INCLUDE_DIRS "${_d}")
+    endif()
+endforeach()
+
 target_include_directories(jplay PRIVATE ${FFMPEG_INCLUDE_DIRS} ${MDI_GEN_DIR}
-    ${RAPIDJSON_INCLUDE_DIRS})
+    ${RAPIDJSON_INCLUDE_DIRS} ${JPLAY_INCLUDE_DIRS})
 target_link_directories(jplay PRIVATE ${FFMPEG_LIBRARY_DIRS})
 target_link_libraries(jplay PRIVATE    
     SDL3::SDL3

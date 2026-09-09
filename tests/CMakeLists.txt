@@ -9,17 +9,17 @@
 
 add_executable(cachebench
     cachebench.cpp
-    ../src/FrameCache.cpp
-    ../src/Media.cpp
-    ../src/VideoSource.cpp
-    ../src/AudioSource.cpp
-    ../src/ImageSeq.cpp
-    ../src/ExrSource.cpp
-    ../src/StillSource.cpp
-    ../src/ProxyMode.cpp
+    ../src/media/FrameCache.cpp
+    ../src/media/Media.cpp
+    ../src/media/VideoSource.cpp
+    ../src/media/AudioSource.cpp
+    ../src/media/ImageSeq.cpp
+    ../src/media/ExrSource.cpp
+    ../src/media/StillSource.cpp
+    ../src/media/ProxyMode.cpp
 )
 
-target_include_directories(cachebench PRIVATE ../src ${FFMPEG_INCLUDE_DIRS})
+target_include_directories(cachebench PRIVATE ../src ${JPLAY_INCLUDE_DIRS} ${FFMPEG_INCLUDE_DIRS})
 target_link_directories(cachebench PRIVATE ${FFMPEG_LIBRARY_DIRS})
 target_link_libraries(cachebench PRIVATE
     SDL3::SDL3
