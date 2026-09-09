@@ -494,7 +494,7 @@ bool App::settingsCacheHandleEvent(const SDL_Event& e) {
 
 // ─── Panel ───────────────────────────────────────────────────────────────────
 void App::renderSettingsPanel() {
-    if (!settingsOpen_) {
+    if (!panelOpen(kPanelSettings)) {
         if (fpsFld_.focused()) {
             fpsFld_.setFocus(false);
             fpsFldListOpen_ = false;
@@ -513,7 +513,7 @@ void App::renderSettingsPanel() {
         return;
     }
     float topH = titleBar_.height();
-    SDL_FRect panel = { kSidePanelW, topH, settingsW_, panelsBottom_ - topH };
+    SDL_FRect panel = { kSidePanelW, topH, openPanelW(), panelsBottom_ - topH };
     setColor(renderer_, kPanelBg);
     jplay::fillRect(renderer_, &panel);
     // The divider is the panel's edge against the next pane, not part of the

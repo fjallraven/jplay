@@ -156,20 +156,20 @@ void App::gradeSlider(SDL_FRect& body, const char* label, float* value,
 
 // ─── Panel ───────────────────────────────────────────────────────────────────
 void App::renderGradePanel() {
-    if (!gradeOpen_)
+    if (!panelOpen(kPanelGrade))
         return;
     gradeSliders_.clear();
     gradeWheels_.clear();
 
     float topH = titleBar_.height();
     float ex = kSidePanelW;
-    SDL_FRect panel = { ex, topH, gradeW_, panelsBottom_ - topH };
+    SDL_FRect panel = { ex, topH, openPanelW(), panelsBottom_ - topH };
     setCol(renderer_, kPanelBg.r, kPanelBg.g, kPanelBg.b);
     jplay::fillRect(renderer_, &panel);
 
     // Right-edge border (1px).
     setCol(renderer_, 60, 64, 74);
-    jplay::drawLine(renderer_, ex + gradeW_ - 0.5f, topH, ex + gradeW_ - 0.5f, panelsBottom_);
+    jplay::drawLine(renderer_, ex + openPanelW() - 0.5f, topH, ex + openPanelW() - 0.5f, panelsBottom_);
 
     const float pad = 10.0f * dpiScale;
     const float lineH = textFont_.lineHeight();

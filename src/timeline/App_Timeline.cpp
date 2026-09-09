@@ -3157,7 +3157,7 @@ void App::commitClipDrag(bool duplicate) {
                 },
             });
         }
-        if (projectExplorerOpen_)
+        if (panelOpen(kPanelProjectExplorer))
             refreshExplorerOrder(); // the drag moved the clip's shot: re-sort the tree
     }
     draggingClip_ = false;
@@ -4105,7 +4105,7 @@ void App::pasteClips() {
         },
     });
 
-    if (projectExplorerOpen_)
+    if (panelOpen(kPanelProjectExplorer))
         refreshExplorerOrder();
     std::string msg = newIds.size() == 1
                           ? "PASTED CLIP ON TRACK " + std::to_string(firstTrack + 1)

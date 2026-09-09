@@ -43,6 +43,14 @@ inline float kAudioTrackH        = 23.0f;  // height of one audio track row (hal
 inline float kHeaderW            = 92.0f;  // width of the left track-label gutter
 inline float kNavIconSide        = 28.0f;  // left icon strip: the square each toggle glyph is sized to
 inline float kSidePanelW         = 36.0f;  // left icon strip: kNavIconSide + 2*4px pad at 1x
+// Open width of a left pane that does not name one of its own
+// (LeftPanelDesc::defaultW), before DPI scaling; App::leftPaneWidth applies the
+// scale and holds the result between kLeftPaneDefMinW and kLeftPaneDefMaxW.
+// kLeftPaneMinW is the separate floor a resize drag may not go below.
+inline float kLeftPanelW         = 240.0f;
+inline float kLeftPaneDefMinW    = 210.0f;
+inline float kLeftPaneDefMaxW    = 320.0f;
+inline float kLeftPaneMinW       = 140.0f;
 inline float kInspectorW         = 155.0f; // minimum content width of the Inspector overlay
 inline float kHoverBoxPx         = 120.0f; // fixed width of the file-drag preview box
 inline float kOverviewHandleHitW =  6.0f;  // total hit width of the overview resize handle (±half each side)

@@ -108,7 +108,7 @@ void drawMarker(SDL_Renderer* r, float mx, float my) {
 // and consumed by drawPanelHandlePress on the next event (one-frame lag, as with
 // the grade widgets). Size/color feed renderAnnotations.
 void App::renderDrawPanel() {
-    if (!pencilMode_ || drawPanelRect_.w <= 0.0f)
+    if (!panelOpen(kPanelDraw) || drawPanelRect_.w <= 0.0f)
         return;
     const SDL_FRect& R = drawPanelRect_;
     setCol(renderer_, kPanelBg.r, kPanelBg.g, kPanelBg.b);

@@ -831,6 +831,8 @@ bool App::init(int argc, char** argv) {
     output_.init(renderer_);   // external video output (NDI/SDI); readback needs the GL backend
     if (hdrPipeline_)
         output_.setExternalFeed(true); // SDL_GPU path reads back the float program + feeds submitFrame itself
+    // Before buildMenu: the View > Panels submenu is generated from the registry.
+    registerLeftPanels();
     buildMenu();
     // The metadata pickers are config-driven and served by Python (not ready
     // until run()), so they are built lazily from openClipPickerMenu — not here.
@@ -1095,24 +1097,13 @@ void App::buildMenu() {
     {
         // One entry per icon-strip toggle, in strip order, each acting exactly like
         // a click on its glyph: the panes are mutually exclusive, and re-picking
-        // the open one closes it (see toggleLeftPanel).
-        struct PanelEntry { const char* label; LeftPanel panel; };
-        static const PanelEntry kPanelEntries[] = {
-            { "Project Explorer", LeftPanel::ProjectExplorer },
-            { "Clip Source",      LeftPanel::ClipSource },
-            { "Color Grading",    LeftPanel::Grade },
-            { "Tech Check",       LeftPanel::Tech },
-            { "Draw",             LeftPanel::Draw },
-            { "Sync Review",      LeftPanel::Sync },
-            { "Settings",         LeftPanel::Settings },
-        };
+        // the open one closes it (see toggleLeftPanel). Straight off the registry,
+        // so a pane a fork appends gets its menu row without touching this.
         int panels = menuBar_.addSubmenu(view, "  Panels");
-        for (const auto& pe : kPanelEntries) {
-            const char* label = pe.label;
-            const LeftPanel panel = pe.panel;
-            menuBar_.addItem(panels, std::string("  ") + label,
-                             [this, panel] { toggleLeftPanel(panel); }, onStage,
-                             nullptr, "", [this, panel] { return leftPanelOpen(panel); });
+        for (int i = 0; i < (int)leftPanels_.size(); ++i) {
+            menuBar_.addItem(panels, std::string("  ") + leftPanels_[i].label,
+                             [this, i] { toggleLeftPanel(i); }, onStage,
+                             nullptr, "", [this, i] { return panelOpen(i); });
         }
     }
     menuBar_.addSeparator(view);
@@ -1572,9 +1563,9 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
             jumpClip(dir);
         else if (stackView())
             cycleStack(dir);
-        else if (projectExplorerOpen_ && peActiveTab_ == PeTabSources)
+        else if (panelOpen(kPanelProjectExplorer) && peActiveTab_ == PeTabSources)
             stepBinSelection(dir);
-        else if (clipSourceOpen_ && !k.repeat)
+        else if (panelOpen(kPanelClipSource) && !k.repeat)
             // No repeat: each step is a real media swap behind a Python query, and
             // a held key would queue one per tick.
             stepClipSourceVersion(dir);
@@ -1809,7 +1800,7 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
         // touched last owns the key (binSelectionActive_). The bin only claims it
         // while its panel is open, so a selection left behind a closed panel cannot
         // swallow the keypress.
-        if (binSelectionActive_ && projectExplorerOpen_ && !selectedSourcePaths_.empty())
+        if (binSelectionActive_ && panelOpen(kPanelProjectExplorer) && !selectedSourcePaths_.empty())
             removeSelectedSource(/*alwaysConfirm=*/true);
         else if (selectedTransitionId_ >= 0)
             deleteSelectedTransition();
@@ -1882,19 +1873,6 @@ void App::onKeyUp(const SDL_KeyboardEvent& k) {
 // below which two of them are one press reported twice rather than two clicks.
 static constexpr Uint64 kTitleDoubleClickMs = 400;
 static constexpr Uint64 kTitlePressDedupMs = 40;
-
-// The resize-handle hit zone straddles each open side panel's right edge,
-// kOverviewHandleHitW/2 into either side, and runs the panel's full height.
-App::PanelEdge App::panelResizeEdgeAt(float mx, float my) const {
-    if (my < titleBar_.height() || my >= panelsBottom_)
-        return PanelEdge::None;
-    const float half = kOverviewHandleHitW * 0.5f;
-    if (projectExplorerOpen_ && std::abs(mx - (kSidePanelW + peW_)) <= half)
-        return PanelEdge::ProjectExplorer;
-    if (clipSourceOpen_ && std::abs(mx - (kSidePanelW + clipSourceW_)) <= half)
-        return PanelEdge::ClipSource;
-    return PanelEdge::None;
-}
 
 void App::handleEvent(SDL_Event& e) {
     // A monitor being unplugged: drop the review target if it was that display,
@@ -2036,22 +2014,20 @@ void App::handleEvent(SDL_Event& e) {
     // Letterbox popup (aspect-ratio / opacity): consumes events while open.
     if (letterboxMenuOpen_ && letterboxMenuHandleEvent(e))
         return;
-    if (settingsOpen_ && settingsFpsHandleEvent(e))
-        return;
-    if (settingsOpen_ && settingsUiScaleHandleEvent(e))
-        return;
-    if (settingsOpen_ && settingsCacheHandleEvent(e))
-        return;
-    if (techOpen_ && techNitHandleEvent(e))
-        return;
-    if (projectExplorerOpen_ && projectTreeHandleEvent(e))
-        return;
     // Inline track rename (timeline gutter): captures typing while it is open. The
     // click that ends it is not consumed, so it still lands where it was aimed.
     if (trackNameEdit_ >= 0 && trackNameEditHandleEvent(e))
         return;
-    if (sessionPanelOpen_ && sessionHandleEvent(e))
-        return;
+    // The open pane's own popups and focused fields, which outlive a click inside
+    // the pane and so have to be fed before the rest of the app: the Settings
+    // combos, the tech-check nit field, the project tree's inline edit, the sync
+    // panel's text fields. After the track rename, which is modal while live.
+    if (openPanel_ >= 0) {
+        if (auto& early = leftPanels_[openPanel_].handleEventEarly) {
+            if (early(e))
+                return;
+        }
+    }
     switch (e.type) {
     case SDL_EVENT_QUIT:
         requestQuit();
@@ -2175,13 +2151,9 @@ void App::handleEvent(SDL_Event& e) {
         // Resize handles: intercept before the boundary check so the hit zone
         // straddles the edge.
         if (e.button.button == SDL_BUTTON_LEFT) {
-            const PanelEdge edge = panelResizeEdgeAt(mx, my);
-            if (edge == PanelEdge::ProjectExplorer) {
-                peResizing_ = true;
-                break;
-            }
-            if (edge == PanelEdge::ClipSource) {
-                clipSourceResizing_ = true;
+            const int edge = panelResizeEdgeAt(mx, my);
+            if (edge >= 0) {
+                panelResizing_ = edge;
                 break;
             }
             // The timeline's top edge, dragged to make the timeline shorter or
@@ -2207,144 +2179,22 @@ void App::handleEvent(SDL_Event& e) {
         // above the full-width timeline): directory toggle, ProjectExplorer +/-
         // buttons, and row selection.
         if (mx < panelsRight_ && my >= titleBar_.height() && my < panelsBottom_) {
-            if (e.button.button == SDL_BUTTON_LEFT) {
-                if (inRect(dirButtonRect_, mx, my)) {
-                    gradeOpen_ = false;
-                    techOpen_ = false;
-                    settingsOpen_ = false;
-                    pencilMode_ = false;
-                    sessionPanelOpen_ = false;
-                    closeClipSource();
-                    projectExplorerOpen_ = !projectExplorerOpen_;
-                    if (projectExplorerOpen_) refreshExplorerOrder(); // re-sort shots on open
-                } else if (inRect(gradeButtonRect_, mx, my)) {
-                    if (gradeOpen_) {
-                        gradeOpen_ = false;
-                    } else {
-                        projectExplorerOpen_ = false;
-                        techOpen_ = false;
-                        settingsOpen_ = false;
-                        pencilMode_ = false;
-                        sessionPanelOpen_ = false;
-                        closeClipSource();
-                        gradeOpen_ = true;
-                    }
-                } else if (inRect(techButtonRect_, mx, my)) {
-                    if (techOpen_) {
-                        techOpen_ = false;
-                    } else {
-                        projectExplorerOpen_ = false;
-                        gradeOpen_ = false;
-                        settingsOpen_ = false;
-                        pencilMode_ = false;
-                        sessionPanelOpen_ = false;
-                        closeClipSource();
-                        techOpen_ = true;
-                    }
-                } else if (inRect(clipSourceButtonRect_, mx, my)) {
-                    if (clipSourceOpen_) {
-                        closeClipSource();
-                    } else {
-                        projectExplorerOpen_ = false;
-                        gradeOpen_ = false;
-                        techOpen_ = false;
-                        settingsOpen_ = false;
-                        pencilMode_ = false;
-                        sessionPanelOpen_ = false;
-                        clipSourceOpen_ = true;
-                        clipSourceDirty_ = true;  // describe on the next render
-                        clipSourceScroll_ = 0.0f;
-                    }
-                } else if (inRect(settingsButtonRect_, mx, my)) {
-                    if (settingsOpen_) {
-                        settingsOpen_ = false;
-                    } else {
-                        projectExplorerOpen_ = false;
-                        gradeOpen_ = false;
-                        techOpen_ = false;
-                        pencilMode_ = false;
-                        sessionPanelOpen_ = false;
-                        closeClipSource();
-                        settingsOpen_ = true;
-                    }
-                } else if (inRect(pencilBtnRect_, mx, my)) {
-                    if (pencilMode_) {
-                        pencilMode_ = false;
-                    } else {
-                        projectExplorerOpen_ = false;
-                        gradeOpen_ = false;
-                        techOpen_ = false;
-                        settingsOpen_ = false;
-                        sessionPanelOpen_ = false;
-                        closeClipSource();
-                        pencilMode_ = true; // freehand markup; opens the draw-tool pane
-                    }
-                } else if (inRect(sessionButtonRect_, mx, my)) {
-                    // Mutually-exclusive left pane (like grade / tech / settings).
-                    if (sessionPanelOpen_) {
-                        sessionPanelOpen_ = false;
-                        SDL_StopTextInput(window_);
-                    } else {
-                        projectExplorerOpen_ = false;
-                        gradeOpen_ = false;
-                        techOpen_ = false;
-                        settingsOpen_ = false;
-                        pencilMode_ = false;
-                        closeClipSource();
-                        sessionPanelOpen_ = true;
-                    }
-                } else if (clipSourceOpen_) {
-                    clipSourceHandleEvent(e); // picker option rows
-                } else if (pencilMode_) {
-                    drawPanelHandlePress(mx, my); // Clear / size / hue widgets
-                } else if (settingsOpen_) {
-                    settingsHandleEvent(e); // Time Format toggle (FPS dropdown handled earlier)
-                } else if (gradeOpen_) {
-                    gradeHandleEvent(e); // panel-internal widgets
-                } else if (techOpen_) {
-                    techHandleEvent(e); // panel-internal mode pills
-                } else if (projectExplorerOpen_ && inRect(sourceInfoCloseRect_, mx, my)) {
-                    // X on the MEDIA info sub-panel: close it.
-                    inspectMediaPath_.clear();
-                    sourceInfoScroll_ = 0.0f;
-                    sourceInfoRect_ = {};
-                    sourceInfoCloseRect_ = {};
-                } else if (projectExplorerOpen_ && inRect(peAddRect_, mx, my)) {
-                    addMediaViaBrowser();
-                } else if (projectExplorerOpen_ && inRect(peRemoveRect_, mx, my)) {
-                    removeSelectedSource();
-                } else if (projectExplorerOpen_) {
-                    bool onRow = false;
-                    for (int i = 0; i < (int)explorerRows_.size(); ++i)
-                        if (inRect(explorerRows_[i].rect, mx, my)) {
-                            // Double-click shows the source on its own in a
-                            // throwaway source view, leaving the cut alone; the
-                            // first click already selected the row.
-                            if (e.button.clicks >= 2)
-                                openSourceView(explorerRows_[i].path);
-                            else
-                                pressExplorerRow(i, SDL_GetModState());
-                            onRow = true;
-                            break;
-                        }
-                    // Empty space in the bin's scrolling band: drop the selection.
-                    // Everything else in the panel (tabs, headers, scrollbar, the
-                    // buttons above) was consumed before this point, so a press
-                    // that reaches here inside the band really is on nothing.
-                    if (!onRow && inRect(peSourceBand_, mx, my) &&
-                        !selectedSourcePaths_.empty()) {
-                        selectedSourcePaths_.clear();
-                        selectionAnchorPath_.clear();
-                    }
-                }
-            } else if (e.button.button == SDL_BUTTON_RIGHT && projectExplorerOpen_) {
-                // Right-click a source row: copy path / filename, reveal in the
-                // system file browser.
-                for (int i = 0; i < (int)explorerRows_.size(); ++i)
-                    if (inRect(explorerRows_[i].rect, mx, my)) {
-                        openBinContextMenu(i, mx, my);
-                        break;
-                    }
+            // A strip toggle first: its button sits over the strip, not the pane,
+            // so it can never be confused with the pane's own content. Mutual
+            // exclusion is toggleLeftPanel's job, not this one's — which is why
+            // adding a pane needs no edit here.
+            //
+            // Anything else inside the pane goes to the pane, whichever button
+            // it was: the built-in panes all filter for the presses they want
+            // (only the Project Explorer takes a right-click, for the bin's
+            // context menu), and a new pane is free to take the rest.
+            const int hitBtn = e.button.button == SDL_BUTTON_LEFT
+                                   ? leftPanelAt(mx, my) : -1;
+            if (hitBtn >= 0) {
+                toggleLeftPanel(hitBtn);
+            } else if (openPanel_ >= 0) {
+                if (auto& handle = leftPanels_[openPanel_].handleEvent)
+                    handle(e);
             }
             break; // clicks in the panels never reach the player / timeline
         }
@@ -2489,7 +2339,7 @@ void App::handleEvent(SDL_Event& e) {
             break;
         }
         // Pencil mode: left-press over the frame starts a freehand stroke.
-        if (e.button.button == SDL_BUTTON_LEFT && pencilMode_ && inPlayerView(mx, my)
+        if (e.button.button == SDL_BUTTON_LEFT && panelOpen(kPanelDraw) && inPlayerView(mx, my)
             && texW_ > 0 && texH_ > 0) {
             annotBeginStroke(mx, my);
             break;
@@ -2816,8 +2666,7 @@ void App::handleEvent(SDL_Event& e) {
             annotDrawing_ = false; // finalize any in-progress pencil stroke
             drawDragSize_ = false;
             drawDragWheel_ = false;
-            peResizing_ = false;
-            clipSourceResizing_ = false;
+            panelResizing_ = -1;
             tlResizing_ = false;
             trackSb_.dragging = false;
             if (volumeDragging_) {
@@ -2910,12 +2759,9 @@ void App::handleEvent(SDL_Event& e) {
     case SDL_EVENT_MOUSE_MOTION: {
         float mx = e.motion.x, my = e.motion.y;
         // Resize drags: move only, no other motion processing.
-        if (peResizing_) {
-            peUserW_ = std::clamp(mx - kSidePanelW, 140.0f, winW_ * 0.5f);
-            break;
-        }
-        if (clipSourceResizing_) {
-            clipSourceUserW_ = std::clamp(mx - kSidePanelW, 140.0f, winW_ * 0.5f);
+        if (panelResizing_ >= 0) {
+            leftPanels_[panelResizing_].userW =
+                std::clamp(mx - kSidePanelW, kLeftPaneMinW, winW_ * 0.5f);
             break;
         }
         // Timeline top edge: the height is whatever the cursor leaves below it,
@@ -2930,7 +2776,7 @@ void App::handleEvent(SDL_Event& e) {
             break;
         }
         // Active grade-widget drag (slider / wheel / curve point) takes priority.
-        if (gradeOpen_ && (gradeDragSlider_ >= 0 || gradeDragWheel_ >= 0 || gradeDragCurvePt_ >= 0)) {
+        if (panelOpen(kPanelGrade) && (gradeDragSlider_ >= 0 || gradeDragWheel_ >= 0 || gradeDragCurvePt_ >= 0)) {
             gradeHandleEvent(e);
             break;
         }
@@ -2972,10 +2818,8 @@ void App::handleEvent(SDL_Event& e) {
             break;
         }
         // Update resize handle hover states.
-        const PanelEdge hoverEdge = panelResizeEdgeAt(mx, my);
-        peResizeHovered_ = hoverEdge == PanelEdge::ProjectExplorer;
-        clipSourceResizeHovered_ = hoverEdge == PanelEdge::ClipSource;
-        tlResizeHovered_ = hoverEdge == PanelEdge::None && overTimelineEdge(mx, my);
+        panelResizeHover_ = panelResizeEdgeAt(mx, my);
+        tlResizeHovered_ = panelResizeHover_ < 0 && overTimelineEdge(mx, my);
         // Track reorder: promote the armed label press to a drag, then follow the
         // cursor. Takes over motion — the gutter has nothing else to hover.
         if (trackDragFrom_ >= 0) {
@@ -3136,7 +2980,7 @@ void App::handleEvent(SDL_Event& e) {
         // highlight and the ghost point. No-op when the mode is off.
         if (curveMode())
             curveLaneMouseMotion(mx, my);
-        pencilOverFrame_ = pencilMode_ && inPlayerView(mx, my);
+        pencilOverFrame_ = panelOpen(kPanelDraw) && inPlayerView(mx, my);
         // Ruler hover: preview where a click would drop the playhead. Matches
         // the scrub-clickable zone (ruler + cache strip + seq/shot bars).
         tlHoverActive_ = mx >= headerX_ && my >= rulerRect_.y && my < tracksTop_
@@ -3193,42 +3037,17 @@ void App::handleEvent(SDL_Event& e) {
         }
         break;
     }
-    case SDL_EVENT_MOUSE_WHEEL:
-        if (settingsOpen_ && e.wheel.mouse_x < panelsRight_ &&
-                   e.wheel.mouse_x >= kSidePanelW && e.wheel.mouse_y < panelsBottom_ &&
-                   e.wheel.y != 0.0f) {
-            settingsScroll_ -= e.wheel.y * 48.0f; // clamped in renderSettingsPanel
-            if (settingsScroll_ < 0.0f)
-                settingsScroll_ = 0.0f;
-        } else if (gradeOpen_ && e.wheel.mouse_x < panelsRight_ &&
-                   e.wheel.mouse_x >= kSidePanelW && e.wheel.mouse_y < panelsBottom_ && e.wheel.y != 0.0f) {
-            gradeScroll_ -= e.wheel.y * 48.0f; // clamped in renderGradePanel
-            if (gradeScroll_ < 0.0f)
-                gradeScroll_ = 0.0f;
-        } else if (clipSourceOpen_ && e.wheel.mouse_x < panelsRight_ &&
-                   e.wheel.mouse_x >= kSidePanelW && e.wheel.mouse_y < panelsBottom_ &&
-                   e.wheel.y != 0.0f) {
-            clipSourceScroll_ -= e.wheel.y * 48.0f; // clamped in renderClipSourcePanel
-            if (clipSourceScroll_ < 0.0f)
-                clipSourceScroll_ = 0.0f;
-        } else if (projectExplorerOpen_ && peActiveTab_ == PeTabSources &&
-                   e.wheel.y != 0.0f &&
-                   inRect(sourceInfoRect_, e.wheel.mouse_x, e.wheel.mouse_y)) {
-            sourceInfoScroll_ -= e.wheel.y * 48.0f; // clamped in renderSourceInfoPanel
-            if (sourceInfoScroll_ < 0.0f)
-                sourceInfoScroll_ = 0.0f;
-        } else if (projectExplorerOpen_ && peActiveTab_ == PeTabSources &&
-                   e.wheel.mouse_x < panelsRight_ && e.wheel.mouse_x >= kSidePanelW &&
-                   e.wheel.mouse_y < panelsBottom_ && e.wheel.y != 0.0f) {
-            peSourceScroll_ -= e.wheel.y * 48.0f; // upper clamp in renderProjectExplorer
-            if (peSourceScroll_ < 0.0f)
-                peSourceScroll_ = 0.0f;
-        } else if (projectExplorerOpen_ && peActiveTab_ == PeTabSequences &&
-                   e.wheel.mouse_x < panelsRight_ && e.wheel.mouse_x >= kSidePanelW &&
-                   e.wheel.mouse_y < panelsBottom_ && e.wheel.y != 0.0f) {
-            peSeqScroll_ -= e.wheel.y * 48.0f; // upper clamp in renderProjectExplorer
-            if (peSeqScroll_ < 0.0f)
-                peSeqScroll_ = 0.0f;
+    case SDL_EVENT_MOUSE_WHEEL: {
+        // Over the open pane: hand it the scroll and let it decide which of its
+        // regions moves. The bounds test is the pane's rect, so no pane has to
+        // repeat it.
+        const bool overPane = openPanel_ >= 0 && e.wheel.y != 0.0f
+                              && e.wheel.mouse_x >= kSidePanelW
+                              && e.wheel.mouse_x < panelsRight_
+                              && e.wheel.mouse_y < panelsBottom_
+                              && (bool)leftPanels_[openPanel_].onWheel;
+        if (overPane) {
+            leftPanels_[openPanel_].onWheel(e.wheel.y, e.wheel.mouse_x, e.wheel.mouse_y);
         } else if (inspectorVisible() && e.wheel.y != 0.0f &&
                    inRect(inspectorRect_, e.wheel.mouse_x, e.wheel.mouse_y)) {
             inspectorScroll_ -= e.wheel.y * 48.0f; // clamped in renderInspector
@@ -3272,6 +3091,7 @@ void App::handleEvent(SDL_Event& e) {
             zoomAt(e.wheel.mouse_x, std::pow(1.0 / 1.25, (double)e.wheel.y));
         }
         break;
+    }
     default:
         break;
     }
@@ -3714,22 +3534,13 @@ void App::setCinemaMode(bool on) {
         return;
     cinemaMode_ = on;
     if (on) {
-        static const LeftPanel kPanes[] = {
-            LeftPanel::ProjectExplorer, LeftPanel::ClipSource, LeftPanel::Grade,
-            LeftPanel::Tech, LeftPanel::Draw, LeftPanel::Sync, LeftPanel::Settings,
-        };
-        cinemaPanel_ = -1;
-        for (LeftPanel p : kPanes) {
-            if (leftPanelOpen(p)) { cinemaPanel_ = (int)p; break; }
-        }
-        if (cinemaPanel_ >= 0)
-            toggleLeftPanel((LeftPanel)cinemaPanel_); // a pane's own entry closes it
+        cinemaPanel_ = openPanel_; // whichever pane was open, or -1
+        openLeftPanel(-1);
         cinemaInspector_ = inspectorOpen_;
         inspectorOpen_ = false;
         closeTopBarPopups(); // anchored to a toolbar that is about to be gone
     } else {
-        if (cinemaPanel_ >= 0)
-            toggleLeftPanel((LeftPanel)cinemaPanel_);
+        openLeftPanel(cinemaPanel_);
         cinemaPanel_ = -1;
         inspectorOpen_ = cinemaInspector_;
     }
@@ -3773,14 +3584,7 @@ void App::setCompactTimeline(bool on, bool closePanes, bool persist) {
         // Compact is a request for the image, so the docked pane beside it goes as
         // well. Unlike cinema mode there is nothing to put back on the way out: the
         // panes stay a click away, and one opened while compact stays open.
-        for (LeftPanel p : { LeftPanel::ProjectExplorer, LeftPanel::ClipSource,
-                             LeftPanel::Grade, LeftPanel::Tech, LeftPanel::Draw,
-                             LeftPanel::Sync, LeftPanel::Settings }) {
-            if (leftPanelOpen(p)) {
-                toggleLeftPanel(p); // a pane's own entry closes it
-                break;              // they are mutually exclusive: that was the one
-            }
-        }
+        openLeftPanel(-1);
     }
     setStatus(on ? "COMPACT TIMELINE" : "FULL TIMELINE", 1500);
     // Only a state the user asked for is worth remembering across launches: a
@@ -3846,32 +3650,13 @@ void App::computeLayout() {
     // Left panels reserve a strip on the left; the player and timeline begin at
     // their right edge so the panels run the full height under the title bar.
     // All left-dock panels share one width (the tech-check value) so switching
-    // between them never shifts the player/timeline. peW_ and clipSourceW_ stay
+    // between them never shifts the player/timeline. The pane widths stay
     // user-resizable, each keeping its own dragged width.
-    const float leftPanelW = std::clamp(std::round(240.0f * dpiScale), 210.0f, 320.0f);
-    peW_ = peUserW_ > 0.0f
-        ? std::clamp(peUserW_, 140.0f, winW_ * 0.5f)
-        : leftPanelW;
-    gradeW_ = leftPanelW;
-    techW_ = leftPanelW;
-    settingsW_ = leftPanelW;
-    sessionW_ = leftPanelW;
-    clipSourceW_ = clipSourceUserW_ > 0.0f
-        ? std::clamp(clipSourceUserW_, 140.0f, winW_ * 0.5f)
-        : leftPanelW;
-
     bool emptyProject = launcherVisible();
     // The launcher and cinema mode collapse the same set of bands, for opposite
     // reasons: one has no project to show them for, the other wants them gone.
     const bool noChrome = emptyProject || cinemaMode_;
-    float leftX = noChrome ? 0.0f
-                  : kSidePanelW + (projectExplorerOpen_ ? peW_
-                                   : (gradeOpen_ ? gradeW_
-                                      : (techOpen_ ? techW_
-                                         : (clipSourceOpen_ ? clipSourceW_
-                                            : (settingsOpen_ ? settingsW_
-                                               : (sessionPanelOpen_ ? sessionW_
-                                                  : (pencilMode_ ? leftPanelW : 0.0f)))))));
+    float leftX = noChrome ? 0.0f : kSidePanelW + openPanelW();
     panelsRight_ = leftX;
     float rightX = winW_; // no right dock; the inspector overlays the frame
 
@@ -3992,11 +3777,7 @@ void App::computeLayout() {
     // Draw-tool panel: a mutually-exclusive left pane (like Overview / Grade), so it
     // sits flush against the icon strip and the frame begins at its right edge. Its
     // width is already folded into leftX above; anchor it at kSidePanelW here.
-    float drawPanelW = (pencilMode_ && !noChrome) ? leftPanelW : 0.0f;
-    // Top-aligned with the other left panels (explorer/grade/tech): from just below
-    // the title bar down to the timeline, running alongside the top toolbar — not
-    // below it like the video frame.
-    drawPanelRect_ = { kSidePanelW, topH, drawPanelW, panelsBottom_ - topH };
+    drawPanelRect_ = (panelOpen(kPanelDraw) && !noChrome) ? leftPaneRect() : SDL_FRect{};
     playerRect_ = { leftX, frameTop, rightX - leftX, winH_ - tlH - frameTop };
     infoRect_ = { 0.0f, tlRect_.y, winW_, kInfoH };
     {
@@ -4171,41 +3952,12 @@ void App::computeLayout() {
     }
     viewContentW_ = contentW_;
 
-    // Left icon strip: one column of toggles, anchored just below the title
-    // bar and stacked in the order listed here. The column ends at the timeline,
-    // not at the window bottom: a short window would otherwise carry on stacking
-    // toggles down across the timeline's info bar. Once the
-    // room runs out the remaining toggles are skipped outright rather than
-    // squashed — a zero rect draws no glyph and hit-tests false, so the button
-    // simply is not there at that window height.
-    //
-    // A button spans the full strip width and runs 4px taller than the square its
-    // glyph is sized to, so the hover/active fill reads as a band across the strip.
-    // Those 4px come out of the gap below, leaving the column pitch unchanged.
-    // The glyph square is kNavIconSide, not derived from the strip width, so the
-    // strip can be narrowed (its side padding is what shrinks) without the icons
-    // following it down.
-    const float pad = 8.0f * dpiScale; // top inset and the gap between buttons
-    const float btnSide = kNavIconSide * dpiScale;
-    const float btnH = btnSide + 4.0f * dpiScale;
-    SDL_FRect strip = { 0.0f, topH + pad, kSidePanelW, panelsBottom_ - topH - pad };
-    auto nextStripBtn = [&]() -> SDL_FRect {
-        if (strip.h < btnH)
-            return SDL_FRect{}; // no whole button's worth of room left
-        SDL_FRect r = cutTop(strip, btnH);
-        gapTop(strip, pad - 4.0f * dpiScale);
-        return r;
-    };
-    dirButtonRect_ = nextStripBtn();
-    // Clip Source and the project explorer are both media-oriented panels, so
-    // their toggles sit together at the top.
-    clipSourceButtonRect_ = nextStripBtn();
-    gradeButtonRect_ = nextStripBtn();
-    techButtonRect_ = nextStripBtn();
-    pencilBtnRect_ = nextStripBtn();      // freehand markup
-    sessionButtonRect_ = nextStripBtn();  // sync-review session
-    settingsButtonRect_ = nextStripBtn(); // cog
-    if (projectExplorerOpen_) {
+    // Left icon strip: one toggle per registered pane, in registry order. The
+    // placement rules and the reason the column stops at the timeline are in
+    // layoutLeftPanelStrip (App_NavPanel.cpp), next to the registry it walks.
+    const float pad = 8.0f * dpiScale; // also the Project Explorer's button inset
+    layoutLeftPanelStrip(topH);
+    if (panelOpen(kPanelProjectExplorer)) {
         const float btn = 18.0f;
         float by = topH + pad + 22.0f; // below the "PROJECT" header line
         peAddRect_ = { kSidePanelW + pad, by, btn, btn };
@@ -4343,16 +4095,9 @@ void App::render() {
     if (!launcherVisible() && !cinemaMode_) {
         renderTopBar();               // top toolbar (Letterbox button) above the frame
         renderTimeline();
-        renderSidePanel();            // left icon strip + directory toggle
-        renderProjectExplorer();      // expanded source list, when open
-        renderGradePanel();           // color grading tools, when open
-        renderTechPanel();            // tech-check mode pills, when open
-        updateClipSourceData();  // re-describe the pickers when the active media changed
-        renderClipSourcePanel(); // stacked naming-config pickers, when open
-        renderSettingsPanel();        // project / app settings, when open
-        renderDrawPanel();            // draw-tool column, when pencil mode is on
-        renderInspector();            // right-side inspector panel, when open
-        renderSessionPanel();         // right-side SESSION panel (sync review), when open
+        renderSidePanel();            // left icon strip: one toggle per registered pane
+        renderLeftPanel();            // whichever pane is open draws itself
+        renderInspector();            // inspector overlay on the frame, when open
         renderIconStripTooltips();    // icon-strip hover labels; over the open panel
         renderTopBarTooltips();       // top-toolbar hover labels; over the frame below the bar
         renderFramePreview();         // hovered-frame thumbnail above the ruler; on top of panels
@@ -4524,7 +4269,7 @@ void App::drawFrame(bool isLiveMovingOrResizing) {
 
     if (tlResizing_ || tlResizeHovered_) {
         if (cursorNSResize_) SDL_SetCursor(cursorNSResize_);
-    } else if (peResizing_ || peResizeHovered_ || clipSourceResizing_ || clipSourceResizeHovered_
+    } else if (panelResizing_ >= 0 || panelResizeHover_ >= 0
         || trimmingClip_ || trimHover_) {
         if (cursorEWResize_) SDL_SetCursor(cursorEWResize_);
     } else if (draggingClip_) {

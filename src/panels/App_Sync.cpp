@@ -46,7 +46,7 @@ void App::drainSync() {
     // Discovery runs while browsing: either the SESSION panel is open, or the
     // start-window launcher is up (which is what makes its SYNC SESSION tab
     // available at all). Not in a session.
-    if ((sessionPanelOpen_ || launcherVisible()) && syncSession_.role() == syncreview::Role::None)
+    if ((panelOpen(kPanelSync) || launcherVisible()) && syncSession_.role() == syncreview::Role::None)
         syncSession_.startDiscovery();
     else
         syncSession_.stopDiscovery();
@@ -421,7 +421,7 @@ void App::loadProjectFromBuffer(const std::string& bytes) {
 void App::renderSessionPanel() {
     sessionBeaconRows_.clear();
     sessionNetChkRect_ = sessionCreateRect_ = sessionJoinManualRect_ = sessionLeaveRect_ = SDL_FRect{};
-    if (!sessionPanelOpen_)
+    if (!panelOpen(kPanelSync))
         return;
 
     // Left-side pane, mutually exclusive with the other left panels: flush against
@@ -430,11 +430,11 @@ void App::renderSessionPanel() {
     const float panelX = kSidePanelW;
     const float pY = topH;
     const float pH = panelsBottom_ - topH;
-    SDL_FRect panel = { panelX, pY, sessionW_, pH };
+    SDL_FRect panel = { panelX, pY, openPanelW(), pH };
     setColor(renderer_, kBg);
     jplay::fillRect(renderer_, &panel);
     setColor(renderer_, SDL_Color{ 60, 64, 74, 255 }); // right-edge border (matches other panels)
-    jplay::drawLine(renderer_, panelX + sessionW_ - 0.5f, pY, panelX + sessionW_ - 0.5f, panelsBottom_);
+    jplay::drawLine(renderer_, panelX + openPanelW() - 0.5f, pY, panelX + openPanelW() - 0.5f, panelsBottom_);
 
     float mx = 0.0f, my = 0.0f;
     uiMouse(mx, my);
@@ -582,7 +582,7 @@ void App::renderSessionPanel() {
 }
 
 bool App::sessionHandleEvent(const SDL_Event& e) {
-    if (!sessionPanelOpen_)
+    if (!panelOpen(kPanelSync))
         return false;
 
     // While a field is focused, route typing to it and consume the event so it
@@ -608,9 +608,9 @@ bool App::sessionHandleEvent(const SDL_Event& e) {
     float mx = e.button.x, my = e.button.y;
 
     // Clicks outside the panel are not ours. The pane occupies the left strip
-    // [kSidePanelW, kSidePanelW + sessionW_] from the title bar to the timeline;
+    // [kSidePanelW, kSidePanelW + openPanelW()] from the title bar to the timeline;
     // the icon strip (session toggle) and the timeline handle their own clicks.
-    if (mx < kSidePanelW || mx >= kSidePanelW + sessionW_
+    if (mx < kSidePanelW || mx >= kSidePanelW + openPanelW()
         || my < titleBar_.height() || my >= panelsBottom_)
         return false;
 

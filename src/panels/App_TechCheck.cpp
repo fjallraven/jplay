@@ -71,7 +71,7 @@ void App::setTechMode(TechMode m) {
 
 // ─── Panel ───────────────────────────────────────────────────────────────────
 void App::renderTechPanel() {
-    if (!techOpen_) {
+    if (!panelOpen(kPanelTech)) {
         if (nitRefFld_.focused()) {
             nitRefFld_.setFocus(false);
             SDL_StopTextInput(window_);
@@ -80,13 +80,13 @@ void App::renderTechPanel() {
     }
     float topH = titleBar_.height();
     float ex = kSidePanelW;
-    SDL_FRect panel = { ex, topH, techW_, panelsBottom_ - topH };
+    SDL_FRect panel = { ex, topH, openPanelW(), panelsBottom_ - topH };
     setCol(renderer_, kPanelBg.r, kPanelBg.g, kPanelBg.b);
     jplay::fillRect(renderer_, &panel);
 
     // Right-edge border (1px).
     setCol(renderer_, 60, 64, 74);
-    jplay::drawLine(renderer_, ex + techW_ - 0.5f, topH, ex + techW_ - 0.5f, panelsBottom_);
+    jplay::drawLine(renderer_, ex + openPanelW() - 0.5f, topH, ex + openPanelW() - 0.5f, panelsBottom_);
 
     const float pad = 10.0f * dpiScale;
     const float lineH = textFont_.lineHeight();

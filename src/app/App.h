@@ -6,6 +6,7 @@
 #include "ExportDialog.h"
 #include "FrameCache.h"
 #include "IconFont.h"
+#include "LeftPanels.h"
 #include "OcioManager.h"
 #include "OcioGpu.h"
 #include "HdrColorPass.h"
@@ -601,8 +602,6 @@ private:
     // frame; it is flushed into / loaded from the owning clip's per-source-frame
     // annotation map (Clip::annotations) as the playhead moves, so markup persists
     // and is saved with the project. See syncAnnotBuffer/flushAnnotBuffer.
-    SDL_FRect pencilBtnRect_{};      // pencil toggle in the left icon strip, above the cog
-    bool pencilMode_ = false;        // left-drag over the frame draws when true
     std::vector<AnnotStroke> annotStrokes_;
     bool annotDrawing_ = false;      // a stroke is in progress
     int annotClipId_ = -1;           // clip the live buffer belongs to (-1 = none)
@@ -610,7 +609,7 @@ private:
     float annotLastSX_ = 0, annotLastSY_ = 0;      // last sample (screen px), for velocity
     uint64_t annotLastT_ = 0;        // last sample time (ms)
     float annotSmoothHw_ = 0;        // smoothed screen half-width (px)
-    // Draw-tool panel: shown left of the frame while pencilMode_ is on. Holds a
+    // Draw-tool panel: shown left of the frame while the Draw pane is open. Holds a
     // Clear button, a Pencil Size slider (a multiplier on the speed-based width),
     // and a hue wheel that sets the global stroke color for all markup.
     float pencilSizeMul_ = 1.0f;                   // Pencil Size: multiplies the pressure-sim width
@@ -692,18 +691,60 @@ private:
     // panelsRight_ (their left edge) instead of x=0. The timeline itself always
     // spans the full window width along the bottom, so the panels stop at
     // panelsBottom_ rather than the window bottom.
-    bool projectExplorerOpen_ = false;
     float panelsBottom_ = 0;           // bottom edge of the left panels (= timeline top)
-    float peW_ = 0.0f;                 // effective ProjectExplorer width (computed each frame)
-    float peUserW_ = 0.0f;             // user-dragged override (0 = use shared left-panel width)
-    bool peResizing_ = false;          // true while dragging the PE resize handle
-    bool peResizeHovered_ = false;     // true when mouse is over the PE resize edge
+
+    // ── The left panes ───────────────────────────────────────────────────────
+    // The icon strip down the left edge, and the mutually-exclusive panels its
+    // toggles open. leftPanels_ is the registry (built by registerLeftPanels in
+    // App_NavPanel.cpp); openPanel_ indexes it, or is -1 when no pane is open
+    // and the stage has the full width.
+    //
+    // The panes being mutually exclusive is why this is one index rather than a
+    // bool apiece: opening a pane cannot forget to close another, and code that
+    // asks "is anything open" does not have to enumerate them. Adding a pane
+    // means appending one registry entry -- see docs/ADDING_A_PANEL.md.
+    std::vector<jplay::LeftPanelDesc> leftPanels_;
+    int openPanel_ = -1;
+
+    // Registry indices of the built-in panes, in the order registerLeftPanels()
+    // appends them; kept in step by an assert there. Only panes that code
+    // outside their own translation unit has to name need an entry, which for a
+    // pane a fork appends is usually none of them.
+    enum LeftPanelId : int {
+        kPanelProjectExplorer = 0,
+        kPanelClipSource,
+        kPanelGrade,
+        kPanelTech,
+        kPanelDraw,
+        kPanelSync,
+        kPanelSettings,
+        kPanelBuiltinCount,
+    };
+
+    void registerLeftPanels();                  // builds leftPanels_; App_NavPanel.cpp
+    bool panelOpen(int id) const { return openPanel_ == id; }
+    void openLeftPanel(int id);                 // -1 closes; closes whatever was open first
+    void toggleLeftPanel(int id);               // a pane's own toggle: closes it if open
+    int  leftPanelAt(float mx, float my) const; // strip button under a point; -1 = none
+    void layoutLeftPanelStrip(float topH);      // places every toggle down the strip
+    float leftPaneWidth(int id) const;          // pane's open width, drag override applied
+    float openPanelW() const;                   // width of the open pane; 0 if none
+    SDL_FRect leftPaneRect() const;             // the open pane's bounds
+    void renderLeftPanel();                     // the open pane draws itself
+
+    // Edge-drag resize. Only a pane whose descriptor says `resizable` has an
+    // edge; at most one pane is open, so at most one edge exists at a time.
+    int panelResizeEdgeAt(float mx, float my) const; // pane index, or -1
+    int panelResizing_ = -1;      // pane being drag-resized; -1 = none
+    int panelResizeHover_ = -1;   // pane whose edge the cursor is over; -1 = none
+    bool panelResizeActive(int id) const {
+        return panelResizing_ == id || panelResizeHover_ == id;
+    }
+
     // Which side-panel resize edge a point falls on, if any. The zone straddles
     // the edge (kOverviewHandleHitW/2 into each side), so it reaches in over the
     // panel's own scrollbar, which sits right against that edge: the scrollbar
     // press asks this first and leaves those pixels to the resize.
-    enum class PanelEdge { None, ProjectExplorer, ClipSource };
-    PanelEdge panelResizeEdgeAt(float mx, float my) const;
     float panelsRight_ = 0;            // right edge of the left panels (= playerRect_.x)
     std::vector<std::string> selectedSourcePaths_; // ProjectExplorer rows selected for removal
     std::string selectionAnchorPath_;  // anchor row for Shift-range selection
@@ -712,7 +753,6 @@ private:
     // set when a source row is clicked (clickExplorerRow), cleared by any timeline
     // clip / dissolve / gap selection (clearClipSelection and friends).
     bool binSelectionActive_ = false;
-    SDL_FRect dirButtonRect_{};        // directory toggle button in the icon strip
     SDL_FRect peAddRect_{}, peRemoveRect_{}; // ProjectExplorer source + / - buttons
     SDL_FRect peSeqAddRect_{}, peSeqRemoveRect_{}; // sequence add / remove buttons
     struct ExplorerRow { std::string path; SDL_FRect rect; };
@@ -987,8 +1027,6 @@ private:
     // Color grading panel (left-expand pane, mutually exclusive with the
     // ProjectExplorer / Overview). A single global/session grade (grade_) is
     // applied as a GPU post-pass in renderPlayer. See App_Grade.cpp.
-    bool gradeOpen_ = false;
-    float gradeW_ = 0.0f;              // fixed panel width (computed each frame)
     float gradeScroll_ = 0.0f;         // vertical scroll within the active tool
     float gradeContentH_ = 0.0f;       // last tool's content height (for clamping)
     int gradeTool_ = 0;                // active tool: 0 basic, 1 curves, 2 wheels
@@ -999,7 +1037,6 @@ private:
     // Cleared on a renderer rebuild, which invalidates their GL objects.
     bool gradeGpuTried_ = false;
     void ensureGradeGpu();
-    SDL_FRect gradeButtonRect_{};      // TUNE_VERTICAL toggle in the icon strip
     SDL_FRect gradeToolRects_[3]{};    // top-bar tool buttons (hit-tested)
 
     // Interactive-widget hit regions, rebuilt each render in renderGradePanel.
@@ -1016,9 +1053,6 @@ private:
                           Red = 4, Green = 5, Blue = 6 };
     TechMode techMode_ = TechMode::None;
     bool nitHeatmapShown_ = false;     // set each frame: true when the Luminance heatmap actually rendered (EXR only)
-    bool techOpen_ = false;
-    float techW_ = 0.0f;               // fixed panel width (computed each frame)
-    SDL_FRect techButtonRect_{};       // MONITOR_EYE toggle in the icon strip
     SDL_FRect techPillRects_[3]{};     // the three mode toggle buttons
 
     // Clip Source panel (left-expand pane, mutually exclusive with the other
@@ -1026,12 +1060,6 @@ private:
     // menu, stacked vertically and driven by the selected clip — or, with nothing
     // selected, the clip under the frame indicator — rather than by a click.
     // See App_ClipSource.cpp.
-    bool clipSourceOpen_ = false;
-    float clipSourceW_ = 0.0f;             // effective panel width (computed each frame)
-    float clipSourceUserW_ = 0.0f;         // user-dragged override (0 = shared left-panel width)
-    bool clipSourceResizing_ = false;      // true while dragging the resize handle
-    bool clipSourceResizeHovered_ = false; // true when mouse is over the resize edge
-    SDL_FRect clipSourceButtonRect_{};     // LAYERS_TRIPLE toggle in the icon strip
     float clipSourceScroll_ = 0.0f;        // content scroll offset in px (clamped while rendering)
     // Set by the arrow keys: the next render scrolls the commit picker's current
     // row into view once it knows where that row landed, then clears the flag.
@@ -1070,11 +1098,8 @@ private:
 
     // Settings panel (left-expand pane, mutually exclusive with the other left
     // panes). Houses project FPS and app-level preferences. See App_Settings.cpp.
-    bool settingsOpen_ = false;
-    float settingsW_ = 0.0f;            // panel width (computed each frame)
     float settingsScroll_ = 0.0f;       // vertical scroll within the panel body
     float settingsContentH_ = 0.0f;     // last frame's content height (for clamping)
-    SDL_FRect settingsButtonRect_{};   // COG toggle, directly below the tech-check button
     TextInput   fpsFld_;               // FPS editable field
     bool        fpsFldListOpen_ = false;
     int         fpsFldListHover_ = -1;
@@ -1132,9 +1157,6 @@ private:
     // spectators load the host's project over TCP and follow along. Colour/OCIO
     // are deliberately not synced. See SyncSession + App_Sync.cpp.
     syncreview::Session syncSession_;
-    bool sessionPanelOpen_ = false;    // left-side SESSION panel visible (mutually exclusive)
-    float sessionW_ = 0.0f;            // panel width (computed each frame)
-    SDL_FRect sessionButtonRect_{};    // ACCOUNT_GROUP toggle in the icon strip
     bool hoveredSessionBtn_ = false;
     TextInput sessionUserFld_;         // username used when hosting / joining
     TextInput sessionHostFld_;         // manual host IP[:port] for Join
@@ -2597,6 +2619,10 @@ private:
     void renderSidePanel();        // 64px icon strip + directory toggle button
     void renderIconStripTooltips();// hover labels for the icon strip; drawn after panels
     void renderProjectExplorer();  // sequences/shots tree + source bin (only when open)
+    // Presses inside the open pane: the +/- buttons, the MEDIA sub-panel's close
+    // box, source-row select / double-click / right-click, and the click on empty
+    // bin space that drops the selection. Returns true if it took the event.
+    bool projectExplorerHandleEvent(const SDL_Event& e);
     void refreshExplorerOrder();   // re-sort each sequence's shots into timeline order
     // Reorder a shot within its sequence: move it to insertIdx in the shot list,
     // then re-lay the sequence's shots (and their clips) contiguously in the new
@@ -2690,15 +2716,6 @@ private:
     // Close the panel: drop the resolved state and cancel any in-flight query so a
     // late completion can't touch the next clip's state. Safe when already closed.
     void closeClipSource();
-
-    // The mutually-exclusive left panes, named so the View menu's Panels submenu
-    // can address one by identity rather than by poking each pane's own flag. The
-    // nav-strip buttons still spell the exclusion out per button (see the
-    // SDL_EVENT_MOUSE_BUTTON_DOWN handler in App.cpp); these reach the same rule
-    // without a rect to hit-test. Defined in App_NavPanel.cpp.
-    enum class LeftPanel { ProjectExplorer, ClipSource, Grade, Tech, Draw, Sync, Settings };
-    bool leftPanelOpen(LeftPanel p) const;
-    void toggleLeftPanel(LeftPanel p); // open p, closing the rest; closes p if already open
 
     void renderSettingsPanel();           // panel background + Project / JPLAY sections
     bool settingsHandleEvent(const SDL_Event& e); // Time Format toggle hit-test

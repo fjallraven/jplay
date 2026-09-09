@@ -61,9 +61,6 @@ inline bool holds(const std::vector<std::string>& v, const std::string& s) {
 } // namespace
 
 void App::closeClipSource() {
-    if (!clipSourceOpen_)
-        return;
-    clipSourceOpen_ = false;
     // Closing is the cancel: bump the query id so an in-flight completion drops its
     // result instead of applying it to whatever the panel shows when reopened.
     ++panelCascade_.queryId;
@@ -142,7 +139,7 @@ int App::pickerDivergenceIndex(const Media& a, const Media& b) const {
 // Re-seed the cascade and re-describe the pickers for the target clip. Called every
 // frame from render(); does real work only when a refresh is due.
 void App::updateClipSourceData() {
-    if (!clipSourceOpen_)
+    if (!panelOpen(kPanelClipSource))
         return;
     // A query is already resolving — its completion drives the next state.
     if (panelCascade_.loading)
@@ -319,23 +316,23 @@ void App::updateClipSourceData() {
 
 // ─── Panel ───────────────────────────────────────────────────────────────────
 void App::renderClipSourcePanel() {
-    if (!clipSourceOpen_)
+    if (!panelOpen(kPanelClipSource))
         return;
     const float topH = titleBar_.height();
     const float ex = kSidePanelW;
-    SDL_FRect panel = { ex, topH, clipSourceW_, panelsBottom_ - topH };
+    SDL_FRect panel = { ex, topH, openPanelW(), panelsBottom_ - topH };
     setCol(renderer_, kPanelBg);
     jplay::fillRect(renderer_, &panel);
 
     // Right-edge border (1px), widening into the resize handle when hovered/active.
-    if (clipSourceResizing_ || clipSourceResizeHovered_) {
-        SDL_FRect strip = { ex + clipSourceW_ - 2.0f, topH, 2.0f, panelsBottom_ - topH };
+    if (panelResizeActive(kPanelClipSource)) {
+        SDL_FRect strip = { ex + openPanelW() - 2.0f, topH, 2.0f, panelsBottom_ - topH };
         setCol(renderer_, kResizeHandle);
         jplay::fillRect(renderer_, &strip);
     } else {
         setCol(renderer_, SDL_Color{ 60, 64, 74, 255 });
-        jplay::drawLine(renderer_, ex + clipSourceW_ - 0.5f, topH,
-                       ex + clipSourceW_ - 0.5f, panelsBottom_);
+        jplay::drawLine(renderer_, ex + openPanelW() - 0.5f, topH,
+                       ex + openPanelW() - 0.5f, panelsBottom_);
     }
 
     const float pad = 10.0f * dpiScale;

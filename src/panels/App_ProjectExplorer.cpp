@@ -118,7 +118,7 @@ void App::renderProjectExplorer() {
     // empty, so a press can be offered to both without testing the tab.
     peSourceSb_.bar = {};
     peSeqSb_.bar = {};
-    if (!projectExplorerOpen_) {
+    if (!panelOpen(kPanelProjectExplorer)) {
         peSortMenu_.close();  // the button it anchors to is gone
         peMediaMenu_.close(); // ditto the row it was opened on
         peSeqColorMenu_.close();
@@ -127,18 +127,18 @@ void App::renderProjectExplorer() {
 
     const float topH = titleBar_.height();
     const float ex = kSidePanelW; // explorer panel left edge
-    SDL_FRect panel = { ex, topH, peW_, panelsBottom_ - topH };
+    SDL_FRect panel = { ex, topH, openPanelW(), panelsBottom_ - topH };
     setColor(renderer_, kPanelBg);
     jplay::fillRect(renderer_, &panel);
 
     // Resize handle: brighter strip at the right edge when hovered/active.
-    if (peResizing_ || peResizeHovered_) {
-        SDL_FRect strip = { ex + peW_ - 2.0f, topH, 2.0f, panelsBottom_ - topH };
+    if (panelResizeActive(kPanelProjectExplorer)) {
+        SDL_FRect strip = { ex + openPanelW() - 2.0f, topH, 2.0f, panelsBottom_ - topH };
         setColor(renderer_, kResizeHandle);
         jplay::fillRect(renderer_, &strip);
     } else {
         setColor(renderer_, kDivider);
-        jplay::drawLine(renderer_, ex + peW_ - 0.5f, topH, ex + peW_ - 0.5f, panelsBottom_);
+        jplay::drawLine(renderer_, ex + openPanelW() - 0.5f, topH, ex + openPanelW() - 0.5f, panelsBottom_);
     }
 
     float mx = 0.0f, my = 0.0f;
@@ -187,7 +187,7 @@ void App::renderProjectExplorer() {
         }
     }
 
-    SDL_Rect clip = { (int)ex, (int)topH, (int)peW_, (int)(panelsBottom_ - topH) };
+    SDL_Rect clip = { (int)ex, (int)topH, (int)openPanelW(), (int)(panelsBottom_ - topH) };
     SDL_SetRenderClipRect(renderer_, &clip);
 
     auto regs = timeline_.seqRegions();
@@ -227,7 +227,7 @@ void App::renderProjectExplorer() {
     const float listTop = body.y;
     const float listBottom = bottom;
     const float viewH = std::max(listBottom - listTop, 0.0f);
-    const SDL_FRect band = { ex, listTop, peW_, listBottom - listTop };
+    const SDL_FRect band = { ex, listTop, openPanelW(), listBottom - listTop };
     peSeqListTop_ = listTop;
     peSeqListBottom_ = listBottom;
 
@@ -242,11 +242,11 @@ void App::renderProjectExplorer() {
     const float maxScroll = std::max(0.0f, contentH - viewH);
     peSeqScroll_ = std::clamp(peSeqScroll_, 0.0f, maxScroll);
 
-    SDL_Rect bandClip = { (int)ex, (int)listTop, (int)peW_, (int)viewH };
+    SDL_Rect bandClip = { (int)ex, (int)listTop, (int)openPanelW(), (int)viewH };
     SDL_SetRenderClipRect(renderer_, &bandClip);
     // Rows are cut off a rect that is unbounded (see Layout.h) and offset by the
     // scroll: the band clip above bounds what is visible, not what is laid out.
-    SDL_FRect content = inset(SDL_FRect{ ex, listTop - peSeqScroll_, peW_, kUnbounded },
+    SDL_FRect content = inset(SDL_FRect{ ex, listTop - peSeqScroll_, openPanelW(), kUnbounded },
                               2.0f, 0.0f);
 
     for (int si = 0; si < (int)timeline_.sequences.size(); ++si) {
@@ -442,7 +442,7 @@ void App::renderProjectExplorer() {
             : (peRows_.empty() ? peDragY_ : peRows_.back().rect.y + peRows_.back().rect.h);
         lineY = std::clamp(lineY, listTop, listBottom);
         setColor(renderer_, kDragLine);
-        jplay::drawLine(renderer_, ex + 2.0f, lineY, ex + peW_ - 2.0f, lineY);
+        jplay::drawLine(renderer_, ex + 2.0f, lineY, ex + openPanelW() - 2.0f, lineY);
     } else if (peDragActive_ && peDragShotId_ >= 0) {
         std::vector<const PeRow*> shotRows;
         for (const PeRow& r : peRows_)
@@ -456,7 +456,7 @@ void App::renderProjectExplorer() {
                 : shotRows.back()->rect.y + shotRows.back()->rect.h;
             lineY = std::clamp(lineY, listTop, listBottom);
             setColor(renderer_, kDragLine);
-            jplay::drawLine(renderer_, ex + 20.0f, lineY, ex + peW_ - 2.0f, lineY);
+            jplay::drawLine(renderer_, ex + 20.0f, lineY, ex + openPanelW() - 2.0f, lineY);
         }
     }
     SDL_SetRenderClipRect(renderer_, &clip); // restore full-panel clip
@@ -580,7 +580,7 @@ void App::renderProjectExplorer() {
         const float listTop = body.y;
         const float listBottom = bottom - infoH;
         const float viewH = std::max(listBottom - listTop, 0.0f);
-        const SDL_FRect band = { ex, listTop, peW_, listBottom - listTop };
+        const SDL_FRect band = { ex, listTop, openPanelW(), listBottom - listTop };
         peSourceBand_ = band;
 
         std::vector<BinGroup> groups = binGroups();
@@ -617,7 +617,7 @@ void App::renderProjectExplorer() {
             return std::find(tlSelPaths.begin(), tlSelPaths.end(), m->path()) != tlSelPaths.end();
         };
 
-        SDL_Rect listClip = { (int)ex, (int)listTop, (int)peW_, (int)viewH };
+        SDL_Rect listClip = { (int)ex, (int)listTop, (int)openPanelW(), (int)viewH };
         SDL_SetRenderClipRect(renderer_, &listClip);
 
         // Filled in by whichever layout runs below; drives the scroll indicator
@@ -730,7 +730,7 @@ void App::renderProjectExplorer() {
                 peGoToCurrentPending_ = false;
             }
             scrollRowIntoView(revealY, rowH, viewH, maxScroll);
-            SDL_FRect content = inset(SDL_FRect{ ex, listTop - peSourceScroll_, peW_, kUnbounded },
+            SDL_FRect content = inset(SDL_FRect{ ex, listTop - peSourceScroll_, openPanelW(), kUnbounded },
                                       4.0f, 0.0f);
             for (size_t gi = 0; gi < groups.size(); ++gi) {
               if (!groups[gi].header.empty()) {
@@ -806,7 +806,7 @@ void App::renderProjectExplorer() {
             // select / drag-onto-timeline machinery is reused unchanged.
             const float gap = 8.0f, labelH = 14.0f, gpad = 4.0f;
             const float gridX = ex + gpad;
-            const float gridW = peW_ - 2.0f * gpad;
+            const float gridW = openPanelW() - 2.0f * gpad;
             float cellW = std::clamp(peThumbSize_, kThumbMin, gridW);
             int cols = std::max(1, (int)std::floor((gridW + gap) / (cellW + gap)));
             cellW = std::floor((gridW - (cols - 1) * gap) / cols);
@@ -900,7 +900,7 @@ void App::renderProjectExplorer() {
                     // backing so it still reads over a bright frame. Cream wins
                     // when a source is both selected and playing.
                     const float mkX = std::min(thumb.x + thumb.w - kMarkSize - 3.0f,
-                                               ex + peW_ - sbW - kMarkSize - 1.0f);
+                                               ex + openPanelW() - sbW - kMarkSize - 1.0f);
                     const SDL_FRect mk = { mkX, thumb.y + 3.0f, kMarkSize, kMarkSize };
                     const SDL_FRect back = { mk.x - 1.0f, mk.y - 1.0f,
                                              mk.w + 2.0f, mk.h + 2.0f };
@@ -936,12 +936,12 @@ void App::renderProjectExplorer() {
 
         // Scroll indicator on the right edge of the band, only when it overflows.
         // Grabbable, so the draw also records what it maps onto for a press on it.
-        const SDL_FRect sbView{ ex, listTop, peW_, viewH };
+        const SDL_FRect sbView{ ex, listTop, openPanelW(), viewH };
         drawScrollbar(renderer_, sbView, sbContentH, peSourceScroll_, dpiScale, true,
                       peSourceSb_);
 
         if (showInfo) {
-            sourceInfoRect_ = { ex, listBottom, peW_, infoH };
+            sourceInfoRect_ = { ex, listBottom, openPanelW(), infoH };
             renderSourceInfoPanel(sourceInfoRect_);
         } else {
             sourceInfoRect_ = {};
@@ -2258,7 +2258,7 @@ bool App::projectTreeHandleEvent(const SDL_Event& e) {
         // The bar runs right up against the panel's resize edge, whose hit zone
         // reaches back over it: there the cursor already reads as a resize, so
         // that press belongs to the resize and not to the bar.
-        if (panelResizeEdgeAt(mx, my) == PanelEdge::None) {
+        if (panelResizeEdgeAt(mx, my) < 0) {
             if (peSourceSb_.press(mx, my, peSourceScroll_, dpiScale)) return true;
             if (peSeqSb_.press(mx, my, peSeqScroll_, dpiScale)) return true;
         }
@@ -2466,4 +2466,66 @@ bool App::projectTreeHandleEvent(const SDL_Event& e) {
     }
 
     return false;
+}
+
+// ─── Presses inside the pane ─────────────────────────────────────────────────
+// Reached from the pane's registry entry (App_NavPanel.cpp) once a press has
+// landed inside the open pane and the app's own chrome — the strip toggles, the
+// resize edge — has passed on it. The order below is the order the rects
+// overlap in: the sub-panel close box and the +/- buttons sit over the bin, so
+// they are tested before the rows underneath them.
+bool App::projectExplorerHandleEvent(const SDL_Event& e) {
+    if (e.type != SDL_EVENT_MOUSE_BUTTON_DOWN)
+        return false;
+    const float mx = e.button.x, my = e.button.y;
+
+    if (e.button.button == SDL_BUTTON_RIGHT) {
+        // Right-click a source row: copy path / filename, reveal in the system
+        // file browser.
+        for (int i = 0; i < (int)explorerRows_.size(); ++i)
+            if (inRect(explorerRows_[i].rect, mx, my)) {
+                openBinContextMenu(i, mx, my);
+                return true;
+            }
+        return false;
+    }
+    if (e.button.button != SDL_BUTTON_LEFT)
+        return false;
+
+    if (inRect(sourceInfoCloseRect_, mx, my)) {
+        // X on the MEDIA info sub-panel: close it.
+        inspectMediaPath_.clear();
+        sourceInfoScroll_ = 0.0f;
+        sourceInfoRect_ = {};
+        sourceInfoCloseRect_ = {};
+        return true;
+    }
+    if (inRect(peAddRect_, mx, my)) {
+        addMediaViaBrowser();
+        return true;
+    }
+    if (inRect(peRemoveRect_, mx, my)) {
+        removeSelectedSource();
+        return true;
+    }
+    for (int i = 0; i < (int)explorerRows_.size(); ++i) {
+        if (!inRect(explorerRows_[i].rect, mx, my))
+            continue;
+        // Double-click shows the source on its own in a throwaway source view,
+        // leaving the cut alone; the first click already selected the row.
+        if (e.button.clicks >= 2)
+            openSourceView(explorerRows_[i].path);
+        else
+            pressExplorerRow(i, SDL_GetModState());
+        return true;
+    }
+    // Empty space in the bin's scrolling band: drop the selection. Everything
+    // else in the panel (tabs, headers, scrollbar, the buttons above) was
+    // consumed before this point, so a press that reaches here inside the band
+    // really is on nothing.
+    if (inRect(peSourceBand_, mx, my) && !selectedSourcePaths_.empty()) {
+        selectedSourcePaths_.clear();
+        selectionAnchorPath_.clear();
+    }
+    return true; // clicks in the panel never reach the player / timeline
 }
