@@ -63,54 +63,96 @@ find_package(unofficial-shaderc CONFIG REQUIRED)
 
 
 # NDI
+option(JPLAY_ENABLE_NDI "Build the NDI output backend" ON)
+
 if(NOT NDI_SDK_DIR AND DEFINED ENV{NDI_SDK_DIR})
     file(TO_CMAKE_PATH "$ENV{NDI_SDK_DIR}" NDI_SDK_DIR)
 endif()
+set(NDI_SDK_DIR "${NDI_SDK_DIR}" CACHE PATH
+    "External NDI SDK root; overrides the vendored headers")
 
-set(NDI_SDK_DIR "${NDI_SDK_DIR}" CACHE PATH "NDI SDK root")
-
-set(JPLAY_ENABLE_NDI OFF)
-if(NDI_SDK_DIR AND EXISTS "${NDI_SDK_DIR}/Include/Processing.NDI.Lib.h")
-    set(NDI_INCLUDE_DIR "${NDI_SDK_DIR}/Include")
-elseif(NDI_SDK_DIR AND EXISTS "${NDI_SDK_DIR}/include/Processing.NDI.Lib.h")
-    set(NDI_INCLUDE_DIR "${NDI_SDK_DIR}/include")
-endif()
-
-if(NDI_INCLUDE_DIR)
-    set(JPLAY_ENABLE_NDI ON)
-    message(STATUS "NDI output enabled: ${NDI_SDK_DIR}")
+if(JPLAY_ENABLE_NDI)
+    if(NDI_SDK_DIR)
+        foreach(_inc "Include" "include")
+            if(EXISTS "${NDI_SDK_DIR}/${_inc}/Processing.NDI.Lib.h")
+                set(NDI_INCLUDE_DIR "${NDI_SDK_DIR}/${_inc}")
+                break()
+            endif()
+        endforeach()
+        if(NOT NDI_INCLUDE_DIR)
+            message(FATAL_ERROR
+                "NDI_SDK_DIR is set to '${NDI_SDK_DIR}' but no "
+                "Processing.NDI.Lib.h was found in its Include/ or include/ "
+                "subdirectory. Unset it to build against third_party/ndi.")
+        endif()
+        message(STATUS "NDI output enabled: SDK ${NDI_SDK_DIR}")
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/third_party/ndi/include/Processing.NDI.Lib.h")
+        set(NDI_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/third_party/ndi/include")
+        message(STATUS "NDI output enabled: vendored headers")
+    else()
+        message(FATAL_ERROR
+            "JPLAY_ENABLE_NDI is ON but third_party/ndi/include is missing and "
+            "NDI_SDK_DIR is not set.")
+    endif()
 else()
-    message(STATUS "NDI output disabled (NDI SDK not found; set NDI_SDK_DIR to enable)")
+    message(STATUS "NDI output disabled (JPLAY_ENABLE_NDI=OFF)")
 endif()
 
 
-# DeckLink SDI
+# DeckLink SDI (linux only atm)
+option(JPLAY_ENABLE_DECKLINK "Build the DeckLink SDI output backend (Linux only)" ON)
+
 if(NOT DECKLINK_SDK_DIR AND DEFINED ENV{DECKLINK_SDK_DIR})
     file(TO_CMAKE_PATH "$ENV{DECKLINK_SDK_DIR}" DECKLINK_SDK_DIR)
 endif()
-set(DECKLINK_SDK_DIR "${DECKLINK_SDK_DIR}" CACHE PATH "Blackmagic SDK root")
-set(JPLAY_ENABLE_DECKLINK OFF)
-if(NOT WIN32 AND DECKLINK_SDK_DIR AND
-   EXISTS "${DECKLINK_SDK_DIR}/Linux/include/DeckLinkAPI.h")
-    set(DECKLINK_INCLUDE_DIR "${DECKLINK_SDK_DIR}/Linux/include")
-    set(JPLAY_ENABLE_DECKLINK ON)
-    file(STRINGS "${DECKLINK_INCLUDE_DIR}/DeckLinkAPIVersion.h" _dl_ver_line
-        REGEX "BLACKMAGIC_DECKLINK_API_VERSION_STRING")
-    string(REGEX MATCH "\"([0-9.]+)\"" _dl_ver_m "${_dl_ver_line}")
-    set(DECKLINK_SDK_VERSION "${CMAKE_MATCH_1}")
-    message(STATUS "DeckLink output enabled: SDK ${DECKLINK_SDK_VERSION} (${DECKLINK_SDK_DIR})")
-    message(STATUS "  requires a Desktop Video driver of ${DECKLINK_SDK_VERSION} or newer")
-else()
-    message(STATUS "DeckLink output disabled (SDK not found; set DECKLINK_SDK_DIR to enable)")
+set(DECKLINK_SDK_DIR "${DECKLINK_SDK_DIR}" CACHE PATH
+    "External Blackmagic DeckLink SDK root; overrides the vendored headers")
+
+if(JPLAY_ENABLE_DECKLINK AND WIN32)
+    set(JPLAY_ENABLE_DECKLINK OFF)
+    message(STATUS "DeckLink output disabled (Windows needs the COM/.idl path)")
+elseif(JPLAY_ENABLE_DECKLINK)
+    if(DECKLINK_SDK_DIR)
+        foreach(_inc "Linux/include" "include")
+            if(EXISTS "${DECKLINK_SDK_DIR}/${_inc}/DeckLinkAPI.h")
+                set(DECKLINK_INCLUDE_DIR "${DECKLINK_SDK_DIR}/${_inc}")
+                break()
+            endif()
+        endforeach()
+        if(NOT DECKLINK_INCLUDE_DIR)
+            message(FATAL_ERROR
+                "DECKLINK_SDK_DIR is set to '${DECKLINK_SDK_DIR}' but no "
+                "DeckLinkAPI.h was found in its Linux/include/ or include/ "
+                "subdirectory.")
+        endif()
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/third_party/decklink/include/DeckLinkAPI.h")
+        set(DECKLINK_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/third_party/decklink/include")
+    endif()
+
+    if(DECKLINK_INCLUDE_DIR)
+        file(STRINGS "${DECKLINK_INCLUDE_DIR}/DeckLinkAPIVersion.h" _dl_ver_line
+            REGEX "BLACKMAGIC_DECKLINK_API_VERSION_STRING")
+        string(REGEX MATCH "\"([0-9.]+)\"" _dl_ver_m "${_dl_ver_line}")
+        set(DECKLINK_SDK_VERSION "${CMAKE_MATCH_1}")
+
+        # OutputDeckLink.cpp builds against both the vendored 12.0 headers and a
+        # newer SDK via DECKLINK_SDK_DIR. Two things moved in between, so detect
+        # them from the header rather than guessing the version they landed in.
+        file(READ "${DECKLINK_INCLUDE_DIR}/DeckLinkAPI.h" _dl_api)
+        string(FIND "${_dl_api}" "IDeckLinkVideoBuffer" _dl_has_vb)
+        string(FIND "${_dl_api}" "RowBytesForPixelFormat" _dl_has_rb)
+        unset(_dl_api)
+
+        message(STATUS "DeckLink output enabled: SDK ${DECKLINK_SDK_VERSION} (${DECKLINK_INCLUDE_DIR})")
+        message(STATUS "  requires a Desktop Video driver of ${DECKLINK_SDK_VERSION} or newer")
+    else()
+        set(JPLAY_ENABLE_DECKLINK OFF)
+        message(STATUS "DeckLink output disabled (no headers in third_party/decklink; "
+                       "set DECKLINK_SDK_DIR to enable)")
+    endif()
 endif()
 
-# Embedded MDI icon font: scan the source for ICON_MDI_* identifiers and subset
-# materialdesignicons-webfont.ttf down to just those glyphs (the full font is
-# ~1.3 MB / 7400 glyphs). The generated header lands in the build tree and is
-# picked up by App.cpp's #include "icon_font_data.h". Needs fontTools, which
-# cmake/python_buildtools.cmake installs into the build tree (or `pip install
-# fonttools` into the system Python when configuring with
-# -DJPLAY_BUNDLE_PYTHON=OFF).
+# Embedded MDI icon font
 option(JPLAY_BUNDLE_PYTHON
     "Ship a Python home with the install and install fonttools for the build" ON)
 
@@ -123,6 +165,14 @@ option(JPLAY_BUNDLE_PYTHON
 # copies are deliberately absent.
 option(JPLAY_EMBED_BUILD_PATHS
     "Bake build-machine fallback paths (dev Python home, NDI SDK bin dir) into the binary" OFF)
+
+# Copy the NDI runtime out of an external SDK and ship it beside the binary.
+# Off by default: users install the NDI Runtime themselves and loadNdiLib()
+# finds it, which keeps releases clear of the NDI SDK EULA's redistribution
+# obligations (version currency, EULA pass-through, NDI visual identification).
+# Needs NDI_SDK_DIR -- the vendored headers come with no runtime to copy.
+option(JPLAY_BUNDLE_NDI
+    "Ship the NDI runtime from NDI_SDK_DIR beside the binary" OFF)
 # The interpreter comes from vcpkg along with everything else, so there is
 # nothing to download. Ignore any venv active in the shell and the Windows
 # registry, so a developer's shell state cannot change which Python gets
@@ -328,7 +378,9 @@ target_link_libraries(jplay PRIVATE unofficial::shaderc::shaderc)
 if(JPLAY_ENABLE_NDI)
     target_include_directories(jplay PRIVATE "${NDI_INCLUDE_DIR}")
     target_compile_definitions(jplay PRIVATE JPLAY_ENABLE_NDI)
-    if(JPLAY_EMBED_BUILD_PATHS)
+    # Only an external SDK has a runtime to point at; the vendored tree is
+    # headers alone, so there is no bin dir to bake in.
+    if(JPLAY_EMBED_BUILD_PATHS AND NDI_SDK_DIR)
         if(WIN32)
             target_compile_definitions(jplay PRIVATE
                 JPLAY_NDI_BIN_DIR="${NDI_SDK_DIR}/Bin/x64")
@@ -344,6 +396,12 @@ if(JPLAY_ENABLE_DECKLINK)
     target_include_directories(jplay PRIVATE "${DECKLINK_INCLUDE_DIR}")
     target_compile_definitions(jplay PRIVATE JPLAY_ENABLE_DECKLINK
         JPLAY_DECKLINK_SDK_VERSION="${DECKLINK_SDK_VERSION}")
+    if(NOT _dl_has_vb EQUAL -1)
+        target_compile_definitions(jplay PRIVATE JPLAY_DECKLINK_HAS_VIDEO_BUFFER)
+    endif()
+    if(NOT _dl_has_rb EQUAL -1)
+        target_compile_definitions(jplay PRIVATE JPLAY_DECKLINK_HAS_ROW_BYTES)
+    endif()
     target_sources(jplay PRIVATE "${DECKLINK_INCLUDE_DIR}/DeckLinkAPIDispatch.cpp")
     target_link_libraries(jplay PRIVATE ${CMAKE_DL_LIBS})
     set_source_files_properties("${DECKLINK_INCLUDE_DIR}/DeckLinkAPIDispatch.cpp"
@@ -386,7 +444,8 @@ if(WIN32)
                 ${VCPKG_EXTRA_DLLS} $<TARGET_FILE_DIR:jplay>)
     endif()
 
-    if(JPLAY_ENABLE_NDI AND EXISTS "${NDI_SDK_DIR}/Bin/x64/Processing.NDI.Lib.x64.dll")
+    if(JPLAY_ENABLE_NDI AND JPLAY_BUNDLE_NDI AND
+       EXISTS "${NDI_SDK_DIR}/Bin/x64/Processing.NDI.Lib.x64.dll")
         add_custom_command(TARGET jplay POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${NDI_SDK_DIR}/Bin/x64/Processing.NDI.Lib.x64.dll"
@@ -424,7 +483,8 @@ if(WIN32)
     if(VCPKG_EXTRA_DLLS)
         install(FILES ${VCPKG_EXTRA_DLLS} DESTINATION "${JPLAY_INSTALL_DIR}")
     endif()
-    if(JPLAY_ENABLE_NDI AND EXISTS "${NDI_SDK_DIR}/Bin/x64/Processing.NDI.Lib.x64.dll")
+    if(JPLAY_ENABLE_NDI AND JPLAY_BUNDLE_NDI AND
+       EXISTS "${NDI_SDK_DIR}/Bin/x64/Processing.NDI.Lib.x64.dll")
         install(FILES "${NDI_SDK_DIR}/Bin/x64/Processing.NDI.Lib.x64.dll"
             DESTINATION "${JPLAY_INSTALL_DIR}")
     endif()
@@ -458,17 +518,15 @@ else()
             "^/lib" "^/lib64" "^/usr/lib" "^/usr/lib64"
         LIBRARY DESTINATION "${JPLAY_INSTALL_DIR}")
 
-    if(JPLAY_ENABLE_NDI AND EXISTS "${NDI_SDK_DIR}/lib/x86_64-linux-gnu/libndi.so.6")
+    if(JPLAY_ENABLE_NDI AND JPLAY_BUNDLE_NDI AND
+       EXISTS "${NDI_SDK_DIR}/lib/x86_64-linux-gnu/libndi.so.6")
         file(REAL_PATH "${NDI_SDK_DIR}/lib/x86_64-linux-gnu/libndi.so.6" _ndi_so_real)
         install(FILES "${_ndi_so_real}" DESTINATION "${JPLAY_INSTALL_DIR}"
             RENAME "libndi.so.6")
     endif()
 endif()
 
-# Trim what an embedded interpreter in a media player never touches. Lib/test
-# alone is ~31 MB. Excluded at install time rather than deleted from the
-# interpreter's own stdlib, which lives in vcpkg_installed and is restored
-# wholesale from the binary cache. Naming a directory drops its contents too.
+# remove python stuff we dont need and just bloat the install
 if(WIN32 OR JPLAY_BUNDLE_PYTHON)
     install(DIRECTORY "${Python3_STDLIB}/"
         DESTINATION "${JPLAY_INSTALL_DIR}/pyhome/${JPLAY_PYTHON_STDLIB_REL}"

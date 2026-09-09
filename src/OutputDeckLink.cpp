@@ -259,9 +259,11 @@ public:
         if (!configure(f.width, f.height, f.fps))
             return;
 
-        // SDK 16.0 moved pixel access off IDeckLinkVideoFrame onto
+        // Newer SDKs moved pixel access off IDeckLinkVideoFrame onto
         // IDeckLinkVideoBuffer, reached by QueryInterface, and bracketed the
-        // mapping with StartAccess/EndAccess.
+        // mapping with StartAccess/EndAccess. The 12.0 headers we vendor for
+        // release predate that and map the frame directly.
+#ifdef JPLAY_DECKLINK_HAS_VIDEO_BUFFER
         Ref<IDeckLinkVideoBuffer> buf =
             queryIface<IDeckLinkVideoBuffer>(frame_.get(), IID_IDeckLinkVideoBuffer);
         if (!buf || buf->StartAccess(bmdBufferAccessWrite) != S_OK)
@@ -272,6 +274,13 @@ public:
                     (uint8_t*)bytes, active_.width, active_.height, stride_);
         }
         buf->EndAccess(bmdBufferAccessWrite);
+#else
+        void* bytes = nullptr;
+        if (frame_->GetBytes(&bytes) == S_OK && bytes) {
+            fitBgra(f.rgba, f.width, f.height,
+                    (uint8_t*)bytes, active_.width, active_.height, stride_);
+        }
+#endif
 
         // Synchronous display: the card shows this frame at its next opportunity
         // and holds it until the next one. That matches the player driving the
@@ -355,9 +364,14 @@ private:
         active_ = *pick;
 
         // Let the card state its own stride rather than assuming width * 4.
+        // RowBytesForPixelFormat arrived after 12.0; without it the packed
+        // stride is right for the 8-bit BGRA we ask for.
         int32_t rowBytes = 0;
-        if (out_->RowBytesForPixelFormat(kPixelFormat, active_.width, &rowBytes) != S_OK ||
-            rowBytes <= 0)
+#ifdef JPLAY_DECKLINK_HAS_ROW_BYTES
+        if (out_->RowBytesForPixelFormat(kPixelFormat, active_.width, &rowBytes) != S_OK)
+            rowBytes = 0;
+#endif
+        if (rowBytes <= 0)
             rowBytes = active_.width * 4;
         stride_ = rowBytes;
         if (out_->CreateVideoFrame(active_.width, active_.height, rowBytes, kPixelFormat,
