@@ -7,6 +7,12 @@ subsets materialdesignicons-webfont.ttf down to just those glyphs, and writes th
 result as a byte array (icon_font_data.h). The full font is ~1.3 MB / 7400 glyphs;
 a typical app uses a handful, so the embedded array shrinks accordingly.
 
+Raw codepoint literals are picked up as well: any 0xFxxxx in the source that is
+a real MDI codepoint keeps its glyph, so `drawGlyph(r, 0xF0222, ...)` works
+without the macro name appearing anywhere. Prefer iconCp(ICON_MDI_FOO) (see
+IconFont.h) even so -- a mistyped macro is a compile error, a mistyped
+codepoint is a blank button.
+
 Driven from CMake (see CMakeLists.txt); also runnable by hand for debugging:
 
     python tools/gen_icon_font.py \
@@ -24,6 +30,10 @@ import sys
 # ICON_MDI_FOO  "<utf8 bytes>"  // U+F0934
 _DEFINE_RE = re.compile(r'#define\s+(ICON_MDI_[A-Z0-9_]+)\s+"[^"]*"\s*//\s*U\+([0-9A-Fa-f]+)')
 _TOKEN_RE = re.compile(r'\bICON_MDI_[A-Z0-9_]+\b')
+# A hex literal wide enough to be an MDI codepoint. Deliberately loose: what
+# makes a match count is being a codepoint the defines file actually knows
+# (see scan_used), which no ordinary constant in this source base collides with.
+_CODEPOINT_RE = re.compile(r'\b0[xX]([0-9A-Fa-f]{4,6})\b')
 
 
 def parse_defines(path):
@@ -39,14 +49,16 @@ def parse_defines(path):
     return table
 
 
-def scan_used(sources, defines_path):
-    """Set of ICON_MDI_* tokens referenced across the source files.
+def scan_used(sources, defines_path, valid_cps):
+    """What the source references: (ICON_MDI_* tokens, raw codepoints).
 
     The defines header itself is skipped so its 7400 definitions don't count as
-    'used'.
+    'used'. A hex literal counts only if it is a codepoint `valid_cps` knows,
+    which is what keeps ordinary constants out of the subset.
     """
     defines_real = os.path.realpath(defines_path)
     used = set()
+    raw = set()
     for path in sources:
         if os.path.realpath(path) == defines_real:
             continue
@@ -56,7 +68,11 @@ def scan_used(sources, defines_path):
         except OSError:
             continue
         used.update(_TOKEN_RE.findall(text))
-    return used
+        for m in _CODEPOINT_RE.finditer(text):
+            cp = int(m.group(1), 16)
+            if cp in valid_cps:
+                raw.add(cp)
+    return used, raw
 
 
 def write_header(out_path, data, var):
@@ -95,7 +111,8 @@ def main():
         sys.exit(f"gen_icon_font: fonttools is required. Install with: pip install fonttools {sys.executable}")
 
     macro_cp = parse_defines(args.defines)
-    used = scan_used(args.sources, args.defines)
+    cp_macro = {cp: name for name, cp in sorted(macro_cp.items())}
+    used, raw_cps = scan_used(args.sources, args.defines, set(macro_cp.values()))
 
     unknown = sorted(t for t in used if t not in macro_cp)
     if unknown:
@@ -103,7 +120,7 @@ def main():
         print("gen_icon_font: warning: unknown ICON_MDI_* tokens ignored: "
               + ", ".join(unknown), file=sys.stderr)
 
-    codepoints = sorted({macro_cp[t] for t in used if t in macro_cp})
+    codepoints = sorted({macro_cp[t] for t in used if t in macro_cp} | raw_cps)
     if not codepoints:
         # Keep a valid (tiny) font so the embed/compile still works; the app's
         # glyph lookups will simply miss and fall back.
@@ -125,7 +142,11 @@ def main():
 
     write_header(args.out, data, args.var)
 
-    names = sorted(t for t in used if t in macro_cp)
+    # Report every glyph by macro name, however it was referenced; a raw
+    # codepoint is tagged so a blank button can be traced back to the literal.
+    by_macro = {macro_cp[t] for t in used if t in macro_cp}
+    names = [cp_macro[cp] + ("" if cp in by_macro else " (0x%X)" % cp)
+             for cp in codepoints]
     print("gen_icon_font: %d icon(s) -> %d bytes: %s"
           % (len(codepoints), len(data), ", ".join(names) if names else "(none)"))
 
