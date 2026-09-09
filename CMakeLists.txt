@@ -152,6 +152,9 @@ elseif(JPLAY_ENABLE_DECKLINK)
     endif()
 endif()
 
+# Tests and benchmarks
+option(JPLAY_BUILD_TESTS "Build the test and benchmark suite" OFF)
+
 # Embedded MDI icon font
 option(JPLAY_BUNDLE_PYTHON
     "Ship a Python home with the install and install fonttools for the build" ON)
@@ -546,6 +549,11 @@ install(DIRECTORY "${CMAKE_SOURCE_DIR}/python/"
     PATTERN "test_*.py" EXCLUDE
     PATTERN "__pycache__" EXCLUDE)
 
+
+if(JPLAY_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 install(FILES "${CMAKE_SOURCE_DIR}/Inter-Regular.ttf" DESTINATION "${JPLAY_INSTALL_DIR}")
 install(FILES "${CMAKE_SOURCE_DIR}/jplay_preferences.conf" DESTINATION "${JPLAY_INSTALL_DIR}")
