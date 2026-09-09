@@ -105,6 +105,24 @@ jobs:
             mesa-libEGL-devel mesa-libGL-devel \
             alsa-lib-devel pulseaudio-libs-devel systemd-devel dbus-devel \
             ibus-devel
+
+          # el9's autoconf is 2.69, but vcpkg regenerates CPython's configure script
+          # (python3 comes in via pybind11) and its configure.ac requires 2.71+. The
+          # dnf autoconf above stays -- automake and m4 depend on it -- this just
+          # shadows it from /usr/local/bin, which precedes /usr/bin on PATH.
+          #
+          # 2.71 rather than the latest on purpose: it is what ubuntu-22.04 shipped,
+          # so the autoreconf-using ports keep seeing the version this workflow has
+          # been building against all along.
+          curl -fsSL -O https://ftp.gnu.org/gnu/autoconf/autoconf-2.71.tar.xz
+          tar xf autoconf-2.71.tar.xz
+          cd autoconf-2.71
+          ./configure --prefix=/usr/local
+          make -j"$(nproc)"
+          make install
+          cd ..
+          rm -rf autoconf-2.71 autoconf-2.71.tar.xz
+          autoconf --version | head -n1
           # The checkout is owned by the runner user, not the container root, so
           # git refuses to read it until the path is marked safe. cmake/version.cmake
           # shells out to git during the build.
