@@ -21,6 +21,7 @@ concurrency:
 env:
   VCPKG_COMMIT: 32305df7d0b9a308e6ac454dd98ebfe550342c09
   FFMPEG_TAG: autobuild-2026-09-07-15-39
+  LINUX_GLIBC_MAX: "2.34"
 
 jobs:
   # Resolve the version once, so both platforms stamp and name identically.
@@ -61,17 +62,20 @@ jobs:
     needs: version
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: windows-x64
             os: windows-2022
+            container: ""
             triplet: x64-windows-release
             ffmpeg_asset: ffmpeg-n8.1.2-51-g7ba069f4f1-win64-gpl-8.1.zip
             ffmpeg_sha256: 31db3d064365ee28dbef2b773f7cc53078a10aee56d4c905454ed3dd0a666d9c
           - name: linux-x64
-            os: ubuntu-22.04
+            os: ubuntu-latest
+            container: almalinux:9
             triplet: jplay-x64-linux
             ffmpeg_asset: ffmpeg-n8.1.2-51-g7ba069f4f1-linux64-gpl-8.1.tar.xz
             ffmpeg_sha256: 3c1bcdda51f9446a6112a0f1bb9d90f20454eaf06bd2333bb87675fb0e8d3300
@@ -79,21 +83,34 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       STAGE: jplay-${{ needs.version.outputs.version }}-${{ matrix.name }}
     steps:
-      - uses: actions/checkout@v4
-
-      # SDL3, vulkan-loader and ffmpeg all build against system headers here.
       - name: Install build dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ninja-build nasm autoconf autoconf-archive automake libtool pkg-config \
-            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
-            libxfixes-dev libxtst-dev libxss-dev libxkbcommon-dev libxinerama-dev \
-            libwayland-dev wayland-protocols libegl1-mesa-dev libgl1-mesa-dev \
-            libasound2-dev libpulse-dev libudev-dev libdbus-1-dev \
-            libibus-1.0-dev libltdl-dev
+          dnf -y install dnf-plugins-core
+          dnf config-manager --set-enabled crb   # libXtst, libXScrnSaver, ibus, nasm
+          dnf -y install epel-release            # autoconf-archive, ninja-build
+          # No curl in the list on purpose: the image ships curl-minimal, which
+          # provides the binary and conflicts with the full package.
+          dnf -y --setopt=install_weak_deps=False install \
+            gcc gcc-c++ make cmake ninja-build nasm binutils glibc-devel \
+            git tar xz bzip2 zip unzip zstd patch diffutils file which \
+            perl perl-FindBin perl-IPC-Cmd perl-Data-Dumper python3 \
+            autoconf autoconf-archive automake libtool libtool-ltdl-devel \
+            pkgconf-pkg-config libxcrypt-devel libuuid-devel \
+            libX11-devel libXext-devel libXrandr-devel libXcursor-devel \
+            libXi-devel libXfixes-devel libXtst-devel libXScrnSaver-devel \
+            libXinerama-devel libxkbcommon-devel \
+            wayland-devel wayland-protocols-devel \
+            mesa-libEGL-devel mesa-libGL-devel \
+            alsa-lib-devel pulseaudio-libs-devel systemd-devel dbus-devel \
+            ibus-devel
+          # The checkout is owned by the runner user, not the container root, so
+          # git refuses to read it until the path is marked safe. cmake/version.cmake
+          # shells out to git during the build.
+          git config --global --add safe.directory '*'
+
+      - uses: actions/checkout@v4
 
       - name: Checkout vcpkg
         uses: actions/checkout@v4
@@ -212,6 +229,33 @@ jobs:
             exit 1
           fi
           echo "All shared libraries resolve."
+
+      - name: Check glibc baseline (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          worst=0.0
+          fail=0
+          while IFS= read -r f; do
+            file -b "$f" | grep -q "^ELF" || continue
+            # || true: a file with no glibc references at all makes grep exit 1,
+            # which pipefail would otherwise turn into a failed step.
+            v=$(readelf -V "$f" 2>/dev/null \
+                | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//; s/\.$//' \
+                | sort -V | tail -n1 || true)
+            [ -n "$v" ] || continue
+            if [ "$(printf '%s\n%s\n' "$v" "$LINUX_GLIBC_MAX" | sort -V | tail -n1)" \
+                 != "$LINUX_GLIBC_MAX" ]; then
+              printf '%s needs GLIBC_%s\n' "${f#dist/$STAGE/}" "$v"
+              fail=1
+            fi
+            worst=$(printf '%s\n%s\n' "$worst" "$v" | sort -V | tail -n1)
+          done < <(find "dist/$STAGE" -type f)
+          if [ "$fail" = 1 ]; then
+            echo "Built against a newer glibc than $LINUX_GLIBC_MAX; this will not load on AlmaLinux/RHEL 9."
+            exit 1
+          fi
+          echo "Highest glibc requirement is GLIBC_$worst (baseline $LINUX_GLIBC_MAX)."
 
       - name: Archive (Windows)
         if: runner.os == 'Windows'
