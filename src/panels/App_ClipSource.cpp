@@ -48,7 +48,6 @@ constexpr SDL_Color kDim      = { 130, 134, 142, 255 }; // hints, cleared sectio
 constexpr SDL_Color kNeutral  = { 205, 209, 217, 255 }; // option text
 constexpr SDL_Color kSelected = { 150, 190, 255, 255 }; // the current value
 constexpr SDL_Color kCapBg    = {  34,  36,  41, 255 }; // band behind a section caption
-constexpr SDL_Color kResizeHandle{ 100, 120, 180, 200 }; // hovered/active resize strip
 
 inline void setCol(SDL_Renderer* r, SDL_Color c) {
     SDL_SetRenderDrawColor(r, c.r, c.g, c.b, c.a);
@@ -318,22 +317,7 @@ void App::updateClipSourceData() {
 void App::renderClipSourcePanel() {
     if (!panelOpen(kPanelClipSource))
         return;
-    const float topH = titleBar_.height();
-    const float ex = kSidePanelW;
-    SDL_FRect panel = { ex, topH, openPanelW(), panelsBottom_ - topH };
-    setCol(renderer_, kPanelBg);
-    jplay::fillRect(renderer_, &panel);
-
-    // Right-edge border (1px), widening into the resize handle when hovered/active.
-    if (panelResizeActive(kPanelClipSource)) {
-        SDL_FRect strip = { ex + openPanelW() - 2.0f, topH, 2.0f, panelsBottom_ - topH };
-        setCol(renderer_, kResizeHandle);
-        jplay::fillRect(renderer_, &strip);
-    } else {
-        setCol(renderer_, SDL_Color{ 60, 64, 74, 255 });
-        jplay::drawLine(renderer_, ex + openPanelW() - 0.5f, topH,
-                       ex + openPanelW() - 0.5f, panelsBottom_);
-    }
+    SDL_FRect panel = beginLeftPanel();
 
     const float pad = 10.0f * dpiScale;
     const float lineH = textFont_.lineHeight();

@@ -25,6 +25,7 @@ const SDL_Color& kDivider = jplay::colors().divider;    // panel edge line
 const SDL_Color& kActive  = jplay::colors().iconActive; // active toggle
 const SDL_Color& kIdle    = jplay::colors().iconIdle;   // idle toggle
 const SDL_Color& kWarn    = jplay::colors().iconWarn;   // tech-mode live tint
+constexpr SDL_Color kResizeHandle{ 100, 120, 180, 200 }; // hovered/dragged pane edge
 
 inline void setColor(SDL_Renderer* r, SDL_Color c) {
     SDL_SetRenderDrawColor(r, c.r, c.g, c.b, c.a);
@@ -162,9 +163,11 @@ void App::registerLeftPanels() {
     };
     leftPanels_.push_back(settings);
 
-    // The enum names indices into what was just built; if they disagree, every
-    // panelOpen() test in the app is quietly wrong.
-    SDL_assert(leftPanels_.size() == (size_t)kPanelBuiltinCount);
+    // The enum names indices into what was just built, so the built-ins have to
+    // be the first kPanelBuiltinCount entries -- if they are not, every
+    // panelOpen() test in the app is quietly wrong. Panes a fork appends come
+    // after them and are deliberately not counted.
+    SDL_assert(leftPanels_.size() >= (size_t)kPanelBuiltinCount);
 }
 
 // ─── Opening and closing ─────────────────────────────────────────────────────
@@ -274,6 +277,51 @@ int App::panelResizeEdgeAt(float mx, float my) const {
     if (std::abs(mx - (kSidePanelW + openPanelW())) <= half)
         return openPanel_;
     return -1;
+}
+
+// ─── Shared pane chrome ──────────────────────────────────────────────────────
+// Every pane is framed the same way, and getting that frame subtly wrong is the
+// easiest mistake to make when writing a new one. beginLeftPanel paints it: the
+// window-chrome fill over the pane's rect, then the right edge — a 2px accent
+// while a resizable pane's edge is hovered or being dragged, a 1px divider
+// otherwise. A pane that never asked to be resizable can never be in the first
+// state, so it always gets the divider.
+//
+// It returns the pane's rect; how much padding to inset and where the rows go
+// is the pane's own business:
+//
+//     SDL_FRect panel = beginLeftPanel();
+//     SDL_FRect body  = inset(panel, 10.0f * dpiScale, 0.0f);
+//     gapTop(body, 8.0f);
+//     SDL_FRect header = leftPanelHeader(body, "TECH CHECK");
+//     gapTop(body, 10.0f);
+SDL_FRect App::beginLeftPanel() {
+    const float topH = titleBar_.height();
+    const SDL_FRect panel = leftPaneRect();
+    setColor(renderer_, kPanelBg);
+    jplay::fillRect(renderer_, &panel);
+
+    const float right = panel.x + panel.w;
+    if (panelResizeActive(openPanel_)) {
+        SDL_FRect strip = { right - 2.0f, topH, 2.0f, panel.h };
+        setColor(renderer_, kResizeHandle);
+        jplay::fillRect(renderer_, &strip);
+    } else {
+        // The divider is the pane's edge against the stage, not part of the
+        // pane's art, so it is drawn either way.
+        setColor(renderer_, kDivider);
+        jplay::drawLine(renderer_, right - 0.5f, topH, right - 0.5f, panelsBottom_);
+    }
+    return panel;
+}
+
+// Cut the header row off `body` and draw `title` at its left. The row comes
+// back so a pane can right-align controls into what is left of it (Color
+// Grading's Reset button); the gap below it is the caller's to take.
+SDL_FRect App::leftPanelHeader(SDL_FRect& body, const char* title) {
+    SDL_FRect header = cutTop(body, textFont_.lineHeight());
+    drawText(header.x, header.y, colors().header, title);
+    return header;
 }
 
 // ─── Rendering ───────────────────────────────────────────────────────────────

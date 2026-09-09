@@ -161,15 +161,7 @@ void App::renderGradePanel() {
     gradeSliders_.clear();
     gradeWheels_.clear();
 
-    float topH = titleBar_.height();
-    float ex = kSidePanelW;
-    SDL_FRect panel = { ex, topH, openPanelW(), panelsBottom_ - topH };
-    setCol(renderer_, kPanelBg.r, kPanelBg.g, kPanelBg.b);
-    jplay::fillRect(renderer_, &panel);
-
-    // Right-edge border (1px).
-    setCol(renderer_, 60, 64, 74);
-    jplay::drawLine(renderer_, ex + openPanelW() - 0.5f, topH, ex + openPanelW() - 0.5f, panelsBottom_);
+    SDL_FRect panel = beginLeftPanel();
 
     const float pad = 10.0f * dpiScale;
     const float lineH = textFont_.lineHeight();

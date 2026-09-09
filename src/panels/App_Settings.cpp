@@ -512,15 +512,7 @@ void App::renderSettingsPanel() {
         decodeThreadsListOpen_ = false;
         return;
     }
-    float topH = titleBar_.height();
-    SDL_FRect panel = { kSidePanelW, topH, openPanelW(), panelsBottom_ - topH };
-    setColor(renderer_, kPanelBg);
-    jplay::fillRect(renderer_, &panel);
-    // The divider is the panel's edge against the next pane, not part of the
-    // panel art, so it is drawn either way.
-    setColor(renderer_, kDivider);
-    jplay::drawLine(renderer_, panel.x + panel.w - 0.5f, topH,
-                   panel.x + panel.w - 0.5f, panelsBottom_);
+    SDL_FRect panel = beginLeftPanel();
 
     const float pad = 10.0f * dpiScale;
     const float line = textFont_.lineHeight();

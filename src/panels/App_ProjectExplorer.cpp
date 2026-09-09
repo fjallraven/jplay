@@ -42,8 +42,6 @@ const SDL_DialogFileFilter kMediaFilters[] = {
 // active/hover/idle state and stay inline at their draw sites.
 
 // Icon strip + explorer panel share the window-chrome fill (jplay::kPanelBg).
-constexpr SDL_Color kDivider     { 60, 64, 74, 255 };   // panel edge line
-constexpr SDL_Color kResizeHandle{ 100, 120, 180, 200 };// hovered/active resize strip
 
 constexpr SDL_Color kActive { 150, 190, 255, 255 };     // active toggle / focused-seq dot
 constexpr SDL_Color kTitle  { 160, 170, 200, 255 };     // panel title ("PROJECT") — matches other panels
@@ -125,21 +123,9 @@ void App::renderProjectExplorer() {
         return;
     }
 
-    const float topH = titleBar_.height();
-    const float ex = kSidePanelW; // explorer panel left edge
-    SDL_FRect panel = { ex, topH, openPanelW(), panelsBottom_ - topH };
-    setColor(renderer_, kPanelBg);
-    jplay::fillRect(renderer_, &panel);
-
-    // Resize handle: brighter strip at the right edge when hovered/active.
-    if (panelResizeActive(kPanelProjectExplorer)) {
-        SDL_FRect strip = { ex + openPanelW() - 2.0f, topH, 2.0f, panelsBottom_ - topH };
-        setColor(renderer_, kResizeHandle);
-        jplay::fillRect(renderer_, &strip);
-    } else {
-        setColor(renderer_, kDivider);
-        jplay::drawLine(renderer_, ex + openPanelW() - 0.5f, topH, ex + openPanelW() - 0.5f, panelsBottom_);
-    }
+    SDL_FRect panel = beginLeftPanel();
+    const float ex = panel.x;   // pane left edge
+    const float topH = panel.y; // pane top edge
 
     float mx = 0.0f, my = 0.0f;
     uiMouse(mx, my);

@@ -731,6 +731,12 @@ private:
     float openPanelW() const;                   // width of the open pane; 0 if none
     SDL_FRect leftPaneRect() const;             // the open pane's bounds
     void renderLeftPanel();                     // the open pane draws itself
+    // Chrome every pane shares: the fill and the right edge (resize accent or
+    // divider). Returns the pane's rect to lay content into.
+    SDL_FRect beginLeftPanel();
+    // Cuts the header row off `body`, draws `title` in it, and returns the row
+    // so controls can be right-aligned into what is left.
+    SDL_FRect leftPanelHeader(SDL_FRect& body, const char* title);
 
     // Edge-drag resize. Only a pane whose descriptor says `resizable` has an
     // edge; at most one pane is open, so at most one edge exists at a time.

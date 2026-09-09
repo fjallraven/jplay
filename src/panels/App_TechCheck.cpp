@@ -78,23 +78,14 @@ void App::renderTechPanel() {
         }
         return;
     }
-    float topH = titleBar_.height();
-    float ex = kSidePanelW;
-    SDL_FRect panel = { ex, topH, openPanelW(), panelsBottom_ - topH };
-    setCol(renderer_, kPanelBg.r, kPanelBg.g, kPanelBg.b);
-    jplay::fillRect(renderer_, &panel);
-
-    // Right-edge border (1px).
-    setCol(renderer_, 60, 64, 74);
-    jplay::drawLine(renderer_, ex + openPanelW() - 0.5f, topH, ex + openPanelW() - 0.5f, panelsBottom_);
+    SDL_FRect panel = beginLeftPanel();
 
     const float pad = 10.0f * dpiScale;
     const float lineH = textFont_.lineHeight();
     SDL_FRect body = inset(panel, pad, 0.0f);
     gapTop(body, 8.0f);
 
-    SDL_FRect header = cutTop(body, lineH);
-    drawText(header.x, header.y, kHeader, "TECH CHECK");
+    leftPanelHeader(body, "TECH CHECK");
     gapTop(body, 10.0f);
 
     struct Pill { const char* name; const char* desc; uint32_t icon; SDL_Color col; TechMode mode; };
