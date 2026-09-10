@@ -746,17 +746,17 @@ void App::applyPlayerDrop(int action, const std::string& path, bool first) {
             break;
         }
         const Clip* top = getTopMostClipAtFrame(timeline_.playhead);
-        Clip* c = top ? clipById(top->id) : nullptr;
-        if (!c) {
+        Clip* clip = top ? clipById(top->id) : nullptr;
+        if (!clip) {
             setStatus("NO CLIP UNDER THE FRAME INDICATOR", 4000);
             break;
         }
         // A replace also retimes the clip and shifts its followers, so the whole
         // clip/shot state is snapshotted rather than just positions.
-        const std::string prevMediaId = c->mediaId;
+        const std::string prevMediaId = clip->mediaId;
         ContentSnapshot before = captureContent();
-        replaceClipMedia(*c, path); // keeps the clip's position and in/out
-        const bool swapped = c->mediaId != prevMediaId; // replace bails on open failure
+        replaceClipMedia(*clip, path); // keeps the clip's position and in/out
+        const bool swapped = clip->mediaId != prevMediaId; // replace bails on open failure
         timeline_.repackSequences();
         timeline_.clampPlayhead();
         if (swapped)
@@ -1080,10 +1080,10 @@ std::string App::mediaColorSpace(Media& m) {
 }
 
 std::shared_ptr<Media> App::playheadMedia() {
-    const Clip* c = playheadClip();
-    if (!c || c->mediaId.empty())
+    const Clip* clip = playheadClip();
+    if (!clip || clip->mediaId.empty())
         return nullptr;
-    return timeline_.findMediaById(c->mediaId);
+    return timeline_.findMediaById(clip->mediaId);
 }
 
 std::string App::ocioInputCsLabel() {
@@ -1114,17 +1114,17 @@ void App::renderPlayer() {
     // anything reads or draws it (flushes the frame we just left, loads this one).
     syncAnnotBuffer();
 
-    const Clip* c = playheadClip();
+    const Clip* clip = playheadClip();
     bool loading = false;
-    auto playerMedia = c && !c->mediaId.empty() ? timeline_.findMediaById(c->mediaId) : nullptr;
-    bool missing = c && playerMedia && playerMedia->openFailed();
-    if (c && playerMedia && !missing) {
-        CacheKey key{ c->mediaId, c->sourceOffset + (timeline_.playhead - c->timelineStart) };
+    auto playerMedia = clip && !clip->mediaId.empty() ? timeline_.findMediaById(clip->mediaId) : nullptr;
+    bool missing = clip && playerMedia && playerMedia->openFailed();
+    if (clip && playerMedia && !missing) {
+        CacheKey key{ clip->mediaId, clip->sourceOffset + (timeline_.playhead - clip->timelineStart) };
         // Second half of a dissolve, when one covers this frame. programSourceAt's
         // `a` is the clip playheadClip() returned, so outside a transition this
         // resolves to nothing and the path below is what it always was.
         const ProgramSource ps = programSourceAt(timeline_.playhead);
-        const Clip* bClip = (ps.a == c) ? ps.b : nullptr;
+        const Clip* bClip = (ps.a == clip) ? ps.b : nullptr;
         CacheKey keyB{};
         FramePtr fb;
         if (bClip) {
@@ -1140,13 +1140,13 @@ void App::renderPlayer() {
         // A fade with nothing beneath it dims the clip toward black instead. Only
         // ever set when there is no second layer, so it never combines with mix.
         const float fade = bClip ? 1.0f : ps.fade;
-        FramePtr f = cache_->get(key);
+        FramePtr frame = cache_->get(key);
         // A composite needs both halves resident. With only one, hold the previous
         // frame rather than popping to an unblended one mid-span — the same thing
         // the player already does when the single frame it needs isn't decoded yet.
         if (bClip && !fb)
-            f = nullptr;
-        if (f) {
+            frame = nullptr;
+        if (frame) {
             // Per-source OCIO config: sources from different shows resolve different
             // configs from the [ocio] preferences rules, so the config follows the
             // clip under the playhead — and a dissolve selects on the primary clip,
@@ -1166,8 +1166,8 @@ void App::renderPlayer() {
             // aspect has to follow it onto the texture. Set for every frame, not just
             // on a resize: cutting to same-sized media of a different pixel aspect
             // reuses the texture.
-            texPa_ = f->pixelAspect > 0.0f ? f->pixelAspect : 1.0f;
-            if (!texture_ || texW_ != f->width || texH_ != f->height) {
+            texPa_ = frame->pixelAspect > 0.0f ? frame->pixelAspect : 1.0f;
+            if (!texture_ || texW_ != frame->width || texH_ != frame->height) {
                 if (texture_) SDL_DestroyTexture(texture_);
                 if (hdrPipeline_) {
                     // HDR: a linear, extended-range float texture tagged SRGB_LINEAR so
@@ -1178,19 +1178,19 @@ void App::renderPlayer() {
                                           SDL_PIXELFORMAT_RGBA64_FLOAT);
                     SDL_SetNumberProperty(tp, SDL_PROP_TEXTURE_CREATE_ACCESS_NUMBER,
                                           SDL_TEXTUREACCESS_STREAMING);
-                    SDL_SetNumberProperty(tp, SDL_PROP_TEXTURE_CREATE_WIDTH_NUMBER, f->width);
-                    SDL_SetNumberProperty(tp, SDL_PROP_TEXTURE_CREATE_HEIGHT_NUMBER, f->height);
+                    SDL_SetNumberProperty(tp, SDL_PROP_TEXTURE_CREATE_WIDTH_NUMBER, frame->width);
+                    SDL_SetNumberProperty(tp, SDL_PROP_TEXTURE_CREATE_HEIGHT_NUMBER, frame->height);
                     SDL_SetNumberProperty(tp, SDL_PROP_TEXTURE_CREATE_COLORSPACE_NUMBER,
                                           SDL_COLORSPACE_SRGB_LINEAR);
                     texture_ = SDL_CreateTextureWithProperties(renderer_, tp);
                     SDL_DestroyProperties(tp);
                 } else {
                     texture_ = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGBA32,
-                                                 SDL_TEXTUREACCESS_STREAMING, f->width, f->height);
+                                                 SDL_TEXTUREACCESS_STREAMING, frame->width, frame->height);
                 }
                 SDL_SetTextureScaleMode(texture_, SDL_SCALEMODE_LINEAR);
-                texW_ = f->width;
-                texH_ = f->height;
+                texW_ = frame->width;
+                texH_ = frame->height;
                 hasTexture_ = false;
             }
             // The texture's identity is all three: a dissolve blends two frames, so
@@ -1226,12 +1226,12 @@ void App::renderPlayer() {
                 // composite standing in for it. The primary defines the canvas, so a
                 // secondary of another resolution is cropped/black-padded to fit
                 // rather than refused.
-                const Frame* fr = f.get();
+                const Frame* fr = frame.get();
                 if (bClip && fb) {
-                    const Frame* pri = f.get();
+                    const Frame* pri = frame.get();
                     const Frame* sec = fb.get();
-                    if (fb->width != f->width || fb->height != f->height) {
-                        conformFrame(*fb, f->width, f->height, conformFrame_);
+                    if (fb->width != frame->width || fb->height != frame->height) {
+                        conformFrame(*fb, frame->width, frame->height, conformFrame_);
                         sec = &conformFrame_;
                     }
                     // A dissolve whose two halves are read in different colour
@@ -1274,7 +1274,7 @@ void App::renderPlayer() {
                 } else if (fade < 1.0f) {
                     // Fade with no layer beneath: dim toward black. Copy first, since
                     // the cached frame is shared and must not be modified.
-                    mixFrame_ = *f;
+                    mixFrame_ = *frame;
                     fadeFrame(mixFrame_, fade);
                     fr = &mixFrame_;
                 }
@@ -1315,9 +1315,9 @@ void App::renderPlayer() {
                         // the display encoding has to come off here or the frame
                         // reads far too bright — sRGB, the assumption this path has
                         // always made for an unmanaged source.
-                        auto srgbToLinear = [](float c) {
-                            return c <= 0.04045f ? c / 12.92f
-                                                 : std::pow((c + 0.055f) / 1.055f, 2.4f);
+                        auto srgbToLinear = [](float clip) {
+                            return clip <= 0.04045f ? clip / 12.92f
+                                                 : std::pow((clip + 0.055f) / 1.055f, 2.4f);
                         };
                         const bool decode = !hdrFrameManaged_;
                         if (fr->rgba16.size() >= n * 4) {
@@ -1511,7 +1511,7 @@ void App::renderPlayer() {
 
     // Whether a live program frame is on screen this frame (drives the review
     // window: a gap / launcher / missing source shows black there, like the GUI).
-    programShown_ = c && !missing && hasTexture_ && texture_ &&
+    programShown_ = clip && !missing && hasTexture_ && texture_ &&
                     texW_ > 0 && texH_ > 0 && !launcherVisible();
 
     // The burn-in's two strings, for every sink and every stage: the review window
@@ -1532,7 +1532,7 @@ void App::renderPlayer() {
         // the first, since the rows above it may have no frame here.
         layoutProgramTile_ = 0;
         for (size_t i = 0; i < tiles.size(); ++i)
-            if (tiles[i] == c) {
+            if (tiles[i] == clip) {
                 layoutProgramTile_ = (int)i;
                 break;
             }
@@ -1542,11 +1542,11 @@ void App::renderPlayer() {
         // from the very first render rather than reflowing once the decode arrives.
         float ar = (texW_ > 0 && texH_ > 0) ? texDispW() / (float)texH_ : 0.0f;
         if (ar <= 0.0f) {
-            for (const Clip* t : tiles) {
-                auto m = t ? timeline_.findMediaById(t->mediaId) : nullptr;
-                if (!m)
+            for (const Clip* clip : tiles) {
+                auto media = clip ? timeline_.findMediaById(clip->mediaId) : nullptr;
+                if (!media)
                     continue;
-                MediaInfo info = m->info();
+                MediaInfo info = media->info();
                 if (info.width > 0 && info.height > 0) {
                     ar = (float)info.width *
                          (info.pixelAspect > 0.0f ? info.pixelAspect : 1.0f) /
@@ -1561,7 +1561,7 @@ void App::renderPlayer() {
     if (gridView() && !launcherVisible()) {
         // Grid view: every clip as a tile; the clip under the playhead (c) plays
         // live in its tile (via texture_), the rest reuse the Overview thumbnails.
-        renderGridView(c && !missing ? c : nullptr);
+        renderGridView(clip && !missing ? clip : nullptr);
     } else {
         // Layout stage: the program shares the stage with the comparison tiles, so
         // its image, annotations and letterbox are confined to tile 0's cell — a
@@ -1584,7 +1584,7 @@ void App::renderPlayer() {
         // Only draw the frame while the playhead is actually over a clip with a live
         // source; otherwise the backdrop (black) shows through. (A missing source must
         // not keep showing the previous clip's texture.)
-        if (c && !missing && hasTexture_ && texture_ && texW_ > 0 && texH_ > 0) {
+        if (clip && !missing && hasTexture_ && texture_ && texW_ > 0 && texH_ > 0) {
             SDL_FRect dst = programDstRect();
             if (hdrPipeline_) {
                 // Does the color pass have anything to apply? With colour management
@@ -1723,7 +1723,7 @@ void App::renderPlayer() {
         // the chrome sits over every image.
         if (tiled) {
             renderLayoutTiles(renderInputsChanged);
-            drawLayoutTileChrome(layoutProgramCell(), c, layoutProgramTile_);
+            drawLayoutTileChrome(layoutProgramCell(), clip, layoutProgramTile_);
         }
     }
 
@@ -1733,7 +1733,7 @@ void App::renderPlayer() {
         // A source the readers can't decode never leaves this branch, so name the
         // failure rather than showing LOADING for the rest of the session. The
         // reason is in the log (once per media, from the cache worker).
-        const bool failed = c && cache_->mediaFailed(c->mediaId);
+        const bool failed = clip && cache_->mediaFailed(clip->mediaId);
         const char* label = failed ? "FAILED TO DECODE SOURCE" : "LOADING";
         const float pad = 6.0f;
         float tw = textFont_.measure(renderer_, label);
@@ -1776,23 +1776,23 @@ void App::updateFrameOverlay() {
     if (!frameOverlay_)
         return;
 
-    const Clip* c = playheadClip();
-    if (!c)
+    const Clip* clip = playheadClip();
+    if (!clip)
         return;
-    auto m = c->mediaId.empty() ? nullptr : timeline_.findMediaById(c->mediaId);
-    if (!m)
+    auto media = clip->mediaId.empty() ? nullptr : timeline_.findMediaById(clip->mediaId);
+    if (!media)
         return;
 
-    const int64_t clipPos = c->sourceOffset + (timeline_.playhead - c->timelineStart);
+    const int64_t clipPos = clip->sourceOffset + (timeline_.playhead - clip->timelineStart);
 
     // An image sequence names the file for this frame rather than the whole
     // sequence: that is the point of a burn-in. Only when the decoder is already
     // open, so the overlay never forces one on the render thread.
-    std::string file = m->path();
+    std::string file = media->path();
     int64_t base = 0;
-    if (m->isOpen()) {
+    if (media->isOpen()) {
         std::string err;
-        if (auto src = m->ensureOpen(err)) {
+        if (auto src = media->ensureOpen(err)) {
             base = src->firstFrameNumber();
             const auto& files = src->sequenceFiles();
             if (clipPos >= 0 && clipPos < (int64_t)files.size())
@@ -1872,23 +1872,23 @@ void App::drawFrameOverlay(SDL_Renderer* r, const TextFont& font,
 // Rebuild the overlay fields only when the clip under the playhead changes.
 // Opening the decoder (for codec/EXR-header detail) happens here, on demand.
 void App::updateInfoOverlay() {
-    const Clip* c = playheadClip();
-    int id = c ? c->id : -1;
+    const Clip* clip = playheadClip();
+    int id = clip ? clip->id : -1;
     if (id == infoClipId_)
         return;
     infoClipId_ = id;
     infoFields_.clear();
-    if (!c || c->mediaId.empty())
+    if (!clip || clip->mediaId.empty())
         return;
-    auto mptr = timeline_.findMediaById(c->mediaId);
+    auto mptr = timeline_.findMediaById(clip->mediaId);
     if (!mptr)
         return;
 
-    Media& m = *mptr;
-    MediaInfo info = m.info();
-    infoFields_.push_back({ "File", fs::path(m.path()).filename().string() });
-    infoFields_.push_back({ "Type", m.type() == ClipType::ImageSequence
-                                        ? ImageSeq::typeLabel(m.path()) : "Video" });
+    Media& media = *mptr;
+    MediaInfo info = media.info();
+    infoFields_.push_back({ "File", fs::path(media.path()).filename().string() });
+    infoFields_.push_back({ "Type", media.type() == ClipType::ImageSequence
+                                            ? ImageSeq::typeLabel(media.path()) : "Video" });
     if (info.width > 0 && info.height > 0)
         infoFields_.push_back({ "Resolution", std::to_string(info.width) + " x " + std::to_string(info.height) });
     infoFields_.push_back({ "Frames", std::to_string(std::max<int64_t>(info.frameCount, 1)) });
@@ -1900,7 +1900,7 @@ void App::updateInfoOverlay() {
 
     // Source-specific detail (codec/audio, or EXR bit depth/channels/layers/views).
     std::string err;
-    if (auto src = m.ensureOpen(err)) {
+    if (auto src = media.ensureOpen(err)) {
         for (const auto& f : src->describe())
             infoFields_.push_back(f);
     } else {
@@ -1917,13 +1917,13 @@ void App::updateInfoOverlay() {
 
 // Clip shown at an absolute timeline frame + the media source frame it maps to.
 Clip* App::clipAtSourceFrame(int64_t frame, int64_t& srcFrame) {
-    const Clip* c = getTopMostClipAtFrame(frame);
-    if (!c) {
+    const Clip* clip = getTopMostClipAtFrame(frame);
+    if (!clip) {
         srcFrame = 0;
         return nullptr;
     }
-    srcFrame = c->sourceOffset + (frame - c->timelineStart);
-    return timeline_.findClipById(c->id);
+    srcFrame = clip->sourceOffset + (frame - clip->timelineStart);
+    return timeline_.findClipById(clip->id);
 }
 
 // Write the live buffer back into its owning clip, keyed by source frame. Empty
@@ -1931,13 +1931,13 @@ Clip* App::clipAtSourceFrame(int64_t frame, int64_t& srcFrame) {
 void App::flushAnnotBuffer() {
     if (annotClipId_ < 0)
         return;
-    Clip* c = timeline_.findClipById(annotClipId_);
-    if (!c)
+    Clip* clip = timeline_.findClipById(annotClipId_);
+    if (!clip)
         return;
     if (annotStrokes_.empty())
-        c->annotations.erase(annotFrame_);
+        clip->annotations.erase(annotFrame_);
     else
-        c->annotations[annotFrame_] = annotStrokes_;
+        clip->annotations[annotFrame_] = annotStrokes_;
 }
 
 // Reconcile the live buffer with the frame under the playhead: when the displayed
@@ -1946,8 +1946,8 @@ void App::flushAnnotBuffer() {
 // once per rendered frame (renderPlayer) so playback flushes each frame it leaves.
 void App::syncAnnotBuffer() {
     int64_t sf = 0;
-    Clip* c = clipAtSourceFrame(timeline_.playhead, sf);
-    int clipId = c ? c->id : -1;
+    Clip* clip = clipAtSourceFrame(timeline_.playhead, sf);
+    int clipId = clip ? clip->id : -1;
     if (clipId == annotClipId_ && sf == annotFrame_)
         return;
     flushAnnotBuffer();
@@ -1955,9 +1955,9 @@ void App::syncAnnotBuffer() {
     annotFrame_ = sf;
     annotDrawing_ = false;
     annotStrokes_.clear();
-    if (c) {
-        auto it = c->annotations.find(sf);
-        if (it != c->annotations.end())
+    if (clip) {
+        auto it = clip->annotations.find(sf);
+        if (it != clip->annotations.end())
             annotStrokes_ = it->second;
     }
 }

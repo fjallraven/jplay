@@ -22,7 +22,7 @@ const Sequence* App::sequenceOfClip(int clipId) const {
 }
 
 std::string App::clipThumbKey(const Clip& c) const {
-    const Sequence* s = sequenceOfClip(c.id);
+    const Sequence* seq = sequenceOfClip(c.id);
     auto pm = timeline_.findMediaById(c.mediaId);
     std::string path = pm ? pm->path() : std::string();
     // Include full path and sourceOffset so clips from the same file at different
@@ -37,7 +37,7 @@ std::string App::clipThumbKey(const Clip& c) const {
     // Media::ensureOpen), so a tile generated under one mode must not be served
     // for another; ThumbnailCache treats an on-disk tile as permanently valid
     // once generated, so without this a switch would leave stale thumbnails.
-    return fnv1aHex(ThumbnailCache::kFormatTag + (s ? s->name : std::string()) + "\x1f" +
+    return fnv1aHex(ThumbnailCache::kFormatTag + (seq ? seq->name : std::string()) + "\x1f" +
                     path + "\x1f" + std::to_string(c.sourceOffset) + "\x1f" +
                     jplay::currentProxyMode());
 }
@@ -52,16 +52,16 @@ void App::startClipThumbnails() {
     thumbStartedIds_.clear();
     for (const auto& cell : gridCells_) {
         thumbStartedIds_.push_back(cell.clipId);
-        const Clip* c = clipById(cell.clipId);
-        if (!c || c->audio)
+        const Clip* clip = clipById(cell.clipId);
+        if (!clip || clip->audio)
             continue; // gone with a reload, or audio -> no frames to thumbnail
-        auto pm = timeline_.findMediaById(c->mediaId);
+        auto pm = timeline_.findMediaById(clip->mediaId);
         if (!pm)
             continue; // no source -> placeholder box, nothing to decode
         // Nothing here touches the filesystem or the colour pipeline: the worker
         // skips the items already on disk, so this loop is a hash per tile and
         // stays off the frame budget however many tiles the grid is drawing.
-        items.push_back({ clipThumbKey(*c), pm, c->sourceOffset + c->duration / 2 });
+        items.push_back({ clipThumbKey(*clip), pm, clip->sourceOffset + clip->duration / 2 });
     }
     thumbPendingIds_.clear();
     thumbPendingMs_ = 0;
@@ -368,8 +368,8 @@ void App::renderGridView(const Clip* liveClip) {
                 return it->second;
         }
         float a = 0.0f;
-        if (auto m = timeline_.findMediaById(c->mediaId)) {
-            MediaInfo info = m->info();
+        if (auto media = timeline_.findMediaById(c->mediaId)) {
+            MediaInfo info = media->info();
             if (info.width > 0 && info.height > 0)
                 a = (float)info.width * (info.pixelAspect > 0.0f ? info.pixelAspect : 1.0f)
                     / (float)info.height;
@@ -400,8 +400,8 @@ void App::renderGridView(const Clip* liveClip) {
         for (const auto& g : groups) {
             y += hdrH;
             float x = 0.0f;
-            for (const Clip* c : g.clips) {
-                const float w = h * clipAr(c);
+            for (const Clip* clip : g.clips) {
+                const float w = h * clipAr(clip);
                 if (x > 0.0f && x + gap + w > areaW) { y += h + gap; x = 0.0f; }
                 if (x > 0.0f)
                     x += gap;
@@ -446,12 +446,12 @@ void App::renderGridView(const Clip* liveClip) {
             headers.push_back({ &g, y });
             y += hdrH;
             float x = 0.0f; // greedy row wrap: a row holds as many tiles as fit areaW
-            for (const Clip* c : g.clips) {
-                const float w = cellH * clipAr(c);
+            for (const Clip* clip : g.clips) {
+                const float w = cellH * clipAr(clip);
                 if (x > 0.0f && x + gap + w > areaW) { y += cellH + gap; x = 0.0f; }
                 if (x > 0.0f)
                     x += gap;
-                tiles.push_back({ c, &g, { x, y, w, cellH } });
+                tiles.push_back({ clip, &g, { x, y, w, cellH } });
                 x += w;
             }
             y += cellH + secGap;
@@ -520,27 +520,27 @@ void App::renderGridView(const Clip* liveClip) {
     auto drawTile = [&](const Clip* c, const SDL_FRect& target) {
         // Glide from wherever this tile was last laid out; one that wasn't in the
         // layout last frame just appears at its target.
-        SDL_FRect t = target;
+        SDL_FRect rect = target;
         auto prev = gridTileRects_.find(c->id);
         if (prev != gridTileRects_.end() && lerpK < 1.0f) {
             const SDL_FRect& p = prev->second;
-            t.x = p.x + (target.x - p.x) * lerpK;
-            t.y = p.y + (target.y - p.y) * lerpK;
-            t.w = p.w + (target.w - p.w) * lerpK;
-            t.h = p.h + (target.h - p.h) * lerpK;
-            if (std::fabs(target.x - t.x) < 0.5f && std::fabs(target.y - t.y) < 0.5f &&
-                std::fabs(target.w - t.w) < 0.5f && std::fabs(target.h - t.h) < 0.5f)
-                t = target; // settled: stop crawling by sub-pixels
+            rect.x = p.x + (target.x - p.x) * lerpK;
+            rect.y = p.y + (target.y - p.y) * lerpK;
+            rect.w = p.w + (target.w - p.w) * lerpK;
+            rect.h = p.h + (target.h - p.h) * lerpK;
+            if (std::fabs(target.x - rect.x) < 0.5f && std::fabs(target.y - rect.y) < 0.5f &&
+                std::fabs(target.w - rect.w) < 0.5f && std::fabs(target.h - rect.h) < 0.5f)
+                rect = target; // settled: stop crawling by sub-pixels
         }
-        gridTileRects_[c->id] = t;
-        t.x += areaX; // content -> screen
-        t.y += oy;
+        gridTileRects_[c->id] = rect;
+        rect.x += areaX; // content -> screen
+        rect.y += oy;
 
         const bool isLive = liveClip && c->id == liveClip->id;
         // Black backing for the live cell; dark-grey placeholder for the rest
         // (shows until the thumbnail BMP has been generated).
         SDL_SetRenderDrawColor(renderer_, isLive ? 0 : 52, isLive ? 0 : 54, isLive ? 0 : 60, 255);
-        jplay::fillRect(renderer_, &t);
+        jplay::fillRect(renderer_, &rect);
 
         // The player's texture is only this clip's frame once the decode for the
         // new playhead has landed; until then it still holds whatever was on
@@ -553,9 +553,9 @@ void App::renderGridView(const Clip* liveClip) {
 
         bool drewLive = false;
         if (liveTexReady && hasTexture_ && texture_ && texW_ > 0 && texH_ > 0) {
-            float fit = std::min(t.w / texDispW(), t.h / (float)texH_);
+            float fit = std::min(rect.w / texDispW(), rect.h / (float)texH_);
             float dw = texDispW() * fit, dh = texH_ * fit;
-            SDL_FRect dst = { t.x + (t.w - dw) * 0.5f, t.y + (t.h - dh) * 0.5f, dw, dh };
+            SDL_FRect dst = { rect.x + (rect.w - dw) * 0.5f, rect.y + (rect.h - dh) * 0.5f, dw, dh };
             SDL_RenderTexture(renderer_, texture_, nullptr, &dst);
             drewLive = true;
         }
@@ -568,7 +568,7 @@ void App::renderGridView(const Clip* liveClip) {
                 float cw = a >= 1.0f ? S : S * a;
                 float ch = a >= 1.0f ? S / a : S;
                 SDL_FRect src = { (S - cw) * 0.5f, (S - ch) * 0.5f, cw, ch };
-                SDL_RenderTexture(renderer_, tex, &src, &t);
+                SDL_RenderTexture(renderer_, tex, &src, &rect);
             }
         }
 
@@ -586,13 +586,13 @@ void App::renderGridView(const Clip* liveClip) {
             }
             const float lineH = textFont_.lineHeight();
             const float barH = lineH + 2.0f * dpiScale;
-            if (!name.empty() && t.h >= lineH * 3.0f) {
-                std::string fitted = fitText(name, t.w - 6.0f * dpiScale);
+            if (!name.empty() && rect.h >= lineH * 3.0f) {
+                std::string fitted = fitText(name, rect.w - 6.0f * dpiScale);
                 if (!fitted.empty()) {
-                    SDL_FRect bar = { t.x, t.y + t.h - barH, t.w, barH };
+                    SDL_FRect bar = { rect.x, rect.y + rect.h - barH, rect.w, barH };
                     SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 150);
                     jplay::fillRect(renderer_, &bar);
-                    drawText(t.x + 3.0f * dpiScale, bar.y + (barH - lineH) * 0.5f,
+                    drawText(rect.x + 3.0f * dpiScale, bar.y + (barH - lineH) * 0.5f,
                              SDL_Color{ 232, 235, 242, 255 }, fitted);
                 }
             }
@@ -600,16 +600,16 @@ void App::renderGridView(const Clip* liveClip) {
 
         if (isLive) {
             SDL_SetRenderDrawColor(renderer_, 90, 150, 240, 255);
-            jplay::drawRect(renderer_, &t);
-            SDL_FRect inner = { t.x + 1, t.y + 1, t.w - 2, t.h - 2 };
+            jplay::drawRect(renderer_, &rect);
+            SDL_FRect inner = { rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2 };
             jplay::drawRect(renderer_, &inner);
-        } else if ((mouseOverGrid && inRect(t, mx, my)) ||
+        } else if ((mouseOverGrid && inRect(rect, mx, my)) ||
                    (rulerHoverClip && c->id == rulerHoverClip)) {
             SDL_SetRenderDrawColor(renderer_, 200, 210, 235, 220);
-            jplay::drawRect(renderer_, &t);
+            jplay::drawRect(renderer_, &rect);
         }
 
-        gridCells_.push_back({ c->id, t });
+        gridCells_.push_back({ c->id, rect });
     };
 
     // Draw what the scroll offset puts on screen, plus a row's worth either side:
@@ -653,15 +653,15 @@ void App::renderGridView(const Clip* liveClip) {
     for (const auto& cell : gridCells_) {
         if (!mouseOverGrid || !inRect(cell.rect, mx, my))
             continue;
-        const Clip* c = clipById(cell.clipId);
-        if (!c)
+        const Clip* clip = clipById(cell.clipId);
+        if (!clip)
             break;
         std::vector<std::string> rows;
-        if (const Sequence* sq = sequenceOfClip(c->id); sq && !sq->name.empty())
+        if (const Sequence* sq = sequenceOfClip(clip->id); sq && !sq->name.empty())
             rows.push_back("Sequence: " + sq->name);
-        if (const Shot* sh = timeline_.findShotById(c->shotId); sh && !sh->name.empty())
+        if (const Shot* sh = timeline_.findShotById(clip->shotId); sh && !sh->name.empty())
             rows.push_back("Shot: " + sh->name);
-        if (auto pm = timeline_.findMediaById(c->mediaId)) {
+        if (auto pm = timeline_.findMediaById(clip->mediaId)) {
             const std::string& dept = pm->metaValue("department");
             if (!dept.empty())
                 rows.push_back("Department: " + dept);

@@ -70,8 +70,8 @@ static bool saveTo(std::ostream& os, const Timeline& tl, const std::string& proj
     for (const auto& kv : tl.media) {
         bool used = false;
         for (size_t i : saved)
-            for (const Clip& c : tl.sequences[i].clips)
-                if (c.mediaId == kv.first) used = true;
+            for (const Clip& clip : tl.sequences[i].clips)
+                if (clip.mediaId == kv.first) used = true;
         if (used)
             pool.push_back(kv.second);
     }
@@ -189,11 +189,11 @@ static bool saveTo(std::ostream& os, const Timeline& tl, const std::string& proj
     // The project table Sequence::projectId indexes. Written last so a reader that
     // stops early still gets a usable timeline, as every trailer field before it.
     writeRaw(os, (uint32_t)tl.projects.size());
-    for (const SourceProject& p : tl.projects) {
-        writeRaw(os, (int32_t)p.id);
-        writeStr(os, p.name);
-        writeStr(os, p.path);
-        writeRaw(os, (uint8_t)(p.openedWhole ? 1 : 0));
+    for (const SourceProject& proj : tl.projects) {
+        writeRaw(os, (int32_t)proj.id);
+        writeStr(os, proj.name);
+        writeStr(os, proj.path);
+        writeRaw(os, (uint8_t)(proj.openedWhole ? 1 : 0));
     }
     // Custom track labels, one per track row; empty = the derived name.
     {
@@ -276,26 +276,26 @@ static bool loadFrom(std::istream& is, Timeline& tl, int& nextClipId, int& nextS
     }
     int maxShotId = 0;
     for (uint32_t i = 0; i < shotCount; ++i) {
-        Shot s;
+        Shot shot;
         int32_t sid = 0;
         uint8_t cutDiffer = 0;
         if (!readRaw(is, sid) ||
-            !readRaw(is, s.timelineStart) || !readRaw(is, s.duration) ||
-            !readRaw(is, s.cutIn) || !readRaw(is, s.cutOut) ||
-            !readRaw(is, s.originalCutIn) || !readRaw(is, s.originalCutOut) ||
+            !readRaw(is, shot.timelineStart) || !readRaw(is, shot.duration) ||
+            !readRaw(is, shot.cutIn) || !readRaw(is, shot.cutOut) ||
+            !readRaw(is, shot.originalCutIn) || !readRaw(is, shot.originalCutOut) ||
             !readRaw(is, cutDiffer) ||
-            !readStr(is, s.name)) {
+            !readStr(is, shot.name)) {
             err = "corrupt project file (shot table)";
             return false;
         }
-        if (!readStr(is, s.sceneName)) {
+        if (!readStr(is, shot.sceneName)) {
             err = "corrupt project file (shot table)";
             return false;
         }
-        s.cutDiffer = (cutDiffer != 0);
-        s.id = sid;
-        maxShotId = std::max(maxShotId, s.id);
-        fresh.shots.push_back(std::move(s));
+        shot.cutDiffer = (cutDiffer != 0);
+        shot.id = sid;
+        maxShotId = std::max(maxShotId, shot.id);
+        fresh.shots.push_back(std::move(shot));
     }
 
     // Sequence table.
@@ -306,9 +306,9 @@ static bool loadFrom(std::istream& is, Timeline& tl, int& nextClipId, int& nextS
     }
     int maxClipId = 0, maxTrack = 0, maxSeqId = 0;
     for (uint32_t i = 0; i < seqCount; ++i) {
-        Sequence s;
+        Sequence seq;
         int32_t seqId = 0;
-        if (!readRaw(is, seqId) || !readStr(is, s.name)) {
+        if (!readRaw(is, seqId) || !readStr(is, seq.name)) {
             err = "corrupt project file (sequence table)";
             return false;
         }
@@ -318,14 +318,14 @@ static bool loadFrom(std::istream& is, Timeline& tl, int& nextClipId, int& nextS
                 err = "corrupt project file (sequence projectId)";
                 return false;
             }
-            s.projectId = pid;
+            seq.projectId = pid;
         }
-        if (!readRaw(is, s.bgColor)) {
+        if (!readRaw(is, seq.bgColor)) {
             err = "corrupt project file (sequence bgColor)";
             return false;
         }
-        s.id = seqId;
-        maxSeqId = std::max(maxSeqId, s.id);
+        seq.id = seqId;
+        maxSeqId = std::max(maxSeqId, seq.id);
 
         uint32_t nShots = 0;
         if (!readRaw(is, nShots) || nShots > 100000) {
@@ -338,7 +338,7 @@ static bool loadFrom(std::istream& is, Timeline& tl, int& nextClipId, int& nextS
                 err = "corrupt project file (sequence shotIds)";
                 return false;
             }
-            s.shotIds.push_back(sid);
+            seq.shotIds.push_back(sid);
         }
 
         uint32_t clipCount = 0;
@@ -347,32 +347,32 @@ static bool loadFrom(std::istream& is, Timeline& tl, int& nextClipId, int& nextS
             return false;
         }
         for (uint32_t j = 0; j < clipCount; ++j) {
-            Clip c;
+            Clip clip;
             int32_t cid = 0, ctrack = 0, cshotId = -1;
             uint8_t hidden = 0, caudio = 0;
-            if (!readRaw(is, cid) || !readStr(is, c.mediaId) || !readRaw(is, ctrack) ||
-                !readRaw(is, c.timelineStart) || !readRaw(is, c.duration) ||
-                !readRaw(is, c.sourceOffset) || !readRaw(is, cshotId) ||
+            if (!readRaw(is, cid) || !readStr(is, clip.mediaId) || !readRaw(is, ctrack) ||
+                !readRaw(is, clip.timelineStart) || !readRaw(is, clip.duration) ||
+                !readRaw(is, clip.sourceOffset) || !readRaw(is, cshotId) ||
                 !readRaw(is, hidden) || !readRaw(is, caudio)) {
                 err = "corrupt project file (clip data)";
                 return false;
             }
-            c.hidden = (hidden != 0);
-            c.audio = (caudio != 0);
+            clip.hidden = (hidden != 0);
+            clip.audio = (caudio != 0);
             // Opacity ramps. Values are re-clamped on read against the clip's
             // duration (Timeline::clipFades), so nothing here has to validate them.
-            if (!readRaw(is, c.fadeInFrames) || !readRaw(is, c.fadeOutFrames)) {
+            if (!readRaw(is, clip.fadeInFrames) || !readRaw(is, clip.fadeOutFrames)) {
                 err = "corrupt project file (clip fades)";
                 return false;
             }
             // Audio→video link.
             {
                 int32_t linkedTo = 0;
-                if (!readRaw(is, linkedTo) || !readRaw(is, c.linkOffset)) {
+                if (!readRaw(is, linkedTo) || !readRaw(is, clip.linkOffset)) {
                     err = "corrupt project file (clip link)";
                     return false;
                 }
-                c.linkedTo = linkedTo;
+                clip.linkedTo = linkedTo;
             }
             {
                 uint32_t frameCount = 0;
@@ -391,26 +391,26 @@ static bool loadFrom(std::istream& is, Timeline& tl, int& nextClipId, int& nextS
                     std::vector<AnnotStroke> strokes;
                     strokes.reserve(strokeCount);
                     for (uint32_t si = 0; si < strokeCount; ++si) {
-                        AnnotStroke s;
+                        AnnotStroke seq;
                         uint32_t ptCount = 0;
-                        if (!readRaw(is, s.r) || !readRaw(is, s.g) || !readRaw(is, s.b) ||
+                        if (!readRaw(is, seq.r) || !readRaw(is, seq.g) || !readRaw(is, seq.b) ||
                             !readRaw(is, ptCount) || ptCount > 10000000) {
                             err = "corrupt project file (clip annotations)";
                             return false;
                         }
-                        s.pts.reserve(ptCount);
+                        seq.pts.reserve(ptCount);
                         for (uint32_t pi = 0; pi < ptCount; ++pi) {
                             AnnotPt p{};
                             if (!readRaw(is, p.x) || !readRaw(is, p.y) || !readRaw(is, p.hw)) {
                                 err = "corrupt project file (clip annotations)";
                                 return false;
                             }
-                            s.pts.push_back(p);
+                            seq.pts.push_back(p);
                         }
-                        strokes.push_back(std::move(s));
+                        strokes.push_back(std::move(seq));
                     }
                     if (!strokes.empty())
-                        c.annotations[srcFrame] = std::move(strokes);
+                        clip.annotations[srcFrame] = std::move(strokes);
                 }
             }
             // Volume automation. Values are not validated here: valueAt copes with
@@ -418,30 +418,30 @@ static bool loadFrom(std::istream& is, Timeline& tl, int& nextClipId, int& nextS
             {
                 uint8_t interp = 0;
                 uint32_t ptCount = 0;
-                if (!readRaw(is, c.volume.base) || !readRaw(is, interp) ||
+                if (!readRaw(is, clip.volume.base) || !readRaw(is, interp) ||
                     !readRaw(is, ptCount) || ptCount > 1000000) {
                     err = "corrupt project file (clip volume curve)";
                     return false;
                 }
-                c.volume.interp = interp == (uint8_t)Curve::Interp::Linear
+                clip.volume.interp = interp == (uint8_t)Curve::Interp::Linear
                                       ? Curve::Interp::Linear
                                       : Curve::Interp::Smooth;
-                c.volume.pts.reserve(ptCount);
+                clip.volume.pts.reserve(ptCount);
                 for (uint32_t vi = 0; vi < ptCount; ++vi) {
                     CurvePoint cp{};
                     if (!readRaw(is, cp.t) || !readRaw(is, cp.v)) {
                         err = "corrupt project file (clip volume curve)";
                         return false;
                     }
-                    c.volume.pts.push_back(cp);
+                    clip.volume.pts.push_back(cp);
                 }
             }
-            c.id = cid;
-            c.track = std::max<int32_t>(ctrack, 0);
-            c.shotId = cshotId;
-            maxClipId = std::max(maxClipId, c.id);
-            maxTrack = std::max(maxTrack, c.track); // unified space: audio + video share it
-            s.clips.push_back(std::move(c));
+            clip.id = cid;
+            clip.track = std::max<int32_t>(ctrack, 0);
+            clip.shotId = cshotId;
+            maxClipId = std::max(maxClipId, clip.id);
+            maxTrack = std::max(maxTrack, clip.track); // unified space: audio + video share it
+            seq.clips.push_back(std::move(clip));
         }
 
         // Dissolves.
@@ -452,23 +452,23 @@ static bool loadFrom(std::istream& is, Timeline& tl, int& nextClipId, int& nextS
                 return false;
             }
             for (uint32_t j = 0; j < transCount; ++j) {
-                Transition t;
+                Transition transition;
                 int32_t tid = 0, aId = 0, bId = 0;
                 if (!readRaw(is, tid) || !readRaw(is, aId) || !readRaw(is, bId) ||
-                    !readRaw(is, t.inFrames) || !readRaw(is, t.outFrames)) {
+                    !readRaw(is, transition.inFrames) || !readRaw(is, transition.outFrames)) {
                     err = "corrupt project file (transition data)";
                     return false;
                 }
-                t.id = tid;
-                t.aClipId = aId;
-                t.bClipId = bId;
+                transition.id = tid;
+                transition.aClipId = aId;
+                transition.bClipId = bId;
                 // A transition that no longer resolves is dropped by
                 // App::pruneTransitions after load, and the id allocator is rebuilt
                 // from the loaded ids there too — so nothing here has to validate.
-                s.transitions.push_back(t);
+                seq.transitions.push_back(transition);
             }
         }
-        fresh.sequences.push_back(std::move(s));
+        fresh.sequences.push_back(std::move(seq));
     }
 
     // Project id.
@@ -508,15 +508,15 @@ static bool loadFrom(std::istream& is, Timeline& tl, int& nextClipId, int& nextS
             if (view)
                 view->projId = vpid;
             for (uint32_t i = 0; i < projCount; ++i) {
-                SourceProject p;
+                SourceProject proj;
                 int32_t pid = 0;
                 uint8_t whole = 0;
-                if (!readRaw(is, pid) || !readStr(is, p.name) || !readStr(is, p.path) ||
+                if (!readRaw(is, pid) || !readStr(is, proj.name) || !readStr(is, proj.path) ||
                     !readRaw(is, whole))
                     break; // truncated trailer: keep what came in, as the fields above do
-                p.id = pid;
-                p.openedWhole = (whole != 0);
-                fresh.projects.push_back(std::move(p));
+                proj.id = pid;
+                proj.openedWhole = (whole != 0);
+                fresh.projects.push_back(std::move(proj));
             }
         }
     }

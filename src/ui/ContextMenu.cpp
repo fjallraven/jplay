@@ -269,11 +269,11 @@ SDL_FRect ContextMenu::tableBounds() const {
     float l = colRects_.front().x;
     float t = colRects_.front().y;
     float r = l, b = t;
-    for (const SDL_FRect& c : colRects_) {
-        l = std::min(l, c.x);
-        t = std::min(t, c.y);
-        r = std::max(r, c.x + c.w);
-        b = std::max(b, c.y + c.h);
+    for (const SDL_FRect& rect : colRects_) {
+        l = std::min(l, rect.x);
+        t = std::min(t, rect.y);
+        r = std::max(r, rect.x + rect.w);
+        b = std::max(b, rect.y + rect.h);
     }
     return { l, t, r - l, b - t };
 }
@@ -285,8 +285,8 @@ bool ContextMenu::tableCellAt(float x, float y, int& col, int& item) const {
         return false;
     const float hy = tableY0_ + visRows_ * kRowH; // header row top
     for (size_t c = 0; c < colRects_.size(); ++c) {
-        const SDL_FRect& b = colRects_[c];
-        if (x < b.x || x >= b.x + b.w || y < b.y || y >= b.y + b.h)
+        const SDL_FRect& rect = colRects_[c];
+        if (x < rect.x || x >= rect.x + rect.w || y < rect.y || y >= rect.y + rect.h)
             continue;
         col = (int)c;
         if (y >= hy) { item = -1; return true; } // header row at the bottom
@@ -316,8 +316,8 @@ void ContextMenu::layoutGrid() {
 }
 
 int ContextMenu::gridCellAt(float x, float y) const {
-    const SDL_FRect& b = gridRect_;
-    const float gx = x - (b.x + kGridPad), gy = y - (b.y + kGridPad);
+    const SDL_FRect& rect = gridRect_;
+    const float gx = x - (rect.x + kGridPad), gy = y - (rect.y + kGridPad);
     if (gx < 0 || gy < 0)
         return -1;
     const int cx = (int)(gx / kCell), cy = (int)(gy / kCell);
@@ -378,20 +378,20 @@ void ContextMenu::layout(SDL_Renderer* r) {
 }
 
 int ContextMenu::rootRowAt(float x, float y) const {
-    const SDL_FRect& b = rootRect_;
-    if (x < b.x || x >= b.x + b.w || y < b.y || y >= b.y + b.h)
+    const SDL_FRect& rect = rootRect_;
+    if (x < rect.x || x >= rect.x + rect.w || y < rect.y || y >= rect.y + rect.h)
         return -1;
-    return rowIndexAt(items_, y - b.y + rootScroll_);
+    return rowIndexAt(items_, y - rect.y + rootScroll_);
 }
 
 int ContextMenu::childRowAt(float x, float y) const {
     if (openParent_ < 0)
         return -1;
-    const SDL_FRect& b = childRect_;
-    if (x < b.x || x >= b.x + b.w || y < b.y || y >= b.y + b.h)
+    const SDL_FRect& rect = childRect_;
+    if (x < rect.x || x >= rect.x + rect.w || y < rect.y || y >= rect.y + rect.h)
         return -1;
     const auto& kids = items_[openParent_].children;
-    return rowIndexAt(kids, y - b.y + childScroll_);
+    return rowIndexAt(kids, y - rect.y + childScroll_);
 }
 
 // ---------------------------------------------------------------- input
@@ -594,7 +594,7 @@ void ContextMenu::render(SDL_Renderer* r) {
     if (table_) {
         const float hy = tableY0_ + visRows_ * kRowH; // header row top
         for (size_t c = 0; c < colRects_.size(); ++c) {
-            const SDL_FRect& b = colRects_[c];
+            const SDL_FRect& rect = colRects_[c];
             const Column& col = columns_[c];
             int n = (int)col.items.size();
             const bool colHovered = ((int)c == hoverCol_);
@@ -602,11 +602,11 @@ void ContextMenu::render(SDL_Renderer* r) {
 
             // Column body fill + outline.
             setColor(r, colHovered ? kTableBgHot : kTableBg);
-            jplay::fillRect(r, &b);
+            jplay::fillRect(r, &rect);
 
             // Options: bottom-aligned just above the header, offset by the column's
             // scroll and clipped to the option viewport (above the header row).
-            SDL_Rect clip{ (int)b.x, (int)tableY0_, (int)b.w, (int)(visRows_ * kRowH) };
+            SDL_Rect clip{ (int)rect.x, (int)tableY0_, (int)rect.w, (int)(visRows_ * kRowH) };
             SDL_SetRenderClipRect(r, &clip);
             for (int i = 0; i < n; ++i) {
                 float ry = hy - (float)(n - i) * kRowH + scroll;
@@ -614,21 +614,21 @@ void ContextMenu::render(SDL_Renderer* r) {
                     continue; // scrolled out of the viewport
                 float cy = ry + kRowH * 0.5f;
                 if (col.items[i].checked) {
-                    SDL_FRect sr{ b.x + 1.0f, ry, b.w - 2.0f, kRowH };
+                    SDL_FRect sr{ rect.x + 1.0f, ry, rect.w - 2.0f, kRowH };
                     setColor(r, kSelected);
                     jplay::fillRect(r, &sr);
                 }
                 if ((int)c == hoverCol_ && i == hoverItem_)
-                    jplay::drawRowHover(r, SDL_FRect{ b.x + 1.0f, ry, b.w - 2.0f, kRowH });
+                    jplay::drawRowHover(r, SDL_FRect{ rect.x + 1.0f, ry, rect.w - 2.0f, kRowH });
                 if (col.items[i].checked) {
                     setColor(r, kMark);
-                    drawCheck(r, b.x + 4.0f, cy);
+                    drawCheck(r, rect.x + 4.0f, cy);
                 }
                 if (!col.items[i].badge.empty()) // color only: see Item::badge
-                    drawStatusSwatch(r, SDL_FRect{ b.x, ry, b.w, kRowH },
+                    drawStatusSwatch(r, SDL_FRect{ rect.x, ry, rect.w, kRowH },
                                      col.items[i].badgeColor, 1.0f);
                 if (textFont_)
-                    textFont_->draw(r, b.x + kMarkW, ry + (kRowH - glyphH) * 0.5f,
+                    textFont_->draw(r, rect.x + kMarkW, ry + (kRowH - glyphH) * 0.5f,
                                     labelColor(col.items[i]), col.items[i].label.c_str());
             }
             SDL_SetRenderClipRect(r, nullptr);
@@ -637,21 +637,21 @@ void ContextMenu::render(SDL_Renderer* r) {
             if (n > visRows_) {
                 setColor(r, kMark);
                 if (scroll < (float)(n - visRows_) * kRowH - 0.5f)
-                    drawChevron(r, b.x + b.w - 8.0f, tableY0_ + 5.0f, true);
+                    drawChevron(r, rect.x + rect.w - 8.0f, tableY0_ + 5.0f, true);
                 if (scroll > 0.5f)
-                    drawChevron(r, b.x + b.w - 8.0f, hy - 5.0f, false);
+                    drawChevron(r, rect.x + rect.w - 8.0f, hy - 5.0f, false);
             }
 
             // Header row pinned at the bottom of the column.
-            SDL_FRect hrect{ b.x, hy, b.w, kRowH };
+            SDL_FRect hrect{ rect.x, hy, rect.w, kRowH };
             setColor(r, colHovered ? kHeaderBgHot : kHeaderBg);
             jplay::fillRect(r, &hrect);
             if (textFont_)
-                textFont_->draw(r, b.x + kMarkW, hy + (kRowH - glyphH) * 0.5f,
+                textFont_->draw(r, rect.x + kMarkW, hy + (kRowH - glyphH) * 0.5f,
                                 colHovered ? kHeaderTxtHot : kHeaderTxt, col.label.c_str());
 
             setColor(r, colHovered ? kBorderHot : kBorder);
-            jplay::drawRect(r, &b);
+            jplay::drawRect(r, &rect);
         }
         return;
     }

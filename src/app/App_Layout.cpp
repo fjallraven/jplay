@@ -98,8 +98,8 @@ bool App::openLayoutView() {
         if (const Clip* c = timeline_.findClipById(id); c && !c->audio)
             picked.push_back(*c);
     if (picked.empty()) {
-        if (const Clip* c = getTopMostClipAtFrame(timeline_.playhead))
-            picked.push_back(*c);
+        if (const Clip* clip = getTopMostClipAtFrame(timeline_.playhead))
+            picked.push_back(*clip);
     }
     if (picked.empty()) {
         setStatusWarn(stackView()
@@ -120,8 +120,8 @@ bool App::openLayoutView() {
     int64_t minAbs = INT64_MAX;
     for (size_t i = 0; i < picked.size(); ++i) {
         int64_t base = 0;
-        if (auto m = timeline_.findMediaById(picked[i].mediaId))
-            base = firstFrameOf(*m);
+        if (auto media = timeline_.findMediaById(picked[i].mediaId))
+            base = firstFrameOf(*media);
         absIn[i] = base + picked[i].sourceOffset;
         minAbs = std::min(minAbs, absIn[i]);
     }
@@ -132,9 +132,9 @@ bool App::openLayoutView() {
     // which case the layout opens on its own first frame.
     int64_t shownAbs = -1;
     for (size_t i = 0; i < picked.size(); ++i) {
-        const Clip& c = picked[i];
-        if (timeline_.playhead >= c.timelineStart && timeline_.playhead < c.end()) {
-            shownAbs = absIn[i] + (timeline_.playhead - c.timelineStart);
+        const Clip& clip = picked[i];
+        if (timeline_.playhead >= clip.timelineStart && timeline_.playhead < clip.end()) {
+            shownAbs = absIn[i] + (timeline_.playhead - clip.timelineStart);
             break;
         }
     }
@@ -147,15 +147,15 @@ bool App::openLayoutView() {
     Sequence& seq = timeline_.sequences[idx];
     seq.clips.reserve(picked.size());
     for (size_t i = 0; i < picked.size(); ++i) {
-        Clip c = std::move(picked[i]);
-        c.id = nextClipId_++;
-        c.track = (int)i;          // one per row, top first: the tile order
-        c.timelineStart = base + (absIn[i] - minAbs);
-        c.shotId = -1;             // the shots belong to the cut, not to this view
-        c.linkedTo = 0;            // its audio parent stayed behind
-        c.linkOffset = 0;
-        c.hidden = false;          // a row hidden in the cut is one you asked to compare
-        seq.clips.push_back(std::move(c));
+        Clip clip = std::move(picked[i]);
+        clip.id = nextClipId_++;
+        clip.track = (int)i;          // one per row, top first: the tile order
+        clip.timelineStart = base + (absIn[i] - minAbs);
+        clip.shotId = -1;             // the shots belong to the cut, not to this view
+        clip.linkedTo = 0;            // its audio parent stayed behind
+        clip.linkOffset = 0;
+        clip.hidden = false;          // a row hidden in the cut is one you asked to compare
+        seq.clips.push_back(std::move(clip));
     }
     scratchTrackCount_ = (int)seq.clips.size();
     timeline_.repackSequences();
@@ -331,18 +331,18 @@ void App::renderLayoutTiles(bool invalidate) {
             continue; // renderPlayer draws that one, from the program texture
         const SDL_FRect& cell = layoutTiles_[i];
         LayoutSlot& slot = layoutSlots_[i];
-        const Clip* c = timeline_.findClipById(layoutClipIds_[i]);
+        const Clip* clip = timeline_.findClipById(layoutClipIds_[i]);
 
         // Cell backing, so a tile that has nothing to show reads as an empty slot
         // rather than as a hole in the stage.
         SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
         jplay::fillRect(renderer_, &cell);
 
-        auto media = c && !c->mediaId.empty() ? timeline_.findMediaById(c->mediaId) : nullptr;
-        const bool missing = !c || !media || media->openFailed();
+        auto media = clip && !clip->mediaId.empty() ? timeline_.findMediaById(clip->mediaId) : nullptr;
+        const bool missing = !clip || !media || media->openFailed();
         if (!missing) {
-            const CacheKey key{ c->mediaId,
-                                c->sourceOffset + (timeline_.playhead - c->timelineStart) };
+            const CacheKey key{ clip->mediaId,
+                                clip->sourceOffset + (timeline_.playhead - clip->timelineStart) };
             if (FramePtr f = cache_->get(key)) {
                 const std::string cs = ocioActive ? mediaColorSpace(*media) : std::string();
                 slot.pa = f->pixelAspect > 0.0f ? f->pixelAspect : 1.0f;
@@ -371,7 +371,7 @@ void App::renderLayoutTiles(bool invalidate) {
                     slot.has = false;
                 }
                 const bool upToDate = slot.has && !invalidate && slot.key == key &&
-                                      slot.clipId == c->id && slot.cs == cs;
+                                      slot.clipId == clip->id && slot.cs == cs;
                 if (slot.tex && !upToDate) {
                     const void* px = nullptr;
                     OcioGpu::InputFormat ifmt = OcioGpu::InputFormat::Rgba8;
@@ -423,7 +423,7 @@ void App::renderLayoutTiles(bool invalidate) {
                         }
                     }
                     slot.key = key;
-                    slot.clipId = c->id;
+                    slot.clipId = clip->id;
                     slot.cs = cs;
                     slot.has = true;
                 }
@@ -441,7 +441,7 @@ void App::renderLayoutTiles(bool invalidate) {
         // set of tracks can hand slot i a new clip; holding the previous image then
         // would show one source under another's label. The cell goes black for the
         // frame or two until its own decode lands instead.
-        if (slot.has && slot.tex && slot.w > 0 && slot.h > 0 && c && slot.clipId == c->id) {
+        if (slot.has && slot.tex && slot.w > 0 && slot.h > 0 && clip && slot.clipId == clip->id) {
             const SDL_Rect clipRect = { (int)cell.x, (int)cell.y, (int)cell.w, (int)cell.h };
             SDL_SetRenderClipRect(renderer_, &clipRect);
             SDL_FRect dst = fitImageIn(cell, (float)slot.w * slot.pa, (float)slot.h);
@@ -449,7 +449,7 @@ void App::renderLayoutTiles(bool invalidate) {
             SDL_SetRenderClipRect(renderer_, nullptr);
         }
 
-        drawLayoutTileChrome(cell, c, (int)i);
+        drawLayoutTileChrome(cell, clip, (int)i);
     }
 }
 
@@ -472,9 +472,9 @@ void App::drawLayoutTileChrome(const SDL_FRect& cell, const Clip* c, int track) 
     const float barH = lineH + 2.0f * dpiScale;
     if (c && cell.h >= lineH * 3.0f) {
         std::string label = trackLabel(track);
-        if (auto m = timeline_.findMediaById(c->mediaId)) {
-            std::string stem = hashSeqStem(fs::path(m->path()).stem().string(),
-                                           m->type() == ClipType::ImageSequence);
+        if (auto media = timeline_.findMediaById(c->mediaId)) {
+            std::string stem = hashSeqStem(fs::path(media->path()).stem().string(),
+                                           media->type() == ClipType::ImageSequence);
             if (!stem.empty())
                 label += "  " + stem;
         }
@@ -580,14 +580,14 @@ void App::renderStackOverlay() {
     std::string names[kStackOverlayLines];
     int n = 0;
     for (size_t i = 0; i < rows.size() && n < kStackOverlayLines; ++i, ++n) {
-        const Clip* c = rows[i];
-        auto m = c && !c->mediaId.empty() ? timeline_.findMediaById(c->mediaId) : nullptr;
-        if (!m) {
+        const Clip* clip = rows[i];
+        auto media = clip && !clip->mediaId.empty() ? timeline_.findMediaById(clip->mediaId) : nullptr;
+        if (!media) {
             names[n] = "(missing)";
             continue;
         }
-        fs::path mp = fs::u8path(m->path());
-        names[n] = hashSeqStem(mp.stem().u8string(), m->type() == ClipType::ImageSequence) +
+        fs::path mp = fs::u8path(media->path());
+        names[n] = hashSeqStem(mp.stem().u8string(), media->type() == ClipType::ImageSequence) +
                    mp.extension().u8string();
     }
 

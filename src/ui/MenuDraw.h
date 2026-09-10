@@ -21,8 +21,8 @@ namespace jplay {
 // butting up against its edge.
 inline void drawRowHover(SDL_Renderer* r, const SDL_FRect& row) {
     const SDL_FRect hr{ row.x + 1.0f, row.y + 1.0f, row.w - 2.0f, row.h - 2.0f };
-    const SDL_Color& c = colors().hover;
-    SDL_SetRenderDrawColor(r, c.r, c.g, c.b, c.a);
+    const SDL_Color& color = colors().hover;
+    SDL_SetRenderDrawColor(r, color.r, color.g, color.b, color.a);
     fillRect(r, &hr);
 }
 

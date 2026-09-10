@@ -100,8 +100,8 @@ void App::drawPeButton(const SDL_FRect& b, bool plus, bool hover) {
     const float t = std::max(1.0f, std::round(dpiScale)); // stroke thickness
     setColor(renderer_, plus ? kBtnPlus : kBtnMinus);
     if (plus) {
-        SDL_FRect v = { std::round(b.x + (b.w - t) * 0.5f), b.y + p, t, b.h - 2.0f * p };
-        jplay::fillRect(renderer_, &v);
+        SDL_FRect rect = { std::round(b.x + (b.w - t) * 0.5f), b.y + p, t, b.h - 2.0f * p };
+        jplay::fillRect(renderer_, &rect);
     }
     SDL_FRect h = { b.x + p, std::round(b.y + (b.h - t) * 0.5f), b.w - 2.0f * p, t };
     jplay::fillRect(renderer_, &h);
@@ -236,9 +236,9 @@ void App::renderProjectExplorer() {
                               2.0f, 0.0f);
 
     for (int si = 0; si < (int)timeline_.sequences.size(); ++si) {
-        const Sequence& s = timeline_.sequences[si];
-        if (s.temporary) continue; // matches the contentH pass above
-        const bool collapsed = peCollapsedSeqs_.count(s.id) > 0;
+        const Sequence& seq = timeline_.sequences[si];
+        if (seq.temporary) continue; // matches the contentH pass above
+        const bool collapsed = peCollapsedSeqs_.count(seq.id) > 0;
         const bool active = (si == focusedSeq);
         SDL_FRect row = cutTop(content, rh);
         const bool onBand = visibleIn(row, band);
@@ -252,7 +252,7 @@ void App::renderProjectExplorer() {
 
         PeRow pr;
         pr.kind = PeRow::Kind::Seq;
-        pr.id = s.id;
+        pr.id = seq.id;
         pr.rect = row;
 
         // Row internals, cut left-to-right and right-to-left off what is left; the
@@ -298,14 +298,14 @@ void App::renderProjectExplorer() {
         bool colorHover = onBand && inRect(fColor, mx, my);
         if (colorHover) hoveredColor = fColor;
         if (onBand) {
-            setColor(renderer_, seqBgSdlColor(s.bgColor, kSeqBgLift));
+            setColor(renderer_, seqBgSdlColor(seq.bgColor, kSeqBgLift));
             jplay::fillRect(renderer_, &fColor);
             setColor(renderer_, colorHover ? kRowText : kCaret);
             jplay::drawRect(renderer_, &fColor);
         }
 
         int64_t a = 0, b = 0;
-        std::string range = timeline_.sequenceSpan(s, a, b) ? ("0-" + std::to_string(b - a)) : "empty";
+        std::string range = timeline_.sequenceSpan(seq, a, b) ? ("0-" + std::to_string(b - a)) : "empty";
         gapRight(inner, 8.0f);
         SDL_FRect rangeSlot = cutRight(inner, textFont_.measure(renderer_, range.c_str()));
         if (onBand) {
@@ -318,9 +318,9 @@ void App::renderProjectExplorer() {
         nameSlot.w = std::max(nameSlot.w, 20.0f); // never collapse below a clickable width
         SDL_FRect fName = centerV(nameSlot, lh + 4.0f);
         pr.fName = fName;
-        if (onBand && !(peEdit_ == PeEdit::SeqName && peEditId_ == s.id)) {
+        if (onBand && !(peEdit_ == PeEdit::SeqName && peEditId_ == seq.id)) {
             const SDL_FRect nt = centerV(nameSlot, lh);
-            drawText(nt.x + 2.0f, nt.y, kRowText, fitText(s.name, fName.w - 4.0f));
+            drawText(nt.x + 2.0f, nt.y, kRowText, fitText(seq.name, fName.w - 4.0f));
         }
 
         peRows_.push_back(pr);
@@ -329,7 +329,7 @@ void App::renderProjectExplorer() {
             continue;
 
         const int64_t off = regs[si].start;
-        for (int shotId : s.shotIds) {
+        for (int shotId : seq.shotIds) {
             Shot* sh = timeline_.findShotById(shotId);
             if (!sh) continue;
 
@@ -347,7 +347,7 @@ void App::renderProjectExplorer() {
             PeRow sr;
             sr.kind = PeRow::Kind::Shot;
             sr.id = sh->id;
-            sr.seqId = s.id;
+            sr.seqId = seq.id;
             sr.rect = srow;
 
             SDL_FRect sinner = srow;
@@ -391,11 +391,11 @@ void App::renderProjectExplorer() {
                 SDL_FRect labelSlot = cutLeft(cells, labelColW);
                 if (inView) drawText(labelSlot.x, labelSlot.y, kSeqRange, label);
                 auto valCell = [&](int64_t v, SDL_FRect& r, PeEdit k) {
-                    std::string s = std::to_string(v);
+                    std::string seq = std::to_string(v);
                     // one space after the value
-                    r = cutLeft(cells, textFont_.measure(renderer_, s.c_str()) + spaceW);
+                    r = cutLeft(cells, textFont_.measure(renderer_, seq.c_str()) + spaceW);
                     if (inView && !(peEdit_ == k && peEditId_ == sh->id))
-                        drawText(r.x, r.y, kShotCell, s);
+                        drawText(r.x, r.y, kShotCell, seq);
                 };
                 valCell(v1, r1, k1);
                 SDL_FRect dash = cutLeft(cells, textFont_.measure(renderer_, "-") + spaceW);
@@ -505,13 +505,13 @@ void App::renderProjectExplorer() {
         // showing). Empty when neither exists, which greys the button out.
         std::string goToPath;
         {
-            const Clip* c = nullptr;
+            const Clip* clip = nullptr;
             if (!selectedClipIds_.empty())
-                c = timeline_.findClipById(selectedClipIds_.front());
-            if (!c)
-                c = playheadClip();
-            if (c && !c->mediaId.empty())
-                if (auto gm = timeline_.findMediaById(c->mediaId))
+                clip = timeline_.findClipById(selectedClipIds_.front());
+            if (!clip)
+                clip = playheadClip();
+            if (clip && !clip->mediaId.empty())
+                if (auto gm = timeline_.findMediaById(clip->mediaId))
                     goToPath = gm->path();
         }
 
@@ -577,8 +577,8 @@ void App::renderProjectExplorer() {
             for (const BinGroup& g : groups) {
                 if (g.header.empty() || !peCollapsedBinGroups_.count(g.header))
                     continue;
-                for (const Media* m : g.sources)
-                    if (m->path() == goToPath) { peCollapsedBinGroups_.erase(g.header); break; }
+                for (const Media* media : g.sources)
+                    if (media->path() == goToPath) { peCollapsedBinGroups_.erase(g.header); break; }
             }
         }
 
@@ -626,8 +626,8 @@ void App::renderProjectExplorer() {
         auto groupPlaying = [&](const BinGroup& g) {
             if (groups.size() < 2 || playingPath.empty())
                 return false;
-            for (const Media* m : g.sources)
-                if (m->path() == playingPath)
+            for (const Media* media : g.sources)
+                if (media->path() == playingPath)
                     return true;
             return false;
         };
@@ -692,9 +692,9 @@ void App::renderProjectExplorer() {
                     contentH += (gi ? hdrGap : 0.0f) + hdrH;
                 if (groupCollapsed(groups[gi].header))
                     continue;
-                for (const Media* m : groups[gi].sources) {
-                    if (m->path() == goToPath) goToY = contentH;
-                    if (m->path() == peRevealPath_) revealY = contentH;
+                for (const Media* media : groups[gi].sources) {
+                    if (media->path() == goToPath) goToY = contentH;
+                    if (media->path() == peRevealPath_) revealY = contentH;
                     contentH += rowH;
                 }
             }
@@ -726,20 +726,20 @@ void App::renderProjectExplorer() {
               }
               if (groupCollapsed(groups[gi].header))
                   continue;
-              for (Media* m : groups[gi].sources) {
+              for (Media* media : groups[gi].sources) {
                 // Hit target spans the whole row pitch, gap included, so a click
                 // landing between two rows still picks the row above it.
                 SDL_FRect slot = cutTop(content, rowH);
                 SDL_FRect fill = slot;
                 fill.h -= rowGap;
-                if (showThumb && m->type() != ClipType::Audio && visibleIn(fill, thumbBand))
-                    thumbCells.push_back(m); // audio draws a glyph, not a thumbnail
+                if (showThumb && media->type() != ClipType::Audio && visibleIn(fill, thumbBand))
+                    thumbCells.push_back(media); // audio draws a glyph, not a thumbnail
                 SDL_FRect vis = clipV(fill, band);
                 SDL_FRect hit = clipV(slot, band);
                 if (vis.h > 1.0f) {
-                    bool selected = sourceSelected(m);
-                    bool playing = !playingPath.empty() && m->path() == playingPath;
-                    bool tlSel = timelineSelected(m);
+                    bool selected = sourceSelected(media);
+                    bool playing = !playingPath.empty() && media->path() == playingPath;
+                    bool tlSel = timelineSelected(media);
                     bool hover = inRect(hit, mx, my);
                     SDL_SetRenderDrawColor(renderer_, selected ? 58 : (hover ? 44 : 36),
                                            selected ? 70 : (hover ? 46 : 38),
@@ -768,21 +768,21 @@ void App::renderProjectExplorer() {
                         SDL_FRect thumb = centerV(thumbSlot, thumbSz);
                         SDL_SetRenderDrawColor(renderer_, 52, 54, 60, 255);
                         jplay::fillRect(renderer_, &thumb);
-                        if (m->type() == ClipType::Audio) // no frames: speaker glyph (ICON_MDI_VOLUME_HIGH, U+F057E)
+                        if (media->type() == ClipType::Audio) // no frames: speaker glyph (ICON_MDI_VOLUME_HIGH, U+F057E)
                             icons_.drawGlyph(renderer_, 0xF057E, thumb, kAudioIcon);
-                        else if (SDL_Texture* tex = sourceThumb(sourceThumbKey(m)))
+                        else if (SDL_Texture* tex = sourceThumb(sourceThumbKey(media)))
                             SDL_RenderTexture(renderer_, tex, nullptr, &thumb);
                     }
                     gapLeft(inner, 6.0f);
-                    fs::path mp(m->path());
+                    fs::path mp(media->path());
                     std::string name = hashSeqStem(mp.stem().string(),
-                                                   m->type() == ClipType::ImageSequence)
+                                                   media->type() == ClipType::ImageSequence)
                                      + mp.extension().string();
                     std::string base = fitText(name, inner.w - 4.0f);
-                    SDL_Color tc = sourceInTimeline(m) ? kRowText : kSourceDim;
+                    SDL_Color tc = sourceInTimeline(media) ? kRowText : kSourceDim;
                     const SDL_FRect nameSlot = centerV(inner, lh);
                     drawText(nameSlot.x, nameSlot.y, tc, base);
-                    explorerRows_.push_back({ m->path(), hit });
+                    explorerRows_.push_back({ media->path(), hit });
                 }
               }
             }
@@ -853,29 +853,29 @@ void App::renderProjectExplorer() {
               if (groupCollapsed(g.header))
                   continue;
               for (int i = 0; i < (int)g.sources.size(); ++i) {
-                Media* m = g.sources[i];
+                Media* media = g.sources[i];
                 int col = i % cols, row = i / cols;
                 float cx = gridX + col * (cellW + gap);
                 float cy = top + row * (cellH + gap);
                 const SDL_FRect cell = { cx, cy, cellW, cellH };
-                if (m->type() != ClipType::Audio && visibleIn(cell, thumbBand))
-                    thumbCells.push_back(m); // audio draws a glyph, not a thumbnail
+                if (media->type() != ClipType::Audio && visibleIn(cell, thumbBand))
+                    thumbCells.push_back(media); // audio draws a glyph, not a thumbnail
                 if (!visibleIn(cell, band))
                     continue; // scrolled out of view
                 // Hit target covers the label strip and the row gap under the
                 // thumbnail, so a click between two grid rows still picks a cell.
                 const SDL_FRect hit = clipV({ cx, cy, cellW, cellH + gap }, band);
                 SDL_FRect thumb = { cx, cy, cellW - 2.0f, cellW - 2.0f };
-                bool selected = sourceSelected(m);
-                bool playing = !playingPath.empty() && m->path() == playingPath;
-                bool tlSel = timelineSelected(m);
+                bool selected = sourceSelected(media);
+                bool playing = !playingPath.empty() && media->path() == playingPath;
+                bool tlSel = timelineSelected(media);
                 bool hover = inRect(hit, mx, my);
                 SDL_SetRenderDrawColor(renderer_, selected ? 58 : 52,
                                        selected ? 70 : 54, selected ? 92 : 60, 255);
                 jplay::fillRect(renderer_, &thumb);
-                if (m->type() == ClipType::Audio) // no frames: speaker glyph (ICON_MDI_VOLUME_HIGH, U+F057E)
+                if (media->type() == ClipType::Audio) // no frames: speaker glyph (ICON_MDI_VOLUME_HIGH, U+F057E)
                     icons_.drawGlyph(renderer_, 0xF057E, thumb, kAudioIcon);
-                else if (SDL_Texture* tex = sourceThumb(sourceThumbKey(m)))
+                else if (SDL_Texture* tex = sourceThumb(sourceThumbKey(media)))
                     SDL_RenderTexture(renderer_, tex, nullptr, &thumb);
                 if (selected || hover) {
                     setColor(renderer_, selected ? kActive : SDL_Color{ 200, 210, 235, 220 });
@@ -900,16 +900,16 @@ void App::renderProjectExplorer() {
                                      mk.x + mk.w * 0.5f, mk.y + mk.h, kPlayMark);
                     }
                 }
-                fs::path mp(m->path());
+                fs::path mp(media->path());
                 std::string name = hashSeqStem(mp.stem().string(),
-                                               m->type() == ClipType::ImageSequence)
+                                               media->type() == ClipType::ImageSequence)
                                  + mp.extension().string();
                 std::string base = fitText(name, cellW - 4.0f);
                 float tw = textFont_.measure(renderer_, base.c_str());
-                SDL_Color tc = sourceInTimeline(m) ? kRowText : kSourceDim;
+                SDL_Color tc = sourceInTimeline(media) ? kRowText : kSourceDim;
                 drawText(cx + (cellW - tw) * 0.5f, cy + cellW + 2.0f, tc, base);
                 if (hit.h > 1.0f)
-                    explorerRows_.push_back({ m->path(), hit });
+                    explorerRows_.push_back({ media->path(), hit });
               }
               int r = gridRows(g);
               if (r > 0) top += r * cellH + (r - 1) * gap;
@@ -1061,8 +1061,8 @@ std::vector<App::BinGroup> App::binGroups() const {
     size_t namedProjects = 0;
     {
         std::vector<std::string> seen;
-        for (const Sequence* s : seqs) {
-            const std::string pn = timeline_.projectNameOfSeq(*s);
+        for (const Sequence* seq : seqs) {
+            const std::string pn = timeline_.projectNameOfSeq(*seq);
             if (!pn.empty() && std::find(seen.begin(), seen.end(), pn) == seen.end())
                 seen.push_back(pn);
         }
@@ -1088,18 +1088,18 @@ std::vector<App::BinGroup> App::binGroups() const {
         groups.push_back(std::move(g));
         ranked.emplace_back();
         size_t next = 0;
-        for (const Clip* c : clips)
-            if (!c->mediaId.empty())
-                place.emplace(c->mediaId, std::make_pair(groups.size() - 1, next++));
+        for (const Clip* clip : clips)
+            if (!clip->mediaId.empty())
+                place.emplace(clip->mediaId, std::make_pair(groups.size() - 1, next++));
     }
     groups.push_back(BinGroup{ "No Sequence", {} }); // unplaced sources, last
     ranked.emplace_back();
 
-    for (Media* m : v) {
-        auto it = place.find(m->id());
+    for (Media* media : v) {
+        auto it = place.find(media->id());
         const size_t gi = it == place.end() ? groups.size() - 1 : it->second.first;
         const size_t rank = it == place.end() ? 0 : it->second.second;
-        ranked[gi].push_back({ rank, m });
+        ranked[gi].push_back({ rank, media });
     }
 
     std::vector<BinGroup> out;
@@ -1298,8 +1298,8 @@ void App::stepBinSelection(int dir) {
     for (const BinGroup& g : binGroups()) {
         if (!g.header.empty() && peCollapsedBinGroups_.count(g.header))
             continue;
-        for (const Media* m : g.sources)
-            paths.push_back(m->path());
+        for (const Media* media : g.sources)
+            paths.push_back(media->path());
     }
     if (paths.empty())
         return;
@@ -1463,10 +1463,10 @@ void App::openSourceInDefaultSequence(const std::string& path, bool replaceConte
     for (int i = 0; i < (int)timeline_.sequences.size(); ++i)
         if (timeline_.sequences[i].name == kDefaultSeqName) { idx = i; break; }
     if (idx < 0) {
-        Sequence s;
-        s.id = nextSeqId_++;
-        s.name = kDefaultSeqName;
-        timeline_.sequences.push_back(std::move(s));
+        Sequence seq;
+        seq.id = nextSeqId_++;
+        seq.name = kDefaultSeqName;
+        timeline_.sequences.push_back(std::move(seq));
         timeline_.repackSequences();
         idx = (int)timeline_.sequences.size() - 1;
     }
@@ -1495,9 +1495,9 @@ void App::openSourceInDefaultSequence(const std::string& path, bool replaceConte
 
     if (auto pm = timeline_.findMediaByPath(mediaTypeForPath(path), path)) {
         const Clip* first = nullptr;
-        for (const Clip& c : timeline_.sequences[idx].clips)
-            if (c.mediaId == pm->id() && (!first || c.timelineStart < first->timelineStart))
-                first = &c;
+        for (const Clip& clip : timeline_.sequences[idx].clips)
+            if (clip.mediaId == pm->id() && (!first || clip.timelineStart < first->timelineStart))
+                first = &clip;
         if (first) {
             setPlayhead(first->timelineStart);
             setStatus("ALREADY IN " + std::string(kDefaultSeqName));
@@ -1896,10 +1896,10 @@ void App::scopeToSequence(int seqIdx) {
 void App::scopeToShot(int shotIdx) {
     if (shotIdx < 0 || shotIdx >= (int)timeline_.shots.size())
         return;
-    const Shot& s = timeline_.shots[shotIdx];
-    focusedShotId_ = s.id;
-    fitRange(s.timelineStart, s.end());
-    setPlayhead(s.timelineStart);
+    const Shot& shot = timeline_.shots[shotIdx];
+    focusedShotId_ = shot.id;
+    fitRange(shot.timelineStart, shot.end());
+    setPlayhead(shot.timelineStart);
 }
 
 void App::unscopeShot() {
@@ -1917,10 +1917,10 @@ void App::scopeToAll() {
 }
 
 void App::addSequence() {
-    Sequence s;
-    s.id = nextSeqId_++;
-    s.name = "Sequence " + std::to_string(timeline_.sequences.size() + 1);
-    timeline_.sequences.push_back(std::move(s));
+    Sequence seq;
+    seq.id = nextSeqId_++;
+    seq.name = "Sequence " + std::to_string(timeline_.sequences.size() + 1);
+    timeline_.sequences.push_back(std::move(seq));
     timeline_.repackSequences();
     scopeToSequence((int)timeline_.sequences.size() - 1);
     hostSnapshotDirty_ = true; // re-push the project to spectators if hosting
@@ -1939,8 +1939,8 @@ void App::openSeqColorMenu(int seqId, const SDL_FRect& btn) {
         it.rowColor = ((uint32_t)rc.r << 16) | ((uint32_t)rc.g << 8) | rc.b;
         it.checked = seq && seq->bgColor == c;
         it.action = [this, seqId, c] {
-            if (Sequence* s = timeline_.findSequenceById(seqId))
-                s->bgColor = c;
+            if (Sequence* seq = timeline_.findSequenceById(seqId))
+                seq->bgColor = c;
             hostSnapshotDirty_ = true; // re-push the project to spectators if hosting
         };
         items.push_back(std::move(it));
@@ -1956,9 +1956,9 @@ void App::removeActiveSequence() {
     if (timeline_.sequences.empty())
         return;
     int idx = std::clamp(activeSequenceIdx_, 0, (int)timeline_.sequences.size() - 1);
-    Sequence& s = timeline_.sequences[idx];
-    if (!s.clips.empty()) {
-        std::string msg = "Sequence \"" + s.name + "\" has " + std::to_string(s.clips.size()) +
+    Sequence& seq = timeline_.sequences[idx];
+    if (!seq.clips.empty()) {
+        std::string msg = "Sequence \"" + seq.name + "\" has " + std::to_string(seq.clips.size()) +
                           " clip(s). Delete the sequence and its clips?";
         showDialog("Remove Sequence", msg,
                    { { "Abort", nullptr },
@@ -1975,18 +1975,18 @@ void App::removeActiveSequence() {
 void App::removeSequenceAt(int idx) {
     if (idx < 0 || idx >= (int)timeline_.sequences.size())
         return;
-    Sequence& s = timeline_.sequences[idx];
+    Sequence& seq = timeline_.sequences[idx];
     // Drop the sequence's own shots from the global pool, then the sequence.
-    for (int sid : s.shotIds)
+    for (int sid : seq.shotIds)
         timeline_.shots.erase(std::remove_if(timeline_.shots.begin(), timeline_.shots.end(),
                                              [sid](const Shot& sh) { return sh.id == sid; }),
                               timeline_.shots.end());
     timeline_.sequences.erase(timeline_.sequences.begin() + idx);
     if (timeline_.sequences.empty()) { // a project must keep at least one sequence
-        Sequence d;
-        d.id = nextSeqId_++;
-        d.name = "Default Sequence";
-        timeline_.sequences.push_back(std::move(d));
+        Sequence seq;
+        seq.id = nextSeqId_++;
+        seq.name = "Default Sequence";
+        timeline_.sequences.push_back(std::move(seq));
     }
     timeline_.repackSequences();
     // Removing the leading sequence would otherwise leave its frames as a hole in
@@ -2017,8 +2017,8 @@ bool App::reorderShotInSequence(int seqId, int shotId, int insertIdx) {
     for (int i = 0; i < (int)timeline_.sequences.size(); ++i)
         if (timeline_.sequences[i].id == seqId) { seqIdx = i; break; }
     if (seqIdx < 0) return false;
-    Sequence& s = timeline_.sequences[seqIdx];
-    std::vector<int>& ids = s.shotIds;
+    Sequence& seq = timeline_.sequences[seqIdx];
+    std::vector<int>& ids = seq.shotIds;
     int from = -1;
     for (int i = 0; i < (int)ids.size(); ++i)
         if (ids[i] == shotId) { from = i; break; }
@@ -2045,7 +2045,7 @@ bool App::reorderShotInSequence(int seqId, int shotId, int insertIdx) {
         int64_t delta = cursor - sh->timelineStart;
         if (delta != 0) {
             sh->timelineStart += delta;
-            for (auto& c : s.clips)
+            for (auto& c : seq.clips)
                 if (c.shotId == sid)
                     c.timelineStart += delta;
         }
@@ -2080,7 +2080,7 @@ void App::commitPeEdit() {
     };
     switch (peEdit_) {
     case PeEdit::SeqName:
-        if (Sequence* s = timeline_.findSequenceById(peEditId_); s && !txt.empty()) s->name = txt;
+        if (Sequence* seq = timeline_.findSequenceById(peEditId_); seq && !txt.empty()) seq->name = txt;
         break;
     case PeEdit::ShotName:
         if (Shot* sh = timeline_.findShotById(peEditId_); sh && !txt.empty()) sh->name = txt;
@@ -2090,19 +2090,19 @@ void App::commitPeEdit() {
         if (Shot* sh = timeline_.findShotById(peEditId_); sh && parse(v)) {
             int64_t target = std::max<int64_t>(v + seqOffsetForShot(peEditId_), 0);
             int64_t end = sh->end();
-            if (Clip* c = ownerClip()) {
+            if (Clip* clip = ownerClip()) {
                 // Left-edge trim (end fixed): start + sourceOffset move together,
                 // clamped to source frame 0 and one frame short of the end. Then
                 // mirror the clip's new span back onto the shot bar.
-                int64_t fixedEnd = c->end();
-                int64_t minStart = std::max<int64_t>(c->timelineStart - c->sourceOffset, 0);
+                int64_t fixedEnd = clip->end();
+                int64_t minStart = std::max<int64_t>(clip->timelineStart - clip->sourceOffset, 0);
                 int64_t start = std::clamp<int64_t>(target, minStart, fixedEnd - 1);
-                c->sourceOffset += start - c->timelineStart;
-                c->timelineStart = start;
-                c->duration = fixedEnd - start;
+                clip->sourceOffset += start - clip->timelineStart;
+                clip->timelineStart = start;
+                clip->duration = fixedEnd - start;
                 sh->timelineStart = start;
-                sh->duration = c->duration;
-                sh->setCut(c->sourceOffset, c->sourceOffset + c->duration);
+                sh->duration = clip->duration;
+                sh->setCut(clip->sourceOffset, clip->sourceOffset + clip->duration);
             } else {
                 int64_t newStart = std::min(target, end - 1);
                 sh->timelineStart = newStart;
@@ -2117,19 +2117,19 @@ void App::commitPeEdit() {
         int64_t v;
         if (Shot* sh = timeline_.findShotById(peEditId_); sh && parse(v)) {
             int64_t newEnd = v + seqOffsetForShot(peEditId_);
-            if (Clip* c = ownerClip()) {
+            if (Clip* clip = ownerClip()) {
                 // Right-edge trim (start + sourceOffset fixed): duration follows,
                 // capped at 1 frame and the frames remaining in the source.
-                int64_t srcFrames = c->sourceOffset + c->duration;
-                if (auto pm = timeline_.findMediaById(c->mediaId)) {
+                int64_t srcFrames = clip->sourceOffset + clip->duration;
+                if (auto pm = timeline_.findMediaById(clip->mediaId)) {
                     int64_t fn = pm->info().frameCount;
                     if (fn > 0) srcFrames = fn;
                 }
-                int64_t maxDur = std::max<int64_t>(srcFrames - c->sourceOffset, 1);
-                int64_t dur = std::clamp<int64_t>(newEnd - c->timelineStart, 1, maxDur);
-                c->duration = dur;
+                int64_t maxDur = std::max<int64_t>(srcFrames - clip->sourceOffset, 1);
+                int64_t dur = std::clamp<int64_t>(newEnd - clip->timelineStart, 1, maxDur);
+                clip->duration = dur;
                 sh->duration = dur;
-                sh->setCut(c->sourceOffset, c->sourceOffset + dur);
+                sh->setCut(clip->sourceOffset, clip->sourceOffset + dur);
             } else {
                 sh->duration = std::max<int64_t>(newEnd - sh->timelineStart, 1);
             }
@@ -2303,8 +2303,8 @@ bool App::projectTreeHandleEvent(const SDL_Event& e) {
                     // Reverse the collapse toggle this double-click's first click
                     // already applied on release, then open the rename field.
                     toggleCollapse(r.id);
-                    if (Sequence* s = timeline_.findSequenceById(r.id))
-                        beginPeEdit(PeEdit::SeqName, r.id, r.fName, s->name);
+                    if (Sequence* seq = timeline_.findSequenceById(r.id))
+                        beginPeEdit(PeEdit::SeqName, r.id, r.fName, seq->name);
                     return true;
                 }
                 // Arm a reorder drag. A plain click on the name (no drag) toggles

@@ -361,8 +361,8 @@ void App::renderSidePanel() {
         if (d.iconTint)
             col = d.iconTint(active, col);
         const float side = btn.h - 4.0f * dpiScale; // the square the glyph is sized to
-        SDL_FRect g = { btn.x + (btn.w - side) * 0.5f, btn.y + 2.0f * dpiScale, side, side };
-        icons_.drawGlyph(renderer_, d.icon, g, col);
+        SDL_FRect rect = { btn.x + (btn.w - side) * 0.5f, btn.y + 2.0f * dpiScale, side, side };
+        icons_.drawGlyph(renderer_, d.icon, rect, col);
     }
 
     // Edge line last.

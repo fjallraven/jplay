@@ -102,26 +102,26 @@ void App::gradeSlider(SDL_FRect& body, const char* label, float* value,
         const int S = 48;
         for (int i = 0; i < S; ++i) {
             float t = (float)i / (S - 1);
-            SDL_FRect s = { track.x + t * track.w, track.y, track.w / S + 1.0f, track.h };
+            SDL_FRect rect = { track.x + t * track.w, track.y, track.w / S + 1.0f, track.h };
             setCol(renderer_, (int)(70 + t * 160), (int)(130 + t * 40), (int)(200 - t * 110));
-            jplay::fillRect(renderer_, &s);
+            jplay::fillRect(renderer_, &rect);
         }
     } else if (grad == 2) { // tint: green -> magenta
         const int S = 48;
         for (int i = 0; i < S; ++i) {
             float t = (float)i / (S - 1);
-            SDL_FRect s = { track.x + t * track.w, track.y, track.w / S + 1.0f, track.h };
+            SDL_FRect rect = { track.x + t * track.w, track.y, track.w / S + 1.0f, track.h };
             setCol(renderer_, (int)(120 + t * 80), (int)(200 - t * 90), (int)(120 + t * 80));
-            jplay::fillRect(renderer_, &s);
+            jplay::fillRect(renderer_, &rect);
         }
     } else if (grad == 3) { // hue rainbow
         const int S = 60;
         for (int i = 0; i < S; ++i) {
             float t = (float)i / (S - 1);
             Uint8 R, G, B; hsv(t * 360.0f, 0.9f, 1.0f, R, G, B);
-            SDL_FRect s = { track.x + t * track.w, track.y, track.w / S + 1.0f, track.h };
+            SDL_FRect rect = { track.x + t * track.w, track.y, track.w / S + 1.0f, track.h };
             setCol(renderer_, R, G, B);
-            jplay::fillRect(renderer_, &s);
+            jplay::fillRect(renderer_, &rect);
         }
     } else {
         // Plain track: the gradient variants above paint their own fill, so they
@@ -130,8 +130,8 @@ void App::gradeSlider(SDL_FRect& body, const char* label, float* value,
         jplay::fillRect(renderer_, &track);
     }
     {
-        const SDL_Color& e = colors().border;
-        setCol(renderer_, e.r, e.g, e.b);
+        const SDL_Color& color = colors().border;
+        setCol(renderer_, color.r, color.g, color.b);
         jplay::drawRect(renderer_, &track);
     }
 
@@ -146,8 +146,8 @@ void App::gradeSlider(SDL_FRect& body, const char* label, float* value,
     float hx = track.x + t * track.w;
     SDL_FRect handle = { hx - 3.0f, track.y - 3.0f, 6.0f, track.h + 6.0f };
     {
-        const SDL_Color& k = colors().gsliderKnob;
-        setCol(renderer_, k.r, k.g, k.b);
+        const SDL_Color& color = colors().gsliderKnob;
+        setCol(renderer_, color.r, color.g, color.b);
         jplay::fillRect(renderer_, &handle);
     }
 
@@ -184,10 +184,10 @@ void App::renderGradePanel() {
     setCol(renderer_, 90, 94, 104);
     jplay::drawRect(renderer_, &gradeEnableRect_);
     if (grade_.enabled) {
-        const SDL_FRect& e = gradeEnableRect_;
+        const SDL_FRect& rect = gradeEnableRect_;
         setCol(renderer_, 235, 238, 245);
-        jplay::drawLine(renderer_, e.x + 3, e.y + 8, e.x + 6, e.y + 11);
-        jplay::drawLine(renderer_, e.x + 6, e.y + 11, e.x + 12, e.y + 4);
+        jplay::drawLine(renderer_, rect.x + 3, rect.y + 8, rect.x + 6, rect.y + 11);
+        jplay::drawLine(renderer_, rect.x + 6, rect.y + 11, rect.x + 12, rect.y + 4);
     }
     gradeResetRect_ = { resetSlot.x, resetSlot.y - 2.0f, resetSlot.w, 18.0f };
     setCol(renderer_, 48, 50, 58);
@@ -331,12 +331,12 @@ void App::renderGradeCurves(SDL_FRect& body) {
     // Plot area (square-ish).
     const float plot = std::min(body.w, 240.0f * dpiScale);
     const SDL_FRect plotBand = cutTop(body, plot);
-    const SDL_FRect g = centerH(plotBand, plot);
-    gradeCurveRect_ = g;
+    const SDL_FRect rect = centerH(plotBand, plot);
+    gradeCurveRect_ = rect;
     {
         const SDL_Color& cb = colors().curveBg;
         setCol(renderer_, cb.r, cb.g, cb.b);
-        jplay::fillRect(renderer_, &g);
+        jplay::fillRect(renderer_, &rect);
     }
 
     computeGradeHistogram();
@@ -347,8 +347,8 @@ void App::renderGradeCurves(SDL_FRect& body) {
     else if (gradeCurveChannel_ == 3) h = &gradeHistoB_;
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
     for (int i = 0; i < 64; ++i) {
-        float bh = (*h)[i] * g.h;
-        SDL_FRect bar = { g.x + (float)i / 64.0f * g.w, g.y + g.h - bh, g.w / 64.0f + 1.0f, bh };
+        float bh = (*h)[i] * rect.h;
+        SDL_FRect bar = { rect.x + (float)i / 64.0f * rect.w, rect.y + rect.h - bh, rect.w / 64.0f + 1.0f, bh };
         setCol(renderer_, 120, 124, 132, 90);
         jplay::fillRect(renderer_, &bar);
     }
@@ -357,14 +357,14 @@ void App::renderGradeCurves(SDL_FRect& body) {
     // Grid + diagonal reference.
     setCol(renderer_, 44, 46, 54);
     for (int i = 1; i < 4; ++i) {
-        float gx = g.x + g.w * i / 4.0f, gy = g.y + g.h * i / 4.0f;
-        jplay::drawLine(renderer_, gx, g.y, gx, g.y + g.h);
-        jplay::drawLine(renderer_, g.x, gy, g.x + g.w, gy);
+        float gx = rect.x + rect.w * i / 4.0f, gy = rect.y + rect.h * i / 4.0f;
+        jplay::drawLine(renderer_, gx, rect.y, gx, rect.y + rect.h);
+        jplay::drawLine(renderer_, rect.x, gy, rect.x + rect.w, gy);
     }
     setCol(renderer_, 60, 63, 72);
-    jplay::drawLine(renderer_, g.x, g.y + g.h, g.x + g.w, g.y);
+    jplay::drawLine(renderer_, rect.x, rect.y + rect.h, rect.x + rect.w, rect.y);
     setCol(renderer_, 80, 82, 90);
-    jplay::drawRect(renderer_, &g);
+    jplay::drawRect(renderer_, &rect);
 
     // Active curve polyline.
     const grade::Curve* cv = &grade_.curveMaster;
@@ -374,17 +374,17 @@ void App::renderGradeCurves(SDL_FRect& body) {
     else if (gradeCurveChannel_ == 3) cv = &grade_.curveB;
     setCol(renderer_, cc.r, cc.g, cc.b);
     const int SN = 64;
-    float px = g.x, py = g.y + g.h - cv->eval(0.0f) * g.h;
+    float px = rect.x, py = rect.y + rect.h - cv->eval(0.0f) * rect.h;
     for (int i = 1; i <= SN; ++i) {
         float t = (float)i / SN;
-        float vx = g.x + t * g.w;
-        float vy = g.y + g.h - cv->eval(t) * g.h;
+        float vx = rect.x + t * rect.w;
+        float vy = rect.y + rect.h - cv->eval(t) * rect.h;
         jplay::drawLine(renderer_, px, py, vx, vy);
         px = vx; py = vy;
     }
     // Control points.
     for (const auto& p : cv->pts) {
-        float vx = g.x + p.x * g.w, vy = g.y + g.h - p.y * g.h;
+        float vx = rect.x + p.x * rect.w, vy = rect.y + rect.h - p.y * rect.h;
         SDL_FRect dot = { vx - 3.0f, vy - 3.0f, 6.0f, 6.0f };
         setCol(renderer_, 235, 238, 245);
         jplay::fillRect(renderer_, &dot);
@@ -397,19 +397,19 @@ void App::renderGradeCurves(SDL_FRect& body) {
 
 // ─── Histogram (display frame) ───────────────────────────────────────────────
 void App::computeGradeHistogram() {
-    const Clip* c = playheadClip();
-    if (!c || c->mediaId.empty()) return;
-    CacheKey key{ c->mediaId, c->sourceOffset + (timeline_.playhead - c->timelineStart) };
+    const Clip* clip = playheadClip();
+    if (!clip || clip->mediaId.empty()) return;
+    CacheKey key{ clip->mediaId, clip->sourceOffset + (timeline_.playhead - clip->timelineStart) };
     if (key == gradeHistoKey_) return; // already computed for this frame
-    FramePtr f = cache_->get(key);
-    if (!f || f->rgba.empty()) return;
+    FramePtr frame = cache_->get(key);
+    if (!frame || frame->rgba.empty()) return;
 
     gradeHisto_.fill(0.0f);
     gradeHistoR_.fill(0.0f);
     gradeHistoG_.fill(0.0f);
     gradeHistoB_.fill(0.0f);
-    const uint8_t* p = f->rgba.data();
-    size_t n = (size_t)f->width * f->height;
+    const uint8_t* p = frame->rgba.data();
+    size_t n = (size_t)frame->width * frame->height;
     size_t step = std::max<size_t>(1, n / 200000); // cap samples
     for (size_t i = 0; i < n; i += step) {
         const uint8_t* px = p + i * 4;
@@ -460,11 +460,11 @@ bool App::gradeHandleEvent(const SDL_Event& e) {
                              : (gradeCurveChannel_ == 2) ? &grade_.curveG
                              : (gradeCurveChannel_ == 3) ? &grade_.curveB
                              : &grade_.curveMaster;
-            const SDL_FRect& g = gradeCurveRect_;
+            const SDL_FRect& rect = gradeCurveRect_;
             int i = gradeDragCurvePt_;
             if (i >= 0 && i < (int)cv->pts.size()) {
-                float nx = std::clamp((mx - g.x) / g.w, 0.0f, 1.0f);
-                float ny = std::clamp(1.0f - (my - g.y) / g.h, 0.0f, 1.0f);
+                float nx = std::clamp((mx - rect.x) / rect.w, 0.0f, 1.0f);
+                float ny = std::clamp(1.0f - (my - rect.y) / rect.h, 0.0f, 1.0f);
                 if (i == 0) nx = 0.0f;
                 else if (i == (int)cv->pts.size() - 1) nx = 1.0f;
                 else nx = std::clamp(nx, cv->pts[i - 1].x + 0.001f, cv->pts[i + 1].x - 0.001f);
@@ -493,8 +493,8 @@ bool App::gradeHandleEvent(const SDL_Event& e) {
     if (gradeTool_ == 1) {
         for (int i = 0; i < 4; ++i)
             if (inRect(gradeCurveTabs_[i], mx, my)) { gradeCurveChannel_ = i; return true; }
-        const SDL_FRect& g = gradeCurveRect_;
-        if (g.w > 0.0f && inRect(g, mx, my)) {
+        const SDL_FRect& rect = gradeCurveRect_;
+        if (rect.w > 0.0f && inRect(rect, mx, my)) {
             grade::Curve* cv = (gradeCurveChannel_ == 1) ? &grade_.curveR
                              : (gradeCurveChannel_ == 2) ? &grade_.curveG
                              : (gradeCurveChannel_ == 3) ? &grade_.curveB
@@ -502,15 +502,15 @@ bool App::gradeHandleEvent(const SDL_Event& e) {
             // Hit an existing point?
             int hit = -1;
             for (int i = 0; i < (int)cv->pts.size(); ++i) {
-                float vx = g.x + cv->pts[i].x * g.w, vy = g.y + g.h - cv->pts[i].y * g.h;
+                float vx = rect.x + cv->pts[i].x * rect.w, vy = rect.y + rect.h - cv->pts[i].y * rect.h;
                 if (std::fabs(mx - vx) <= 6.0f && std::fabs(my - vy) <= 6.0f) { hit = i; break; }
             }
             if (clicks >= 2) {
                 if (hit > 0 && hit < (int)cv->pts.size() - 1) {
                     cv->pts.erase(cv->pts.begin() + hit); // double-click a midpoint removes it
                 } else if (hit < 0) {
-                    float nx = std::clamp((mx - g.x) / g.w, 0.0f, 1.0f);
-                    float ny = std::clamp(1.0f - (my - g.y) / g.h, 0.0f, 1.0f);
+                    float nx = std::clamp((mx - rect.x) / rect.w, 0.0f, 1.0f);
+                    float ny = std::clamp(1.0f - (my - rect.y) / rect.h, 0.0f, 1.0f);
                     gradeDragCurvePt_ = cv->addPoint(nx, ny);
                 }
                 markGradeDirty();

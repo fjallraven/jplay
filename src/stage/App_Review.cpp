@@ -57,8 +57,8 @@ void App::openReviewWindow(SDL_DisplayID display) {
     if (reviewWindow_ || display == 0)
         return;
 
-    SDL_Rect b{};
-    if (!SDL_GetDisplayBounds(display, &b)) {
+    SDL_Rect rect{};
+    if (!SDL_GetDisplayBounds(display, &rect)) {
         std::fprintf(stderr, "Review: display %u bounds unavailable: %s\n",
                      display, SDL_GetError());
         return;
@@ -66,12 +66,12 @@ void App::openReviewWindow(SDL_DisplayID display) {
 
     // Borderless window covering the display, then flipped to fullscreen (SDL3
     // defaults to fullscreen-desktop with no mode set, so no resolution switch).
-    reviewWindow_ = SDL_CreateWindow("jplay review", b.w, b.h, SDL_WINDOW_BORDERLESS);
+    reviewWindow_ = SDL_CreateWindow("jplay review", rect.w, rect.h, SDL_WINDOW_BORDERLESS);
     if (!reviewWindow_) {
         std::fprintf(stderr, "Review: SDL_CreateWindow failed: %s\n", SDL_GetError());
         return;
     }
-    SDL_SetWindowPosition(reviewWindow_, b.x, b.y);
+    SDL_SetWindowPosition(reviewWindow_, rect.x, rect.y);
     SDL_SetWindowFullscreen(reviewWindow_, true);
 
     // When the HDR pipeline is running (the "gpu" backend + HdrColorPass) and this
@@ -288,12 +288,12 @@ SDL_FRect App::reviewDstRect() const {
     // The program image's rect and the centre of the area it sits in — tile 0's
     // cell on the Layout stage, so the review monitor reproduces the framing of the
     // program tile rather than of a stage it knows nothing about.
-    SDL_FRect g = programDstRect(); // GUI on-screen image rect
+    SDL_FRect rect = programDstRect(); // GUI on-screen image rect
     SDL_FRect area = programViewRect();
     float gcx = area.x + area.w * 0.5f;
     float gcy = area.y + area.h * 0.5f;
-    float u = g.w > 0.0f ? (gcx - g.x) / g.w : 0.5f; // image UV under the GUI centre
-    float v = g.h > 0.0f ? (gcy - g.y) / g.h : 0.5f;
+    float u = rect.w > 0.0f ? (gcx - rect.x) / rect.w : 0.5f; // image UV under the GUI centre
+    float v = rect.h > 0.0f ? (gcy - rect.y) / rect.h : 0.5f;
 
     float fit = fitScaleIn({ 0.0f, 0.0f, (float)ww, (float)wh }, texDispW(), (float)texH_);
     float scale = fit * frameZoom_;

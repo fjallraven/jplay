@@ -135,32 +135,32 @@ void App::samplePixelInspector() {
     probe_.x = px;
     probe_.y = py;
 
-    const Clip* c = playheadClip();
-    if (!c || c->mediaId.empty())
+    const Clip* clip = playheadClip();
+    if (!clip || clip->mediaId.empty())
         return;
 
     // ── SRC: the decoded frame, straight out of the cache ──
     // Mid-dissolve the cache holds the two halves and the blend only exists on the
     // GPU, so the source and working rows are the outgoing clip's and say so.
     const ProgramSource ps = programSourceAt(timeline_.playhead);
-    probe_.dissolve = (ps.a == c) && ps.b != nullptr;
-    const CacheKey key{ c->mediaId, c->sourceOffset + (timeline_.playhead - c->timelineStart) };
-    FramePtr f = cache_->get(key);
-    if (!f || f->width != texW_ || f->height != texH_)
+    probe_.dissolve = (ps.a == clip) && ps.b != nullptr;
+    const CacheKey key{ clip->mediaId, clip->sourceOffset + (timeline_.playhead - clip->timelineStart) };
+    FramePtr frame = cache_->get(key);
+    if (!frame || frame->width != texW_ || frame->height != texH_)
         return;
-    const size_t i = (size_t)py * f->width + px;
-    if (f->linearRgb.size() >= (i + 1) * 3) {
+    const size_t i = (size_t)py * frame->width + px;
+    if (frame->linearRgb.size() >= (i + 1) * 3) {
         probe_.srcFloat = true;
         for (int k = 0; k < 3; ++k)
-            probe_.src[k] = (float)f->linearRgb[i * 3 + k];
-    } else if (f->rgba16.size() >= (i + 1) * 4) {
+            probe_.src[k] = (float)frame->linearRgb[i * 3 + k];
+    } else if (frame->rgba16.size() >= (i + 1) * 4) {
         probe_.srcMax = 65535.0f;
         for (int k = 0; k < 4; ++k)
-            probe_.src[k] = (float)f->rgba16[i * 4 + k];
-    } else if (f->rgba.size() >= (i + 1) * 4) {
+            probe_.src[k] = (float)frame->rgba16[i * 4 + k];
+    } else if (frame->rgba.size() >= (i + 1) * 4) {
         probe_.srcMax = 255.0f;
         for (int k = 0; k < 4; ++k)
-            probe_.src[k] = (float)f->rgba[i * 4 + k];
+            probe_.src[k] = (float)frame->rgba[i * 4 + k];
     } else {
         return;
     }
@@ -171,8 +171,8 @@ void App::samplePixelInspector() {
     // than a special case, and it goes through exactly the chain the export writer
     // and the CPU display fallback use.
     if (ocio_.isReady() && ocio_.isEnabled()) {
-        if (auto m = timeline_.findMediaById(c->mediaId)) {
-            const std::string cs = mediaColorSpace(*m);
+        if (auto media = timeline_.findMediaById(clip->mediaId)) {
+            const std::string cs = mediaColorSpace(*media);
             if (cs != probeXfCs_ || ocio_.version() != probeXfVersion_ ||
                 grade_.gain != probeXfGain_) {
                 probeXf_ = ocio_.cpuTransformFor(cs, grade_.gain);
@@ -209,8 +209,8 @@ void App::samplePixelInspector() {
         if (hdrProgramTex_ && hdrProgW_ >= texW_ && hdrProgH_ >= texH_) {
             SDL_Texture* prev = SDL_GetRenderTarget(renderer_);
             SDL_SetRenderTarget(renderer_, hdrProgramTex_);
-            const SDL_Rect r{ px, py, 1, 1 };
-            if (SDL_Surface* s = SDL_RenderReadPixels(renderer_, &r)) {
+            const SDL_Rect rect{ px, py, 1, 1 };
+            if (SDL_Surface* s = SDL_RenderReadPixels(renderer_, &rect)) {
                 const bool halfSrc = (s->format == SDL_PIXELFORMAT_RGBA64_FLOAT);
                 SDL_Surface* cv = (halfSrc || s->format == SDL_PIXELFORMAT_RGBA128_FLOAT)
                                       ? s : SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGBA128_FLOAT);
@@ -322,8 +322,8 @@ void App::renderPixelInspector() {
         const int cx1 = std::min(sx0 + kMagPixels, texW_);
         const int cy1 = std::min(sy0 + kMagPixels, texH_);
         if (cx1 > cx0 && cy1 > cy0) {
-            const SDL_FRect s = { (float)cx0, (float)cy0,
-                                  (float)(cx1 - cx0), (float)(cy1 - cy0) };
+            const SDL_FRect rect = { (float)cx0, (float)cy0,
+                                     (float)(cx1 - cx0), (float)(cy1 - cy0) };
             const SDL_FRect d = { mag.x + (float)(cx0 - sx0) * kMagZoom,
                                   mag.y + (float)(cy0 - sy0) * kMagZoom,
                                   (float)(cx1 - cx0) * kMagZoom,
@@ -331,7 +331,7 @@ void App::renderPixelInspector() {
             SDL_ScaleMode prev = SDL_SCALEMODE_LINEAR;
             SDL_GetTextureScaleMode(src, &prev);
             SDL_SetTextureScaleMode(src, SDL_SCALEMODE_NEAREST);
-            SDL_RenderTexture(renderer_, src, &s, &d);
+            SDL_RenderTexture(renderer_, src, &rect, &d);
             SDL_SetTextureScaleMode(src, prev);
         }
     }

@@ -159,8 +159,8 @@ void drawPiece(SDL_Renderer* r, SDL_Texture* tex, const SDL_FRect& src, const SD
     const float sy = stepY > 0.0f ? stepY : dst.h;
     for (float y = dst.y; y < dst.y + dst.h; y += sy) {
         for (float x = dst.x; x < dst.x + dst.w; x += sx) {
-            SDL_FRect d{ x, y, sx, sy };
-            SDL_RenderTexture(r, tex, &src, &d);
+            SDL_FRect rect{ x, y, sx, sy };
+            SDL_RenderTexture(r, tex, &src, &rect);
         }
     }
     SDL_SetRenderClipRect(r, hadClip ? &prevClip : nullptr);
@@ -226,8 +226,8 @@ void NineSlice_Draw(SDL_Renderer* r, const NineSlice& ns, const SDL_FRect& dst, 
     // repeats the cell at its whole-multiple size rather than stretching.
     auto piece = [&](const SDL_FRect& src, float px, float py, float pw, float ph,
                      bool tileX, bool tileY) {
-        const SDL_FRect d{ px * inv, py * inv, pw * inv, ph * inv };
-        drawPiece(r, ns.tex, src, d,
+        const SDL_FRect rect{ px * inv, py * inv, pw * inv, ph * inv };
+        drawPiece(r, ns.tex, src, rect,
                   tileX ? src.w * m * inv : 0.0f,
                   tileY ? src.h * m * inv : 0.0f);
     };
@@ -315,10 +315,10 @@ bool NineSlice_WriteTemplate(const char* path, int w, int h,
                 float fL = (float)xx / left, fR = (float)(w - 1 - xx) / right;
                 float fT = (float)yy / top, fB = (float)(h - 1 - yy) / bottom;
                 float t = std::clamp(std::min(std::min(fL, fR), std::min(fT, fB)), 0.0f, 1.0f);
-                SDL_Color c{ (Uint8)(edge.r + (core.r - edge.r) * t),
-                             (Uint8)(edge.g + (core.g - edge.g) * t),
-                             (Uint8)(edge.b + (core.b - edge.b) * t), 255 };
-                fillRect(r, ox + xx, oy + yy, 1, 1, c);
+                SDL_Color color{ (Uint8)(edge.r + (core.r - edge.r) * t),
+                                 (Uint8)(edge.g + (core.g - edge.g) * t),
+                                 (Uint8)(edge.b + (core.b - edge.b) * t), 255 };
+                fillRect(r, ox + xx, oy + yy, 1, 1, color);
             }
         }
     } else {
@@ -327,8 +327,8 @@ bool NineSlice_WriteTemplate(const char* path, int w, int h,
         for (int yy = 0; yy < h; ++yy) {
             for (int xx = 0; xx < w; ++xx) {
                 bool dark = (((xx / cell) + (yy / cell)) & 1) != 0;
-                SDL_Color c = dark ? SDL_Color{ 60, 64, 72, 255 } : SDL_Color{ 84, 90, 100, 255 };
-                fillRect(r, ox + xx, oy + yy, 1, 1, c);
+                SDL_Color color = dark ? SDL_Color{ 60, 64, 72, 255 } : SDL_Color{ 84, 90, 100, 255 };
+                fillRect(r, ox + xx, oy + yy, 1, 1, color);
             }
         }
 

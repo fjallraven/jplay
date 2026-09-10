@@ -362,10 +362,10 @@ struct Timeline {
     const Clip* linkParent(const Clip& c) const {
         if (c.linkedTo == 0)
             return nullptr;
-        const Sequence* s = sequenceOfClip(c.id);
-        if (!s)
+        const Sequence* seq = sequenceOfClip(c.id);
+        if (!seq)
             return nullptr;
-        for (const auto& k : s->clips)
+        for (const auto& k : seq->clips)
             if (k.id == c.linkedTo)
                 return &k;
         return nullptr;
@@ -375,8 +375,8 @@ struct Timeline {
     // every link lives). Empty when it has no followers.
     std::vector<int> linkFollowers(int clipId) const {
         std::vector<int> ids;
-        if (const Sequence* s = sequenceOfClip(clipId))
-            for (const auto& c : s->clips)
+        if (const Sequence* seq = sequenceOfClip(clipId))
+            for (const auto& c : seq->clips)
                 if (c.linkedTo == clipId)
                     ids.push_back(c.id);
         return ids;
@@ -438,21 +438,21 @@ struct Timeline {
     // they are no longer on the same track or no longer abut, or the span is
     // empty. Callers must treat a false return as "no transition here".
     bool resolveTransition(const Sequence& s, const Transition& t, TransitionSpan& out) const {
-        const Clip* a = nullptr;
+        const Clip* clip = nullptr;
         const Clip* b = nullptr;
         for (const auto& c : s.clips) {
-            if (c.id == t.aClipId) a = &c;
+            if (c.id == t.aClipId) clip = &c;
             if (c.id == t.bClipId) b = &c;
         }
-        if (!a || !b || a->track != b->track || a->audio || b->audio)
+        if (!clip || !b || clip->track != b->track || clip->audio || b->audio)
             return false;
-        if (a->end() != b->timelineStart)
+        if (clip->end() != b->timelineStart)
             return false;
         if (t.duration() <= 0)
             return false;
-        out.a = a;
+        out.a = clip;
         out.b = b;
-        out.cut = a->end();
+        out.cut = clip->end();
         out.start = out.cut - t.inFrames;
         out.end = out.cut + t.outFrames;
         return true;
@@ -505,11 +505,11 @@ struct Timeline {
     // id rather than a pointer: adding a record can reallocate the vector, so a
     // caller that goes on to add another must not be holding one.
     int projectIdForPath(const std::string& path, const std::string& name) {
-        if (const SourceProject* p = findProjectByPath(path, name))
-            return p->id;
+        if (const SourceProject* proj = findProjectByPath(path, name))
+            return proj->id;
         int maxId = 0;
-        for (const auto& p : projects)
-            maxId = std::max(maxId, p.id);
+        for (const auto& proj : projects)
+            maxId = std::max(maxId, proj.id);
         SourceProject rec;
         rec.id   = maxId + 1;
         rec.name = name;
@@ -520,8 +520,8 @@ struct Timeline {
 
     // The name to show for a sequence's project; empty for one belonging to none.
     std::string projectNameOfSeq(const Sequence& s) const {
-        const SourceProject* p = findProjectById(s.projectId);
-        return p ? p->name : std::string();
+        const SourceProject* proj = findProjectById(s.projectId);
+        return proj ? proj->name : std::string();
     }
 
     // ---- shot helpers ---------------------------------------------------

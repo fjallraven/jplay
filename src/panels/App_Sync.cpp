@@ -457,8 +457,8 @@ void App::renderSessionPanel() {
 
     // Text row helper: one line of the panel's full width.
     auto line = [&](SDL_Color col, const std::string& s) {
-        SDL_FRect r = cutTop(body, lh);
-        drawText(r.x, r.y, dim(col), s.c_str());
+        SDL_FRect rect = cutTop(body, lh);
+        drawText(rect.x, rect.y, dim(col), s.c_str());
     };
 
     // Button helper: a full-width row cut off the top of the body. Disabled, it
@@ -503,8 +503,8 @@ void App::renderSessionPanel() {
             setColor(renderer_, kValue);
             jplay::fillRect(renderer_, &tick);
         }
-        const SDL_FRect t = centerV(sessionNetChkRect_, lh);
-        drawText(box.x + boxSz + 6.0f * dpiScale, t.y, net ? kValue : kLabel, "Enable Sync Review Socket");
+        const SDL_FRect rect = centerV(sessionNetChkRect_, lh);
+        drawText(box.x + boxSz + 6.0f * dpiScale, rect.y, net ? kValue : kLabel, "Enable Sync Review Socket");
         gapTop(body, 8.0f * dpiScale);
     }
     // Host port. Applied when a session is created; a spectator joining by beacon
@@ -563,17 +563,17 @@ void App::renderSessionPanel() {
         gapTop(body, 6.0f);
     }
     for (const auto& b : beacons) {
-        SDL_FRect r = cutTop(body, rowH);
+        SDL_FRect rect = cutTop(body, rowH);
         gapTop(body, 4.0f);
-        bool hov = inRect(r, mx, my);
+        bool hov = inRect(rect, mx, my);
         setColor(renderer_, hov ? kBtnHi : kBtnBg);
-        jplay::fillRect(renderer_, &r);
+        jplay::fillRect(renderer_, &rect);
         std::string name = b.username.empty() ? b.hostname : b.username;
-        SDL_FRect text = r;
+        SDL_FRect text = rect;
         gapLeft(text, 6.0f);
         const SDL_FRect t = centerV(text, lh);
-        drawText(t.x, t.y, kValue, fitText(name + "  (" + b.ip + ")", r.w - 12.0f).c_str());
-        sessionBeaconRows_.push_back({ b.ip, b.tcpPort, r });
+        drawText(t.x, t.y, kValue, fitText(name + "  (" + b.ip + ")", rect.w - 12.0f).c_str());
+        sessionBeaconRows_.push_back({ b.ip, b.tcpPort, rect });
     }
 
     gapTop(body, 8.0f * dpiScale);

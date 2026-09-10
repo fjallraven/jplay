@@ -178,8 +178,8 @@ int MenuBar::titleAt(float x, float y) const {
         return -1;
     for (int i = 0; i < (int)titleRects_.size(); ++i) {
         if (menus_[i].isSubmenu) continue;
-        const SDL_FRect& r = titleRects_[i];
-        if (x >= r.x && x < r.x + r.w)
+        const SDL_FRect& rect = titleRects_[i];
+        if (x >= rect.x && x < rect.x + rect.w)
             return i;
     }
     return -1;

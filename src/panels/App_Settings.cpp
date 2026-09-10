@@ -169,11 +169,11 @@ SegToggle segToggle(SDL_Renderer* r, TextFont* font, const SDL_FRect& row,
     // The two segments share one outline plus a separator column between them.
     const float glyphH = font->lineHeight();
     for (int i = 0; i < 2; ++i) {
-        const SDL_FRect& f = (i == 0) ? f0 : f1;
+        const SDL_FRect& rect = (i == 0) ? f0 : f1;
         const bool on = (active == i);
         SDL_SetRenderDrawColor(r, on ? 55 : 38, on ? 78 : 39, on ? 130 : 43, 255);
-        jplay::fillRect(r, &f);
-        font->draw(r, f.x + kSegPad, centerV(f, glyphH).y,
+        jplay::fillRect(r, &rect);
+        font->draw(r, rect.x + kSegPad, centerV(rect, glyphH).y,
                    on ? kSegText : kSegTextOff, (i == 0) ? labelA : labelB);
     }
     setColor(r, kToggleBorder);

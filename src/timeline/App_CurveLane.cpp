@@ -339,8 +339,8 @@ bool App::curveLaneMouseDown(float mx, float my, bool rightButton, int clicks) {
         return false;
 
     int ptIdx = -2;
-    Clip* c = curveClipAt(mx, my, ptIdx);
-    if (!c)
+    Clip* clip = curveClipAt(mx, my, ptIdx);
+    if (!clip)
         return true; // empty lane space: swallow it rather than let a clip drag start
 
     // Right-click or double-click on a point removes it; the start box has no
@@ -349,7 +349,7 @@ bool App::curveLaneMouseDown(float mx, float my, bool rightButton, int clicks) {
         if (ptIdx == -2)
             return true;
         ContentSnapshot before = captureContent();
-        Curve& cv = clipCurve(*c);
+        Curve& cv = clipCurve(*clip);
         if (ptIdx >= 0 && ptIdx < (int)cv.pts.size()) {
             cv.pts.erase(cv.pts.begin() + ptIdx);
             pushContentUndo("REMOVE CURVE POINT", before);
@@ -362,8 +362,8 @@ bool App::curveLaneMouseDown(float mx, float my, bool rightButton, int clicks) {
     }
 
     curveDragBefore_ = captureContent();
-    Curve& cv = clipCurve(*c);
-    const SDL_FRect plot = curvePlotRect(*c);
+    Curve& cv = clipCurve(*clip);
+    const SDL_FRect plot = curvePlotRect(*clip);
     bool added = false;
 
     if (ptIdx == -2) {
@@ -371,23 +371,23 @@ bool App::curveLaneMouseDown(float mx, float my, bool rightButton, int clicks) {
         // one gesture both creates and places it. Too far from the line and the
         // press is just a miss — otherwise a click anywhere in the tall lane would
         // fling a point to the cursor's height.
-        const int64_t src = srcFrameAtX(*c, xToFrame((double)mx));
+        const int64_t src = srcFrameAtX(*clip, xToFrame((double)mx));
         if (std::fabs(my - curveValueToY(plot, cv.valueAt(src))) > kLineGrabPx)
             return true;
-        ptIdx = (int)cv.addPoint(std::clamp(src, c->sourceOffset,
-                                            c->sourceOffset + c->duration - 1),
+        ptIdx = (int)cv.addPoint(std::clamp(src, clip->sourceOffset,
+                                            clip->sourceOffset + clip->duration - 1),
                                  cv.valueAt(src));
         added = true;
     }
 
-    curveDragClipId_ = c->id;
+    curveDragClipId_ = clip->id;
     curveDragPtIdx_ = ptIdx;
     curveDragChanged_ = added;
     // Grab offset, so a point does not jump to the cursor when picked up slightly
     // off-centre.
-    const float grabbed = ptIdx >= 0 ? cv.pts[(size_t)ptIdx].v : cv.valueAt(c->sourceOffset);
+    const float grabbed = ptIdx >= 0 ? cv.pts[(size_t)ptIdx].v : cv.valueAt(clip->sourceOffset);
     curveDragGrabDv_ = curveYToValue(plot, my) - grabbed;
-    selectClipSingle(c->id);
+    selectClipSingle(clip->id);
     return true;
 }
 
@@ -400,14 +400,14 @@ bool App::curveLaneMouseMotion(float mx, float my) {
         // light it up and offer the ghost point.
         int ptIdx = -2;
         const float rowY = trackRowY(curveTrack_);
-        Clip* c = (mx >= headerX_ && my >= rowY && my < rowY + trackRowH(curveTrack_))
+        Clip* clip = (mx >= headerX_ && my >= rowY && my < rowY + trackRowH(curveTrack_))
                       ? curveClipAt(mx, my, ptIdx)
                       : nullptr;
-        curveHoverClipId_ = c ? c->id : -1;
-        curveHoverPtIdx_ = c ? ptIdx : -2;
+        curveHoverClipId_ = clip ? clip->id : -1;
+        curveHoverPtIdx_ = clip ? ptIdx : -2;
         curveHoverX_ = mx;
         curveHoverY_ = my;
-        return c != nullptr;
+        return clip != nullptr;
     }
 
     Clip* c = clipById(curveDragClipId_);

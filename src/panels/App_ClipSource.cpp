@@ -152,8 +152,8 @@ void App::updateClipSourceData() {
 
     // The whole set the pickers will apply to; the first is the one described.
     const std::vector<int> ids = clipSourceTargetIds();
-    const Clip* c = ids.empty() ? nullptr : timeline_.findClipById(ids.front());
-    auto media = (c && !c->mediaId.empty()) ? timeline_.findMediaById(c->mediaId) : nullptr;
+    const Clip* clip = ids.empty() ? nullptr : timeline_.findClipById(ids.front());
+    auto media = (clip && !clip->mediaId.empty()) ? timeline_.findMediaById(clip->mediaId) : nullptr;
     const std::string mediaId = media ? media->id() : std::string();
 
     // No target clip (nothing selected, nothing under the playhead): clear once,
@@ -209,7 +209,7 @@ void App::updateClipSourceData() {
     panelCascade_.repPath = media->resolvedPath();
     panelCascade_.chain.clear();
     clipSourceNoPickers_ = false;
-    clipSourceClipId_ = c->id;
+    clipSourceClipId_ = clip->id;
     clipSourceMediaId_ = mediaId;
     clipSourceSelIds_ = ids;
     clipSourceDirty_ = false;
@@ -299,9 +299,9 @@ void App::updateClipSourceData() {
             clipSourceStates_ = res->ok ? std::move(res->states) : std::vector<PickerState>{};
             clipSourceNoPickers_ = !res->ok || clipSourceStates_.empty();
             // Applied on the main thread: Media's metadata map is written there only.
-            if (auto m = timeline_.findMediaById(mediaId))
+            if (auto media = timeline_.findMediaById(mediaId))
                 for (auto& kv : res->values)
-                    m->setMetaValue(kv.first, std::move(kv.second));
+                    media->setMetaValue(kv.first, std::move(kv.second));
             // Labels and colors follow on their own query, so the option lists are
             // never held back by a site's database lookup. The panel redraws from
             // clipSourceStates_ every frame, so taking each instalment into it
@@ -333,8 +333,8 @@ void App::renderClipSourcePanel() {
 
     // One line of the panel's full width.
     auto line = [&](SDL_Color col, const std::string& s) {
-        SDL_FRect r = cutTop(body, lineH);
-        drawText(r.x, r.y, col, s);
+        SDL_FRect rect = cutTop(body, lineH);
+        drawText(rect.x, rect.y, col, s);
     };
 
     clipSourceRows_.clear();
@@ -354,8 +354,8 @@ void App::renderClipSourcePanel() {
 
     // The source the pickers describe, above the first picker header. Tagged when the
     // panel is pinned to the timeline selection rather than following the playhead.
-    if (auto m = timeline_.findMediaById(clip->mediaId)) {
-        line(kNeutral, fitText(fs::u8path(m->path()).filename().u8string(), body.w));
+    if (auto media = timeline_.findMediaById(clip->mediaId)) {
+        line(kNeutral, fitText(fs::u8path(media->path()).filename().u8string(), body.w));
         gapTop(body, 3.0f);
     }
     // What the pick will land on: the one clip, or the whole selection with the
@@ -709,9 +709,9 @@ const Clip* App::pickerAlignDropClip(float x, float y) const {
     if (f < (double)above->timelineStart || f >= (double)above->end())
         return nullptr;
     // The whole slot has to be free, else the drop would ripple that row apart.
-    for (const Sequence& s : timeline_.sequences)
-        for (const Clip& c : s.clips)
-            if (c.track == below && c.timelineStart < above->end() && c.end() > above->timelineStart)
+    for (const Sequence& seq : timeline_.sequences)
+        for (const Clip& clip : seq.clips)
+            if (clip.track == below && clip.timelineStart < above->end() && clip.end() > above->timelineStart)
                 return nullptr;
     return above;
 }

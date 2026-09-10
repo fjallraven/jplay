@@ -114,8 +114,8 @@ SDL_FRect DropdownBar::listRect(int i) const {
 int DropdownBar::boxAt(float x, float y) const {
     for (int i = 0; i < (int)entries_.size(); ++i) {
         if (!entries_[i].visible) continue;
-        const SDL_FRect& b = entries_[i].box;
-        if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h)
+        const SDL_FRect& rect = entries_[i].box;
+        if (x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h)
             return i;
     }
     return -1;
@@ -224,32 +224,32 @@ void DropdownBar::render(SDL_Renderer* r) const {
     for (int i = 0; i < (int)entries_.size(); ++i) {
         const Entry& e = entries_[i];
         if (!e.visible) continue;
-        const SDL_FRect& b = e.box;
-        float textY = b.y + (b.h - glyphH) * 0.5f;
-        int valChars = (int)((b.w - kInnerPadX - kCaretW) / charW);
+        const SDL_FRect& rect = e.box;
+        float textY = rect.y + (rect.h - glyphH) * 0.5f;
+        int valChars = (int)((rect.w - kInnerPadX - kCaretW) / charW);
 
         // Label to the left of the box.
         if (textFont_) {
             float labelW = textFont_->measure(r, e.label.c_str());
-            textFont_->draw(r, b.x - kLabelGap - labelW, textY,
+            textFont_->draw(r, rect.x - kLabelGap - labelW, textY,
                             kLabelText, e.label.c_str());
         }
 
         // Box (lighter while its list is open).
         bool open = (i == open_);
         setColor(r, open ? kBoxBgOpen : kBoxBg);
-        jplay::fillRect(r, &b);
+        jplay::fillRect(r, &rect);
         setColor(r, kBorder);
-        jplay::drawRect(r, &b);
+        jplay::drawRect(r, &rect);
 
         // Current value.
         if (textFont_)
-            textFont_->draw(r, b.x + kInnerPadX, textY,
+            textFont_->draw(r, rect.x + kInnerPadX, textY,
                             kValueText, fit(value(i), valChars).c_str());
 
         // Down caret (chevron) on the right edge.
-        float cx = b.x + b.w - kCaretW * 0.5f - 3.0f;
-        float cy = b.y + b.h * 0.5f - 1.0f;
+        float cx = rect.x + rect.w - kCaretW * 0.5f - 3.0f;
+        float cy = rect.y + rect.h * 0.5f - 1.0f;
         setColor(r, kCaret);
         jplay::drawCaretDown(r, cx, cy);
     }

@@ -1337,9 +1337,9 @@ void App::updateOutputMenu() {
     mix((size_t)dispCount);
     for (int i = 0; i < dispCount; ++i) {
         mix((size_t)disps[i]);
-        SDL_Rect b{};
-        SDL_GetDisplayBounds(disps[i], &b);
-        mix((size_t)b.w * 8192u + (size_t)b.h);
+        SDL_Rect rect{};
+        SDL_GetDisplayBounds(disps[i], &rect);
+        mix((size_t)rect.w * 8192u + (size_t)rect.h);
     }
     SDL_free(disps);
     if (sig == outputMenuSig_)
@@ -1666,16 +1666,16 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
         if (!shift) {
             // The same clip Shift+F focuses: topmost visible under the playhead,
             // with the selection as the fallback for a playhead sitting in a gap.
-            const Clip* c = getTopMostClipAtFrame(timeline_.playhead);
-            if (!c)
-                c = timeline_.findClipById(selectedClipId_);
-            if (!c) {
+            const Clip* clip = getTopMostClipAtFrame(timeline_.playhead);
+            if (!clip)
+                clip = timeline_.findClipById(selectedClipId_);
+            if (!clip) {
                 setStatus("NO CLIP TO MARK", 2000);
                 break;
             }
             // The playhead is pulled into the range there (the gap fallback above
             // is the case that can land outside it).
-            markClipRange(*c);
+            markClipRange(*clip);
             break;
         }
         [[fallthrough]];
@@ -1753,14 +1753,14 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
                 zoomFitSeqIdx_ = zoomFitShotId_ = -1;
                 break;
             }
-            const Clip* c = getTopMostClipAtFrame(timeline_.playhead);
-            if (!c)
-                c = timeline_.findClipById(selectedClipId_);
-            if (!c) {
+            const Clip* clip = getTopMostClipAtFrame(timeline_.playhead);
+            if (!clip)
+                clip = timeline_.findClipById(selectedClipId_);
+            if (!clip) {
                 setStatus("NO CLIP TO FIT", 2000);
                 break;
             }
-            fitRange(c->timelineStart, c->end());
+            fitRange(clip->timelineStart, clip->end());
             zoomFitSeqIdx_ = zoomFitShotId_ = -1;
             break;
         }
@@ -1824,8 +1824,8 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
             // sitting on the top track under the playhead.
             if (const Clip* top = getTopMostClipAtFrame(timeline_.playhead, /*includeHidden=*/true))
                 id = top->id;
-        if (Clip* c = timeline_.findClipById(id)) {
-            c->hidden = !c->hidden;
+        if (Clip* clip = timeline_.findClipById(id)) {
+            clip->hidden = !clip->hidden;
         }
         break;
     }
@@ -2317,8 +2317,8 @@ void App::handleEvent(SDL_Event& e) {
         if (e.button.button == SDL_BUTTON_LEFT && gridView() && inPlayerView(mx, my)) {
             for (const auto& cell : gridCells_)
                 if (inRect(cell.rect, mx, my)) {
-                    if (const Clip* c = clipById(cell.clipId))
-                        gridClickClip(*c, e.button.clicks >= 2,
+                    if (const Clip* clip = clipById(cell.clipId))
+                        gridClickClip(*clip, e.button.clicks >= 2,
                                       (SDL_GetModState() & SDL_KMOD_SHIFT) != 0);
                     break;
                 }
@@ -2382,8 +2382,8 @@ void App::handleEvent(SDL_Event& e) {
         // Not in grid view, where the frame under the cursor isn't the playhead's
         // clip.
         if (e.button.button == SDL_BUTTON_RIGHT && !gridView() && inPlayerView(mx, my)) {
-            if (const Clip* c = getTopMostClipAtFrame(timeline_.playhead))
-                openClipRightClickMenu(*c, mx, my, /*growDown=*/true);
+            if (const Clip* clip = getTopMostClipAtFrame(timeline_.playhead))
+                openClipRightClickMenu(*clip, mx, my, /*growDown=*/true);
             break;
         }
         if (my < rulerRect_.y)
@@ -2504,18 +2504,18 @@ void App::handleEvent(SDL_Event& e) {
             // whole visible content. This does not change the focus scope, only
             // the zoom.
             for (int i = 0; i < (int)timeline_.shots.size(); ++i) {
-                const Shot& s = timeline_.shots[i];
-                float x0 = (float)frameToX((double)s.timelineStart);
-                float x1 = (float)frameToX((double)s.end());
+                const Shot& shot = timeline_.shots[i];
+                float x0 = (float)frameToX((double)shot.timelineStart);
+                float x1 = (float)frameToX((double)shot.end());
                 if (mx >= x0 && mx <= x1) {
-                    if (zoomFitShotId_ == s.id) {
+                    if (zoomFitShotId_ == shot.id) {
                         fitToFilteredSequence();
                         zoomFitShotId_ = -1;
                     } else {
-                        fitRange(s.timelineStart, s.end());
-                        if (timeline_.playhead < s.timelineStart || timeline_.playhead >= s.end())
-                            setPlayhead(s.timelineStart); // only when the playhead is outside this range
-                        zoomFitShotId_ = s.id;
+                        fitRange(shot.timelineStart, shot.end());
+                        if (timeline_.playhead < shot.timelineStart || timeline_.playhead >= shot.end())
+                            setPlayhead(shot.timelineStart); // only when the playhead is outside this range
+                        zoomFitShotId_ = shot.id;
                         zoomFitSeqIdx_ = -1;
                     }
                     break;
@@ -2887,9 +2887,9 @@ void App::handleEvent(SDL_Event& e) {
             const float kDragThreshold = 4.0f;
             if (std::abs(mx - dragPressX_) > kDragThreshold ||
                 std::abs(my - dragPressY_) > kDragThreshold) {
-                if (Clip* c = clipById(pendingDragClipId_)) {
+                if (Clip* clip = clipById(pendingDragClipId_)) {
                     scrubbing_ = false; // a drag takes over from the scrub
-                    beginClipDrag(*c, dragPressX_);
+                    beginClipDrag(*clip, dragPressX_);
                     updateClipDrag(mx, my);
                 }
                 pendingDragClipId_ = -1;
@@ -3187,11 +3187,11 @@ void App::update() {
             next = lo; // loop the in/out range
 
         // Hold (instead of skipping ahead) while the next frame is still loading.
-        const Clip* c = getTopMostClipAtFrame(next);
-        if (c && !c->mediaId.empty()) {
-            auto pm = timeline_.findMediaById(c->mediaId);
+        const Clip* clip = getTopMostClipAtFrame(next);
+        if (clip && !clip->mediaId.empty()) {
+            auto pm = timeline_.findMediaById(clip->mediaId);
             if (pm && !pm->openFailed()) {
-                CacheKey key{ c->mediaId, c->sourceOffset + (next - c->timelineStart) };
+                CacheKey key{ clip->mediaId, clip->sourceOffset + (next - clip->timelineStart) };
                 if (!cache_->has(key)) {
                     playAcc_ = 0.0;
                     playbackStalled_ = true;
@@ -3248,11 +3248,11 @@ void App::updateAudio() {
         // Embedded audio of the program (topmost video) clip. id -1 keeps this
         // channel's identity across clip boundaries so audio sliced from one
         // continuous file plays through seamlessly.
-        const Clip* c = getTopMostClipAtFrame(timeline_.playhead);
-        if (c && !c->mediaId.empty()) {
-            auto pm = timeline_.findMediaById(c->mediaId);
+        const Clip* clip = getTopMostClipAtFrame(timeline_.playhead);
+        if (clip && !clip->mediaId.empty()) {
+            auto pm = timeline_.findMediaById(clip->mediaId);
             if (pm && pm->type() == ClipType::Video && !pm->openFailed()) {
-                int64_t srcFrame = c->sourceOffset + (timeline_.playhead - c->timelineStart);
+                int64_t srcFrame = clip->sourceOffset + (timeline_.playhead - clip->timelineStart);
                 double mfps = pm->info().fps > 0.0 ? pm->info().fps : timeline_.fps;
                 if (mfps > 0.0)
                     items.push_back({ -1, pm->resolvedPath(), (double)srcFrame / mfps });
@@ -3320,8 +3320,8 @@ void App::submitCacheRequests() {
         std::vector<const Clip*> tiles;
         layoutClipsAt(timeline_.playhead, tiles);
         int64_t live = 0;
-        for (const Clip* t : tiles)
-            if (t)
+        for (const Clip* clip : tiles)
+            if (clip)
                 ++live; // an empty row costs no decode
         fit /= std::max<int64_t>(1, live);
     }
@@ -3861,9 +3861,9 @@ void App::computeLayout() {
         auto nextLeft = [&](float w) -> SDL_FRect {
             if (w <= 0.0f)
                 return SDL_FRect{};
-            SDL_FRect r = cutLeft(left, w);
+            SDL_FRect rect = cutLeft(left, w);
             gapLeft(left, tbGap);
-            return r;
+            return rect;
         };
         sequenceBtnRect_ = nextLeft(wSeq);
         openProjBtnRect_ = nextLeft(wOpenProj);
@@ -3879,9 +3879,9 @@ void App::computeLayout() {
             auto nextColor = [&](float w) -> SDL_FRect {
                 if (w <= 0.0f)
                     return SDL_FRect{};
-                SDL_FRect r = cutLeft(color, w);
+                SDL_FRect rect = cutLeft(color, w);
                 gapLeft(color, tbGap);
-                return r;
+                return rect;
             };
             ocioDisplayBtnRect_ = nextColor(wDisp);
             ocioViewBtnRect_ = nextColor(wView);
@@ -4213,9 +4213,9 @@ void App::openAppIconMenu() {
 // rather than being eaten as a dismissing click outside the open menu.
 bool App::appIconHandleEvent(const SDL_Event& e) {
     if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT) {
-        const SDL_FRect r = appIconRect();
-        if (e.button.x >= r.x && e.button.x < r.x + r.w &&
-            e.button.y >= r.y && e.button.y < r.y + r.h) {
+        const SDL_FRect rect = appIconRect();
+        if (e.button.x >= rect.x && e.button.x < rect.x + rect.w &&
+            e.button.y >= rect.y && e.button.y < rect.y + rect.h) {
             if (e.button.clicks >= 2) {
                 appIconMenu_.close();
                 requestQuit();

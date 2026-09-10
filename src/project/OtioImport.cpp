@@ -142,12 +142,12 @@ Shot* matchShot(std::vector<Shot>& shots, size_t from, const std::string& clipNa
     Shot* best = nullptr;
     int64_t bestOverlap = 0;
     for (size_t i = from; i < shots.size(); ++i) {
-        Shot& s = shots[i];
-        int64_t oStart = std::max(clipStart, s.timelineStart);
-        int64_t oEnd   = std::min(clipEnd, s.end());
+        Shot& shot = shots[i];
+        int64_t oStart = std::max(clipStart, shot.timelineStart);
+        int64_t oEnd   = std::min(clipEnd, shot.end());
         if (oEnd > oStart && (oEnd - oStart) > bestOverlap) {
             bestOverlap = oEnd - oStart;
-            best = &s;
+            best = &shot;
         }
     }
     return best;
@@ -198,12 +198,12 @@ bool OtioImport::load(const std::string& path, Timeline& out,
         auto it = seqIndexByName.find(key);
         if (it != seqIndexByName.end())
             return it->second;
-        Sequence s;
-        s.id   = nextSeqIdCounter++;
-        s.name = key;
-        s.projectId = projectId;
+        Sequence seq;
+        seq.id   = nextSeqIdCounter++;
+        seq.name = key;
+        seq.projectId = projectId;
         seqIndexByName[key] = seqs.size();
-        seqs.push_back(std::move(s));
+        seqs.push_back(std::move(seq));
         return seqs.size() - 1;
     };
     std::map<int, size_t> seqOfShot; // shot id -> owning sequence index
@@ -338,12 +338,12 @@ bool OtioImport::load(const std::string& path, Timeline& out,
             const size_t si = fixedSeq >= 0 ? (size_t)fixedSeq
                                             : seqIndexForName(sequenceNameOf(clip));
 
-            Shot s;
-            s.id   = shotId++;
-            s.name = shotNameOf(clip);
-            s.sceneName = sceneNameOf(clip);
-            s.timelineStart = cursor;
-            s.duration = duration;
+            Shot shot;
+            shot.id   = shotId++;
+            shot.name = shotNameOf(clip);
+            shot.sceneName = sceneNameOf(clip);
+            shot.timelineStart = cursor;
+            shot.duration = duration;
 
             auto* ext = dynamic_cast<otio::ExternalReference*>(clip->media_reference());
 
@@ -372,7 +372,7 @@ bool OtioImport::load(const std::string& path, Timeline& out,
                 const int64_t dur = toFrames(sr->duration(), fps);
                 srcOffset = std::max<int64_t>(in - firstFrame, 0);
                 clipDur   = std::max<int64_t>(dur, 1);
-                s.initCut(srcOffset, srcOffset + clipDur);
+                shot.initCut(srcOffset, srcOffset + clipDur);
             }
 
             // If the shot clip also carries a media reference, create a Clip for
@@ -391,13 +391,13 @@ bool OtioImport::load(const std::string& path, Timeline& out,
                 c.timelineStart = cursor;
                 c.duration      = clipDur;
                 c.sourceOffset  = srcOffset;
-                c.shotId        = s.id;
+                c.shotId        = shot.id;
                 seqs[si].clips.push_back(std::move(c));
             }
 
-            seqs[si].shotIds.push_back(s.id);
-            seqOfShot[s.id] = si;
-            tl.shots.push_back(std::move(s));
+            seqs[si].shotIds.push_back(shot.id);
+            seqOfShot[shot.id] = si;
+            tl.shots.push_back(std::move(shot));
             cursor += duration;
         }
         return cursor;
@@ -560,13 +560,13 @@ bool OtioImport::load(const std::string& path, Timeline& out,
             // dropped or clamped by App::adoptLoadedTransitions after the import.
             if (pendingTrans && prevClipId >= 0 && prevSeqIdx == si &&
                 (pendingIn > 0 || pendingOut > 0)) {
-                Transition t;
-                t.id = transId++;
-                t.aClipId = prevClipId;
-                t.bClipId = placedId;
-                t.inFrames = pendingIn;
-                t.outFrames = pendingOut;
-                seqs[si].transitions.push_back(t);
+                Transition transition;
+                transition.id = transId++;
+                transition.aClipId = prevClipId;
+                transition.bClipId = placedId;
+                transition.inFrames = pendingIn;
+                transition.outFrames = pendingOut;
+                seqs[si].transitions.push_back(transition);
             }
             pendingTrans = false;
             prevClipId = placedId;
@@ -591,14 +591,14 @@ bool OtioImport::load(const std::string& path, Timeline& out,
 
             // One sequence per Stack, always — two stacks sharing a name are still
             // two sequences, so this deliberately bypasses seqIndexForName.
-            Sequence s;
-            s.id   = nextSeqIdCounter++;
-            s.name = !seqStack->name().empty()
+            Sequence seq;
+            seq.id   = nextSeqIdCounter++;
+            seq.name = !seqStack->name().empty()
                          ? seqStack->name()
                          : "Sequence " + std::to_string(seqs.size() + 1);
-            s.projectId = projectId;
+            seq.projectId = projectId;
             const size_t si = seqs.size();
-            seqs.push_back(std::move(s));
+            seqs.push_back(std::move(seq));
 
             const size_t shotFrom = tl.shots.size(); // this sequence's shots start here
             std::vector<otio::Track*> tracks = collectVideoTracks(seqStack);

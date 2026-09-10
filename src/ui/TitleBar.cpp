@@ -17,8 +17,8 @@ void TitleBar::toggleMaximize() {
 
 int TitleBar::buttonAt(float x, float y) const {
     for (int i = 0; i < kButtonCount; ++i) {
-        const SDL_FRect& b = btnRect_[i];
-        if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h)
+        const SDL_FRect& rect = btnRect_[i];
+        if (x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h)
             return i;
     }
     return -1;
@@ -97,17 +97,17 @@ void TitleBar::render(SDL_Renderer* r) {
     }
 
     for (int i = 0; i < kButtonCount; ++i) {
-        const SDL_FRect& b = btnRect_[i];
+        const SDL_FRect& rect = btnRect_[i];
         if (i == hover_) {
             if (i == kClose)
                 SDL_SetRenderDrawColor(r, 200, 50, 50, 255);
             else
                 SDL_SetRenderDrawColor(r, 70, 72, 80, 255);
-            jplay::fillRect(r, &b);
+            jplay::fillRect(r, &rect);
         }
 
-        float cx = b.x + b.w * 0.5f;
-        float cy = b.y + b.h * 0.5f;
+        float cx = rect.x + rect.w * 0.5f;
+        float cy = rect.y + rect.h * 0.5f;
         SDL_SetRenderDrawColor(r, 225, 228, 235, 255);
         switch (i) {
         case kMin:

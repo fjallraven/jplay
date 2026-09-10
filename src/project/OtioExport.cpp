@@ -102,8 +102,8 @@ std::vector<std::string> OtioExport::survey(const Timeline& tl) {
         out.push_back("Colour management: set to the built-in transform, reloads as OCIO");
 
     int cutDiffer = 0;
-    for (const Shot& s : tl.shots)
-        if (s.cutDiffer) ++cutDiffer;
+    for (const Shot& shot : tl.shots)
+        if (shot.cutDiffer) ++cutDiffer;
     if (cutDiffer > 0)
         out.push_back("Cut changes: " + plural(cutDiffer, "shot", "shots") +
                       " marked as differing from the original cut");
@@ -138,9 +138,9 @@ bool OtioExport::save(const std::string& path, const Timeline& tl, std::string& 
     for (const Sequence& s : tl.sequences) {
         if (s.temporary)
             continue;
-        for (const Clip& c : s.clips)
-            if (!c.audio && c.track >= 0)
-                maxTrackAny = std::max(maxTrackAny, c.track);
+        for (const Clip& clip : s.clips)
+            if (!clip.audio && clip.track >= 0)
+                maxTrackAny = std::max(maxTrackAny, clip.track);
     }
     if (maxTrackAny < 0) {
         err = "no video clips to export";
@@ -192,8 +192,8 @@ bool OtioExport::save(const std::string& path, const Timeline& tl, std::string& 
                     cursor += gapLen;
                 }
 
-                auto m = tl.findMediaById(c->mediaId);
-                const NominalRef nom = m ? nominalRefOf(*m) : NominalRef{};
+                auto media = tl.findMediaById(c->mediaId);
+                const NominalRef nom = media ? nominalRefOf(*media) : NominalRef{};
                 const int64_t firstFrame = nom.firstFrame;
                 // Normalize to forward slashes so the target_url is a clean, portable
                 // path for any OTIO consumer (mixed separators are legal but ugly on
@@ -203,8 +203,8 @@ bool OtioExport::save(const std::string& path, const Timeline& tl, std::string& 
                 // available_range: the media's on-disk extent from its first frame
                 // number; source_range: the cut as absolute editorial frames. Media
                 // whose length was never probed fall back to the clip's own extent.
-                const int64_t avail = m && m->info().frameCount > 0
-                                          ? m->info().frameCount
+                const int64_t avail = media && media->info().frameCount > 0
+                                          ? media->info().frameCount
                                           : c->sourceOffset + c->duration;
                 auto* ref = new otio::ExternalReference(
                     url,
@@ -216,7 +216,7 @@ bool OtioExport::save(const std::string& path, const Timeline& tl, std::string& 
 
                 const Shot* shot = c->shotId >= 0 ? tl.findShotById(c->shotId) : nullptr;
                 std::string name = shot && !shot->name.empty() ? shot->name
-                                 : m && !m->name().empty()     ? m->name()
+                                 : media && !media->name().empty()     ? media->name()
                                                                : fs::path(url).stem().string();
                 auto* clip = new otio::Clip(name, ref, src);
                 if (shot && !shot->name.empty())

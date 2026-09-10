@@ -120,10 +120,10 @@ void ThumbnailCache::start(std::vector<ThumbItem> items) {
     std::vector<std::vector<ThumbItem>> buckets(n);
     size_t rr = 0;
     for (auto& item : items) {
-        Media* m = item.media.get();
-        size_t b = (m && m->type() == ClipType::ImageSequence)
+        Media* media = item.media.get();
+        size_t b = (media && media->type() == ClipType::ImageSequence)
                        ? rr++ % n
-                       : std::hash<Media*>{}(m) % n;
+                       : std::hash<Media*>{}(media) % n;
         buckets[b].push_back(std::move(item));
     }
 

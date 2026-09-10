@@ -580,14 +580,14 @@ bool jplayInspectDirectory(const std::string& root, std::vector<DiscoveredShot>&
                 return d.contains(key) ? d[py::str(key)].cast<std::string>()
                                        : std::string();
             };
-            DiscoveredShot s;
-            s.sequence   = str("sequence");
-            s.shot       = str("shot");
-            s.department = str("department");
-            s.asset      = str("asset");
-            s.version    = str("version");
-            s.path       = str("path");
-            out.push_back(std::move(s));
+            DiscoveredShot discovered;
+            discovered.sequence   = str("sequence");
+            discovered.shot       = str("shot");
+            discovered.department = str("department");
+            discovered.asset      = str("asset");
+            discovered.version    = str("version");
+            discovered.path       = str("path");
+            out.push_back(std::move(discovered));
         }
         return true;
     } catch (const py::error_already_set& e) {

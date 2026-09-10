@@ -114,12 +114,12 @@ std::string App::controlStateJson() {
     auto regs = timeline_.seqRegions();
     o << ",\"sequences\":[";
     for (size_t i = 0; i < timeline_.sequences.size(); ++i) {
-        const Sequence& s = timeline_.sequences[i];
+        const Sequence& seq = timeline_.sequences[i];
         if (i) o << ',';
-        o << "{\"id\":" << s.id
-          << ",\"name\":" << jsonStr(s.name)
-          << ",\"project\":" << jsonStr(timeline_.projectNameOfSeq(s))
-          << ",\"clips\":" << s.clips.size()
+        o << "{\"id\":" << seq.id
+          << ",\"name\":" << jsonStr(seq.name)
+          << ",\"project\":" << jsonStr(timeline_.projectNameOfSeq(seq))
+          << ",\"clips\":" << seq.clips.size()
           << ",\"start\":" << regs[i].start
           << ",\"end\":" << regs[i].end << "}";
     }
@@ -142,14 +142,14 @@ std::string App::controlStateJson() {
     o << "]";
 
     o << ",\"current_clip\":";
-    if (const Clip* c = playheadClip()) {
-        auto m = timeline_.findMediaById(c->mediaId);
-        o << "{\"id\":" << c->id
-          << ",\"path\":" << jsonStr(m ? m->path() : std::string())
-          << ",\"track\":" << c->track
-          << ",\"timeline_start\":" << c->timelineStart
-          << ",\"duration\":" << c->duration
-          << ",\"source_frame\":" << (c->sourceOffset + timeline_.playhead - c->timelineStart)
+    if (const Clip* clip = playheadClip()) {
+        auto media = timeline_.findMediaById(clip->mediaId);
+        o << "{\"id\":" << clip->id
+          << ",\"path\":" << jsonStr(media ? media->path() : std::string())
+          << ",\"track\":" << clip->track
+          << ",\"timeline_start\":" << clip->timelineStart
+          << ",\"duration\":" << clip->duration
+          << ",\"source_frame\":" << (clip->sourceOffset + timeline_.playhead - clip->timelineStart)
           << "}";
     } else {
         o << "null";
@@ -307,8 +307,8 @@ std::vector<int> App::controlPickScope(const std::string& scope, std::string& er
     for (size_t i = 0; i < timeline_.sequences.size(); ++i) {
         if (only >= 0 && (int)i != only)
             continue;
-        for (const Clip& c : timeline_.sequences[i].clips)
-            ids.push_back(c.id);
+        for (const Clip& clip : timeline_.sequences[i].clips)
+            ids.push_back(clip.id);
     }
     return ids;
 }

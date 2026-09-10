@@ -333,11 +333,11 @@ void App::layoutFitButtons() {
     // The current clip: the one under the playhead, with the selection as the
     // fallback, so the button and Shift+F agree on what "current" means.
     {
-        const Clip* c = getTopMostClipAtFrame(timeline_.playhead);
-        if (!c)
-            c = timeline_.findClipById(selectedClipId_);
+        const Clip* clip = getTopMostClipAtFrame(timeline_.playhead);
+        if (!clip)
+            clip = timeline_.findClipById(selectedClipId_);
         add(FitBtnKind::Clip, "Clip", "Shift+F",
-            c ? c->timelineStart : 0, c ? c->end() : 0, c != nullptr);
+            clip ? clip->timelineStart : 0, clip ? clip->end() : 0, clip != nullptr);
     }
 
     // The slot computeLayout reserved right of the snap toggle, which it sized from
@@ -380,8 +380,8 @@ void App::fitHoverEvent(const SDL_Event& e) {
         // until the popup's first render, which can only be while the cursor is
         // still on the button, so an empty box means "keep it".
         if (fitMenu_.isOpen()) {
-            SDL_FRect b = fitMenu_.listBounds();
-            if (b.w > 0.0f && !inRect(b, mx, my))
+            SDL_FRect rect = fitMenu_.listBounds();
+            if (rect.w > 0.0f && !inRect(rect, mx, my))
                 fitMenu_.close();
         }
         return;
@@ -549,8 +549,8 @@ void App::jumpClip(int dir, bool markRange) {
     // same way X does it (topmost at the playhead); landing in a gap — only
     // possible when the clamp above ran out of clips — leaves the range alone.
     if (markRange)
-        if (const Clip* c = getTopMostClipAtFrame(timeline_.playhead))
-            markClipRange(*c);
+        if (const Clip* clip = getTopMostClipAtFrame(timeline_.playhead))
+            markClipRange(*clip);
 }
 
 void App::markClipRange(const Clip& c) {
@@ -618,11 +618,11 @@ void App::expandClipRange(int dir) {
             ai = -1;
     }
     if (ai < 0) {
-        const Clip* c = getTopMostClipAtFrame(timeline_.playhead);
-        if (!c)
-            c = timeline_.findClipById(selectedClipId_); // same fallback X uses in a gap
-        for (int i = 0; c && i < (int)clips.size(); ++i)
-            if (clips[i]->id == c->id) { ai = i; break; }
+        const Clip* clip = getTopMostClipAtFrame(timeline_.playhead);
+        if (!clip)
+            clip = timeline_.findClipById(selectedClipId_); // same fallback X uses in a gap
+        for (int i = 0; clip && i < (int)clips.size(); ++i)
+            if (clips[i]->id == clip->id) { ai = i; break; }
         if (ai < 0) {
             setStatus("NO CLIP TO MARK", 2000);
             return;
@@ -758,9 +758,9 @@ void App::renderTimeline() {
 
         // Prev clip (|<): a vertical bar plus a left-pointing triangle.
         {
-            const SDL_FRect& r = prevClipBtnRect_;
-            float cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
-            float tw = r.w * 0.22f, th = r.h * 0.30f, barW = 2.5f;
+            const SDL_FRect& rect = prevClipBtnRect_;
+            float cx = rect.x + rect.w * 0.5f, cy = rect.y + rect.h * 0.5f;
+            float tw = rect.w * 0.22f, th = rect.h * 0.30f, barW = 2.5f;
             SDL_FRect bar = { cx - tw - barW - 2.0f, cy - th, barW, th * 2 };
             SDL_SetRenderDrawColor(renderer_, ic.r, ic.g, ic.b, ic.a);
             jplay::fillRect(renderer_, &bar);
@@ -769,26 +769,26 @@ void App::renderTimeline() {
 
         // Play (right triangle) / Pause (two bars), depending on transport state.
         {
-            const SDL_FRect& r = playBtnRect_;
-            float cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
+            const SDL_FRect& rect = playBtnRect_;
+            float cx = rect.x + rect.w * 0.5f, cy = rect.y + rect.h * 0.5f;
             if (playing_) {
-                float bw = r.w * 0.16f, bh = r.h * 0.52f, gap = bw * 0.85f;
+                float bw = rect.w * 0.16f, bh = rect.h * 0.52f, gap = bw * 0.85f;
                 SDL_SetRenderDrawColor(renderer_, ic.r, ic.g, ic.b, ic.a);
                 SDL_FRect b1 = { cx - gap - bw, cy - bh * 0.5f, bw, bh };
                 SDL_FRect b2 = { cx + gap,      cy - bh * 0.5f, bw, bh };
                 jplay::fillRect(renderer_, &b1);
                 jplay::fillRect(renderer_, &b2);
             } else {
-                float tw = r.w * 0.22f, th = r.h * 0.30f;
+                float tw = rect.w * 0.22f, th = rect.h * 0.30f;
                 fillTriangle(cx - tw, cy - th, cx - tw, cy + th, cx + tw, cy, ic);
             }
         }
 
         // Next clip (>|): a right-pointing triangle plus a vertical bar.
         {
-            const SDL_FRect& r = nextClipBtnRect_;
-            float cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
-            float tw = r.w * 0.22f, th = r.h * 0.30f, barW = 2.5f;
+            const SDL_FRect& rect = nextClipBtnRect_;
+            float cx = rect.x + rect.w * 0.5f, cy = rect.y + rect.h * 0.5f;
+            float tw = rect.w * 0.22f, th = rect.h * 0.30f, barW = 2.5f;
             fillTriangle(cx - tw, cy - th, cx - tw, cy + th, cx + tw, cy, ic);
             SDL_FRect bar = { cx + tw + 2.0f, cy - th, barW, th * 2 };
             SDL_SetRenderDrawColor(renderer_, ic.r, ic.g, ic.b, ic.a);
@@ -1182,9 +1182,9 @@ void App::renderTimeline() {
             auto flushRun = [&](int endX) {
                 if (runStart < 0)
                     return;
-                SDL_FRect r = { (float)runStart, cacheStripRect_.y + 1,
-                                (float)(endX - runStart), kCacheStripH - 2 };
-                jplay::fillRect(renderer_, &r);
+                SDL_FRect rect = { (float)runStart, cacheStripRect_.y + 1,
+                                   (float)(endX - runStart), kCacheStripH - 2 };
+                jplay::fillRect(renderer_, &rect);
                 lastGreen = std::max(lastGreen, endX - 1);
                 runStart = -1;
             };
@@ -1296,9 +1296,9 @@ void App::renderTimeline() {
             auto flushFill = [&](int endX) {
                 if (runStart < 0)
                     return;
-                SDL_FRect r = { (float)(colBase + runStart), yTop,
-                                (float)(endX - runStart), clipStripRect_.h };
-                SDL_RenderFillRect(renderer_, &r); // already column-aligned
+                SDL_FRect rect = { (float)(colBase + runStart), yTop,
+                                   (float)(endX - runStart), clipStripRect_.h };
+                SDL_RenderFillRect(renderer_, &rect); // already column-aligned
                 runStart = -1;
             };
             for (int x = 0; x < colCount; ++x) {
@@ -1313,8 +1313,8 @@ void App::renderTimeline() {
             for (const WideSpan& w : stripWide) {
                 if (w.kind != kind)
                     continue;
-                SDL_FRect r = { w.x0, yTop, std::max(w.x1 - w.x0, 1.0f), clipStripRect_.h };
-                jplay::fillRect(renderer_, &r);
+                SDL_FRect rect = { w.x0, yTop, std::max(w.x1 - w.x0, 1.0f), clipStripRect_.h };
+                jplay::fillRect(renderer_, &rect);
             }
         }
         // Borders last, over every fill, as the single sweep below used to be.
@@ -1323,9 +1323,9 @@ void App::renderTimeline() {
         auto flushTicks = [&](int endX) {
             if (tickStart < 0)
                 return;
-            SDL_FRect r = { (float)(colBase + tickStart), yTop,
-                            (float)(endX - tickStart), yBot - yTop + 1.0f };
-            SDL_RenderFillRect(renderer_, &r);
+            SDL_FRect rect = { (float)(colBase + tickStart), yTop,
+                               (float)(endX - tickStart), yBot - yTop + 1.0f };
+            SDL_RenderFillRect(renderer_, &rect);
             tickStart = -1;
         };
         for (int x = 0; x < colCount; ++x) {
@@ -1452,9 +1452,9 @@ void App::renderTimeline() {
             if (runStart < 0)
                 return;
             setColor(renderer_, runKind == 2 ? kShotBlockLive : kShotBlock);
-            SDL_FRect r = { (float)(colBase + runStart), barY,
-                            (float)(endX - runStart), barH };
-            SDL_RenderFillRect(renderer_, &r);
+            SDL_FRect rect = { (float)(colBase + runStart), barY,
+                               (float)(endX - runStart), barH };
+            SDL_RenderFillRect(renderer_, &rect);
             runStart = -1;
         };
         for (int x = 0; x < colCount; ++x) {
@@ -1473,9 +1473,9 @@ void App::renderTimeline() {
         auto flushTicks = [&](int endX) {
             if (tickStart < 0)
                 return;
-            SDL_FRect t = { (float)(colBase + tickStart), barY,
-                            (float)(endX - tickStart), barH };
-            SDL_RenderFillRect(renderer_, &t);
+            SDL_FRect rect = { (float)(colBase + tickStart), barY,
+                               (float)(endX - tickStart), barH };
+            SDL_RenderFillRect(renderer_, &rect);
             tickStart = -1;
         };
         for (int x = 0; x < colCount; ++x) {
@@ -1626,9 +1626,9 @@ void App::renderTimeline() {
                 return;
             SDL_SetRenderDrawColor(renderer_, (Uint8)(runKey >> 24), (Uint8)(runKey >> 16),
                                    (Uint8)(runKey >> 8), (Uint8)runKey);
-            SDL_FRect r = { (float)(colBase + runStart), band.y,
-                            (float)(endX - runStart), band.h };
-            SDL_RenderFillRect(renderer_, &r);
+            SDL_FRect rect = { (float)(colBase + runStart), band.y,
+                               (float)(endX - runStart), band.h };
+            SDL_RenderFillRect(renderer_, &rect);
             runStart = -1;
         };
         for (int x = 0; x < colCount; ++x) {
@@ -1651,9 +1651,9 @@ void App::renderTimeline() {
             if (tickStart < 0)
                 return;
             SDL_SetRenderDrawColor(renderer_, kClipBorder.r, kClipBorder.g, kClipBorder.b, tickAlpha);
-            SDL_FRect t = { (float)(colBase + tickStart), band.y,
-                            (float)(endX - tickStart), band.h };
-            SDL_RenderFillRect(renderer_, &t);
+            SDL_FRect rect = { (float)(colBase + tickStart), band.y,
+                               (float)(endX - tickStart), band.h };
+            SDL_RenderFillRect(renderer_, &rect);
             tickStart = -1;
         };
         for (int x = 0; x < colCount; ++x) {
@@ -1677,12 +1677,12 @@ void App::renderTimeline() {
         const WaveformCache::Peaks* pk = nullptr;
         const Clip* pkClip = nullptr;
         for (int x = 0; x < colCount; ++x) {
-            const Clip* c = colOwner[base + x];
-            if (!c)
+            const Clip* clip = colOwner[base + x];
+            if (!clip)
                 continue;
-            if (c != pkClip) {
-                pkClip = c;
-                Media* pm = mediaOf(c->mediaId);
+            if (clip != pkClip) {
+                pkClip = clip;
+                Media* pm = mediaOf(clip->mediaId);
                 pk = (pm && !pm->openFailed()) ? waveforms_.find(pm->path()) : nullptr;
                 if (pm && !pm->openFailed())
                     waveforms_.ensure(pm->path(), work_);
@@ -1691,7 +1691,7 @@ void App::renderTimeline() {
                 continue;
             const float px = (float)(colBase + x);
             int64_t frame = (int64_t)std::floor(xToFrame((double)px + 0.5));
-            double sec = (double)(c->sourceOffset + (frame - c->timelineStart)) / wfFps
+            double sec = (double)(clip->sourceOffset + (frame - clip->timelineStart)) / wfFps
                        - pk->startSec;
             if (sec < 0.0)
                 continue;
@@ -1718,12 +1718,12 @@ void App::renderTimeline() {
         const bool missing = v.missing;
         const SDL_Color fill = v.fill;
         const int64_t fadeIn = v.fadeIn, fadeOut = v.fadeOut;
-        SDL_FRect r = { x0 + 1, band.y, std::max(x1 - x0 - 2, 2.0f), band.h };
+        SDL_FRect rect = { x0 + 1, band.y, std::max(x1 - x0 - 2, 2.0f), band.h };
 
         SDL_SetRenderDrawColor(renderer_, fill.r, fill.g, fill.b, a);
-        jplay::fillRect(renderer_, &r);
+        jplay::fillRect(renderer_, &rect);
         SDL_SetRenderDrawColor(renderer_, kClipBorder.r, kClipBorder.g, kClipBorder.b, a);
-        jplay::drawRect(renderer_, &r);
+        jplay::drawRect(renderer_, &rect);
 
         // Audio clips draw their waveform as the clip's content: a per-column
         // peak envelope centered in the row, decoded in the background
@@ -1763,10 +1763,10 @@ void App::renderTimeline() {
             }
         }
         if (pk && pk->hasAudio && !pk->bins.empty()) {
-            float midY   = r.y + r.h * 0.5f;
-            float maxAmp = r.h * 0.5f - 1.0f;
-            int px0 = (int)std::floor(std::max((double)r.x, (double)headerX_));
-            int px1 = (int)std::ceil(std::min((double)(r.x + r.w),
+            float midY   = rect.y + rect.h * 0.5f;
+            float maxAmp = rect.h * 0.5f - 1.0f;
+            int px0 = (int)std::floor(std::max((double)rect.x, (double)headerX_));
+            int px1 = (int)std::ceil(std::min((double)(rect.x + rect.w),
                                               (double)(headerX_ + contentW_)));
             SDL_SetRenderDrawColor(renderer_, wfCol.r, wfCol.g, wfCol.b,
                                    (Uint8)(wfCol.a * a / 255));
@@ -1789,7 +1789,7 @@ void App::renderTimeline() {
         // cuts that is the whole clip loop's cost, paid every frame.
         // The razored clip shows the cut instead of its name (drawn below), so the
         // name/metadata pair is skipped outright rather than drawn and covered.
-        if (r.w > 8.0f && c.id != razorClipId_) {
+        if (rect.w > 8.0f && c.id != razorClipId_) {
             std::string baseName = hashSeqStem(
                 std::filesystem::path(pm ? pm->path() : std::string()).stem().string(),
                 pm && pm->type() == ClipType::ImageSequence);
@@ -1816,20 +1816,20 @@ void App::renderTimeline() {
                 metaRow.clear();
             }
             float lineH = textFont_.lineHeight();
-            std::string row1 = fitText(baseName, r.w - 8.0f);
-            std::string row2 = metaRow.empty() ? std::string() : fitText(metaRow, r.w - 8.0f);
+            std::string row1 = fitText(baseName, rect.w - 8.0f);
+            std::string row2 = metaRow.empty() ? std::string() : fitText(metaRow, rect.w - 8.0f);
             if (!row2.empty()) {
                 float gap = 2.0f;
-                float startY = r.y + (r.h - lineH * 2.0f - gap) * 0.5f;
+                float startY = rect.y + (rect.h - lineH * 2.0f - gap) * 0.5f;
                 if (!row1.empty()) {
                     float tw = textFont_.measure(renderer_, row1.c_str());
-                    drawText(r.x + (r.w - tw) * 0.5f, startY, { kClipName.r, kClipName.g, kClipName.b, a }, row1);
+                    drawText(rect.x + (rect.w - tw) * 0.5f, startY, { kClipName.r, kClipName.g, kClipName.b, a }, row1);
                 }
                 float tw2 = textFont_.measure(renderer_, row2.c_str());
-                drawText(r.x + (r.w - tw2) * 0.5f, startY + lineH + gap, { kClipDept.r, kClipDept.g, kClipDept.b, a }, row2);
+                drawText(rect.x + (rect.w - tw2) * 0.5f, startY + lineH + gap, { kClipDept.r, kClipDept.g, kClipDept.b, a }, row2);
             } else if (!row1.empty()) {
                 float tw = textFont_.measure(renderer_, row1.c_str());
-                drawText(r.x + (r.w - tw) * 0.5f, r.y + (r.h - lineH) * 0.5f, { kClipName.r, kClipName.g, kClipName.b, a }, row1);
+                drawText(rect.x + (rect.w - tw) * 0.5f, rect.y + (rect.h - lineH) * 0.5f, { kClipName.r, kClipName.g, kClipName.b, a }, row1);
             }
         }
 
@@ -1841,7 +1841,7 @@ void App::renderTimeline() {
         if (c.id == razorClipId_) {
             const float cutX = (float)frameToX((double)razorCutFrame_);
             SDL_SetRenderDrawColor(renderer_, kRazorLine.r, kRazorLine.g, kRazorLine.b, a);
-            jplay::drawLine(renderer_, cutX, r.y, cutX, r.y + r.h - 1.0f);
+            jplay::drawLine(renderer_, cutX, rect.y, cutX, rect.y + rect.h - 1.0f);
             int64_t base = 0;
             if (pm && pm->isOpen()) {
                 std::string err;
@@ -1858,15 +1858,15 @@ void App::renderTimeline() {
             std::string lhs = fmtCut(razorCutFrame_ - 1);
             std::string rhs = fmtCut(razorCutFrame_);
             const float lineH = textFont_.lineHeight();
-            const float ty = r.y + (r.h - lineH) * 0.5f;
+            const float ty = rect.y + (rect.h - lineH) * 0.5f;
             const float pad = 3.0f * dpiScale;
             // Each number is dropped when its own side is too narrow to hold it;
             // the line itself always draws, so a thin clip still shows the cut.
             float lw = textFont_.measure(renderer_, lhs.c_str());
-            if (cutX - lw - pad >= r.x)
+            if (cutX - lw - pad >= rect.x)
                 drawText(cutX - lw - pad, ty, { kRazorLine.r, kRazorLine.g, kRazorLine.b, a }, lhs);
             float rw = textFont_.measure(renderer_, rhs.c_str());
-            if (cutX + pad + rw <= r.x + r.w)
+            if (cutX + pad + rw <= rect.x + rect.w)
                 drawText(cutX + pad, ty, { kRazorLine.r, kRazorLine.g, kRazorLine.b, a }, rhs);
         }
 
@@ -1880,18 +1880,18 @@ void App::renderTimeline() {
                 if (fadeEdge_ == 0) fin = fadeNewFrames_;
                 else                fout = fadeNewFrames_;
             }
-            const float yTop = r.y, yBot = r.y + r.h - 1.0f;
+            const float yTop = rect.y, yBot = rect.y + rect.h - 1.0f;
             auto wedge = [&](int64_t frames, bool head) {
                 if (frames <= 0)
                     return;
                 float apexX = head ? (float)frameToX((double)(cStart + frames))
                                    : (float)frameToX((double)(cStart + cDur - frames));
-                float baseX = head ? r.x : r.x + r.w - 1.0f;
-                apexX = std::clamp(apexX, r.x, r.x + r.w - 1.0f);
+                float baseX = head ? rect.x : rect.x + rect.w - 1.0f;
+                apexX = std::clamp(apexX, rect.x, rect.x + rect.w - 1.0f);
                 // Horizontal slices under the ramp line: a filled triangle without
                 // needing a geometry path (the renderer draws rects and lines).
                 setColor(renderer_, kFadeWedge);
-                const int rows = (int)std::max(r.h, 1.0f);
+                const int rows = (int)std::max(rect.h, 1.0f);
                 for (int i = 0; i < rows; ++i) {
                     // Fraction along the ramp line, which runs from the base's
                     // bottom corner up to the apex on the top edge: the widest
@@ -1916,9 +1916,9 @@ void App::renderTimeline() {
         // Selection: light-cream dotted border around every selected clip.
         // Hover (when not selected): a darker cream dotted border.
         if (isClipSelected(c.id))
-            drawDottedRect(r, kSelectCream);
+            drawDottedRect(rect, kSelectCream);
         else if (c.id == hoveredClipId_)
-            drawDottedRect(r, kHoverCream);
+            drawDottedRect(rect, kHoverCream);
     };
     for (const Clip* c : wideClips)
         drawClip(*c);
@@ -1948,21 +1948,21 @@ void App::renderTimeline() {
         if (x1 < headerX_ || x0 > winW_)
             return;
         SDL_FRect band = clipBand(sp.a->track, false);
-        SDL_FRect r = { x0, band.y, std::max(x1 - x0, 2.0f), band.h };
+        SDL_FRect rect = { x0, band.y, std::max(x1 - x0, 2.0f), band.h };
         setColor(renderer_, kTransFill);
-        jplay::fillRect(renderer_, &r);
+        jplay::fillRect(renderer_, &rect);
         setColor(renderer_, kTransBorder);
-        jplay::drawRect(renderer_, &r);
+        jplay::drawRect(renderer_, &rect);
         // Bottom-left to top-right: the outgoing clip's weight falling away.
         setColor(renderer_, kTransGlyph);
-        jplay::drawLine(renderer_, r.x, r.y + r.h - 1.0f, r.x + r.w - 1.0f, r.y);
+        jplay::drawLine(renderer_, rect.x, rect.y + rect.h - 1.0f, rect.x + rect.w - 1.0f, rect.y);
         if (t.id == selectedTransitionId_)
-            drawDottedRect(r, kSelectCream);
+            drawDottedRect(rect, kSelectCream);
     };
     for (int si : viewSeqIndices()) {
-        const Sequence& s = timeline_.sequences[si];
-        for (const auto& t : s.transitions)
-            drawTransition(s, t);
+        const Sequence& seq = timeline_.sequences[si];
+        for (const auto& t : seq.transitions)
+            drawTransition(seq, t);
     }
 
     // ---- gap box over empty space between two clips: gray dotted on hover, a
@@ -1974,12 +1974,12 @@ void App::renderTimeline() {
             return;
         bool audio = timeline_.trackKind(track) == Timeline::TrackKind::Audio;
         SDL_FRect band = clipBand(track, audio);
-        SDL_FRect r = { x0 + 1, band.y, std::max(x1 - x0 - 2, 2.0f), band.h };
+        SDL_FRect rect = { x0 + 1, band.y, std::max(x1 - x0 - 2, 2.0f), band.h };
         if (fill) {
             SDL_SetRenderDrawColor(renderer_, col.r, col.g, col.b, 40);
-            jplay::fillRect(renderer_, &r);
+            jplay::fillRect(renderer_, &rect);
         }
-        drawDottedRect(r, col);
+        drawDottedRect(rect, col);
     };
     if (selectedGapTrack_ >= 0)
         drawGapBox(selectedGapTrack_, selectedGapStart_, selectedGapEnd_, kGapSelected, true);
@@ -2009,18 +2009,18 @@ void App::renderTimeline() {
             float x0 = (float)frameToX((double)a);
             float x1 = (float)frameToX((double)b);
             SDL_FRect band = clipBand(track, audio);
-            SDL_FRect r = { x0, band.y, std::max(x1 - x0, 1.0f), band.h };
+            SDL_FRect rect = { x0, band.y, std::max(x1 - x0, 1.0f), band.h };
             setColor(renderer_, kDisplaceFill);
-            jplay::fillRect(renderer_, &r);
-            drawDottedRect(r, kDisplaceBorder);
+            jplay::fillRect(renderer_, &rect);
+            drawDottedRect(rect, kDisplaceBorder);
             // In overwrite mode nothing ripples: every overlapping clip
             // is trimmed (tail or head), split, or removed — so it always gets
             // scissors. Only ripple mode pushes neighbours (the arrow below).
             bool trimmed = overwrite;
             if (trimmed) {
-                float side = std::min(r.h, r.w);
+                float side = std::min(rect.h, rect.w);
                 if (side > 6.0f) {
-                    float cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
+                    float cx = rect.x + rect.w * 0.5f, cy = rect.y + rect.h * 0.5f;
                     SDL_FRect gr = { cx - side * 0.5f, cy - side * 0.5f, side, side };
                     icons_.drawGlyph(renderer_, 0xF0190 /* ICON_MDI_CONTENT_CUT */, gr, kDisplaceArrow);
                 }
@@ -2028,11 +2028,11 @@ void App::renderTimeline() {
             }
             // Double-headed arrow centered in the overlap: this neighbour is
             // being displaced (pushed forward on release, back if you reverse).
-            float half = std::min(r.w * 0.5f - 4.0f, 14.0f);
+            float half = std::min(rect.w * 0.5f - 4.0f, 14.0f);
             if (half > 4.0f) {
                 const SDL_Color ac = kDisplaceArrow;
-                float cy = r.y + r.h * 0.5f;
-                float cx = r.x + r.w * 0.5f;
+                float cy = rect.y + rect.h * 0.5f;
+                float cx = rect.x + rect.w * 0.5f;
                 float lx = cx - half, rx = cx + half;
                 const float aw = 6.0f, ah = 5.0f; // arrowhead length / half-height
                 SDL_SetRenderDrawColor(renderer_, ac.r, ac.g, ac.b, ac.a);
@@ -2227,9 +2227,9 @@ void App::renderTimeline() {
         for (int i = 0; i <= rows; ++i) {
             float y = trackRowY(i);
             bool active = i == trackDropIns_;
-            SDL_Color c = active ? SDL_Color{ 235, 238, 245, 255 }
+            SDL_Color color = active ? SDL_Color{ 235, 238, 245, 255 }
                                  : SDL_Color{ 120, 124, 132, 140 };
-            setColor(renderer_, c);
+            setColor(renderer_, color);
             jplay::drawLine(renderer_, x0, y, x1 - 1, y);
             if (active) // 2px, so the live target reads as a line rather than a rule
                 jplay::drawLine(renderer_, x0, y - 1, x1 - 1, y - 1);
@@ -2698,8 +2698,8 @@ void App::openTrackMenu(int track) {
         // Label says what the entry does next, as the enable/disable toggle above
         // does: muted only once every clip it covers is silent.
         const bool allMuted = std::all_of(audioIds.begin(), audioIds.end(), [this](int id) {
-            const Clip* c = timeline_.findClipById(id);
-            return c && c->hidden;
+            const Clip* clip = timeline_.findClipById(id);
+            return clip && clip->hidden;
         });
         ContextMenu::Item mute;
         mute.label = allMuted ? "Unmute Audio" : "Mute Audio";
@@ -2718,8 +2718,8 @@ void App::openTrackMenu(int track) {
         curve.action = [this, track] { enterCurveMode(track, CurveParam::Volume); };
         items.push_back(std::move(curve));
     }
-    const SDL_FRect b = trackMenuRect(track);
-    trackMenu_.open(b.x, b.y, winW_, winH_, std::move(items));
+    const SDL_FRect rect = trackMenuRect(track);
+    trackMenu_.open(rect.x, rect.y, winW_, winH_, std::move(items));
 }
 
 // Switch a whole row off (its clips stop compositing and stop feeding audio, and
@@ -2774,9 +2774,9 @@ std::vector<int> App::trackAudioClipIds(int track) const {
             return;
         }
         for (int f : timeline_.linkFollowers(c.id))
-            if (const Clip* a = timeline_.findClipById(f))
-                if (a->audio)
-                    ids.push_back(a->id);
+            if (const Clip* clip = timeline_.findClipById(f))
+                if (clip->audio)
+                    ids.push_back(clip->id);
     });
     return ids;
 }
@@ -2793,8 +2793,8 @@ void App::toggleTrackAudioMuted(int track) {
     if (ids.empty())
         return;
     const bool mute = std::any_of(ids.begin(), ids.end(), [this](int id) {
-        const Clip* c = timeline_.findClipById(id);
-        return c && !c->hidden;
+        const Clip* clip = timeline_.findClipById(id);
+        return clip && !clip->hidden;
     });
     for (int id : ids)
         if (Clip* c = clipById(id))
@@ -2916,8 +2916,8 @@ void App::beginClipDrag(Clip& c, float mouseX) {
     // The grabbed clip (c) is always a member; guard in case the set is empty.
     dragOrig_.clear();
     for (int id : selectedClipIds_)
-        if (Clip* k = clipById(id))
-            dragOrig_.push_back({ k->id, k->track, k->audio, k->timelineStart, k->duration });
+        if (Clip* clip = clipById(id))
+            dragOrig_.push_back({ clip->id, clip->track, clip->audio, clip->timelineStart, clip->duration });
     if (dragOrig_.empty())
         dragOrig_.push_back({ c.id, c.track, c.audio, c.timelineStart, c.duration });
 }
@@ -3108,9 +3108,9 @@ void App::commitClipDrag(bool duplicate) {
                 // Move each clip by the delta, then overwrite non-dragged clips
                 // around each new span (all dragged clips excluded).
                 for (const auto& o : dragOrig_) {
-                    if (Clip* c = clipById(o.id)) {
-                        c->track = std::clamp(o.track + dTrack, 0, n - 1);
-                        c->timelineStart = o.start + dFrame;
+                    if (Clip* clip = clipById(o.id)) {
+                        clip->track = std::clamp(o.track + dTrack, 0, n - 1);
+                        clip->timelineStart = o.start + dFrame;
                     }
                     selAfter.push_back(o.id);
                 }
@@ -3229,41 +3229,41 @@ int64_t App::snapTrimFrame(double x, int track) const {
 }
 
 void App::updateClipTrim(float mouseX) {
-    Clip* c = clipById(trimClipId_);
-    if (!c)
+    Clip* clip = clipById(trimClipId_);
+    if (!clip)
         return;
-    int64_t srcFrames = timeline_.clipSourceFrames(*c);
-    int64_t f = snapTrimFrame(mouseX, c->track);
+    int64_t srcFrames = timeline_.clipSourceFrames(*clip);
+    int64_t f = snapTrimFrame(mouseX, clip->track);
     if (trimEdge_ == 1) {
         // Right edge: start + sourceOffset fixed, duration follows the cursor.
         // Capped at 1 frame and at the frames remaining in the source.
-        int64_t maxDur = std::max<int64_t>(srcFrames - c->sourceOffset, 1);
-        int64_t dur = std::clamp<int64_t>(f - c->timelineStart, 1, maxDur);
-        trimNewStart_ = c->timelineStart;
-        trimNewSourceOffset_ = c->sourceOffset;
+        int64_t maxDur = std::max<int64_t>(srcFrames - clip->sourceOffset, 1);
+        int64_t dur = std::clamp<int64_t>(f - clip->timelineStart, 1, maxDur);
+        trimNewStart_ = clip->timelineStart;
+        trimNewSourceOffset_ = clip->sourceOffset;
         trimNewDuration_ = dur;
     } else {
         // Left edge: right edge (end) fixed; start and sourceOffset move together.
         // Can't extend past source frame 0 (sourceOffset >= 0) or below timeline 0,
         // and can't cross the right edge (duration >= 1).
-        int64_t fixedEnd = c->end();
-        int64_t minStart = std::max<int64_t>(c->timelineStart - c->sourceOffset, 0);
+        int64_t fixedEnd = clip->end();
+        int64_t minStart = std::max<int64_t>(clip->timelineStart - clip->sourceOffset, 0);
         int64_t maxStart = fixedEnd - 1;
         int64_t start = std::clamp<int64_t>(f, minStart, maxStart);
         trimNewStart_ = start;
-        trimNewSourceOffset_ = c->sourceOffset + (start - c->timelineStart);
+        trimNewSourceOffset_ = clip->sourceOffset + (start - clip->timelineStart);
         trimNewDuration_ = fixedEnd - start;
     }
 }
 
 void App::commitClipTrim() {
     if (trimmingClip_) {
-        if (Clip* c = clipById(trimClipId_)) {
-            const int64_t oldStart = c->timelineStart, oldDur = c->duration, oldSrc = c->sourceOffset;
+        if (Clip* clip = clipById(trimClipId_)) {
+            const int64_t oldStart = clip->timelineStart, oldDur = clip->duration, oldSrc = clip->sourceOffset;
             const int64_t newStart = trimNewStart_, newDur = trimNewDuration_, newSrc = trimNewSourceOffset_;
             if (oldStart != newStart || oldDur != newDur || oldSrc != newSrc) {
-                const int id = c->id;
-                const int track = c->track;
+                const int id = clip->id;
+                const int track = clip->track;
                 // Snapshot all positions (a right-edge trim can grow the sequence
                 // and shift later sequences via repack), so undo/redo restore the
                 // whole layout plus the trimmed clip's duration/source range. The
@@ -3272,14 +3272,14 @@ void App::commitClipTrim() {
                 addLinkedFollowers(geomIds);
                 PositionSnapshot before = capturePositions();
                 std::vector<ClipGeom> geomBefore = captureClipGeom(geomIds);
-                c->timelineStart = newStart;
-                c->duration = newDur;
-                c->sourceOffset = newSrc;
+                clip->timelineStart = newStart;
+                clip->duration = newDur;
+                clip->sourceOffset = newSrc;
                 trimLinkedFollowers(id, newSrc - oldSrc, newDur - oldDur);
                 // Trimming a follower's own head slips it against its parent: record
                 // the new relationship instead of letting the link go quietly wrong.
-                if (const Clip* p = timeline_.linkParent(*c))
-                    c->linkOffset = c->timelineStart - p->timelineStart;
+                if (const Clip* p = timeline_.linkParent(*clip))
+                    clip->linkOffset = clip->timelineStart - p->timelineStart;
                 // Confine the ripple to this clip's own sequence: a left-edge
                 // extend must never push clips in the sequence in front (repack
                 // re-abuts the sequences afterwards regardless).
@@ -3372,10 +3372,10 @@ void App::addDissolveAtClipOut(int aClipId) {
     Sequence* seq = timeline_.sequenceOfClipMut(aClipId);
     if (!seq)
         return;
-    Clip* a = nullptr;
+    Clip* clip = nullptr;
     for (auto& c : seq->clips)
-        if (c.id == aClipId) a = &c;
-    if (!a || a->audio) {
+        if (c.id == aClipId) clip = &c;
+    if (!clip || clip->audio) {
         setStatus("NO DISSOLVE: VIDEO CLIPS ONLY", 3000);
         return;
     }
@@ -3384,14 +3384,14 @@ void App::addDissolveAtClipOut(int aClipId) {
     // cut to put a dissolve on.
     Clip* b = nullptr;
     for (auto& c : seq->clips)
-        if (c.id != a->id && c.track == a->track && !c.audio && c.timelineStart == a->end())
+        if (c.id != clip->id && c.track == clip->track && !c.audio && c.timelineStart == clip->end())
             b = &c;
     if (!b) {
         setStatus("NO DISSOLVE: NO ADJACENT CLIP AT THE OUT POINT", 4000);
         return;
     }
     for (const auto& t : seq->transitions)
-        if (t.aClipId == a->id && t.bClipId == b->id) {
+        if (t.aClipId == clip->id && t.bClipId == b->id) {
             setStatus("DISSOLVE ALREADY ON THIS CUT", 3000);
             return;
         }
@@ -3399,26 +3399,26 @@ void App::addDissolveAtClipOut(int aClipId) {
     // whatever handle each side actually has.
     const int64_t want = std::max<int64_t>((int64_t)std::llround(timeline_.fps > 0.0 ? timeline_.fps : 24.0), 2);
     int64_t maxIn = 0, maxOut = 0;
-    timeline_.transitionLimits(*a, *b, maxIn, maxOut);
-    Transition t;
-    t.inFrames  = std::min(want / 2, maxIn);
-    t.outFrames = std::min(want - want / 2, maxOut);
-    if (t.duration() <= 0) {
+    timeline_.transitionLimits(*clip, *b, maxIn, maxOut);
+    Transition transition;
+    transition.inFrames  = std::min(want / 2, maxIn);
+    transition.outFrames = std::min(want - want / 2, maxOut);
+    if (transition.duration() <= 0) {
         // Both clips are cut to their full source extent, so there is no material
         // to dissolve through. Handle-based transitions cannot invent it.
         setStatus("NO DISSOLVE: NO HANDLES ON EITHER SIDE OF THE CUT", 5000);
         return;
     }
     ContentSnapshot before = captureContent();
-    t.id = nextTransitionId_++;
-    t.aClipId = a->id;
-    t.bClipId = b->id;
-    seq->transitions.push_back(t);
+    transition.id = nextTransitionId_++;
+    transition.aClipId = clip->id;
+    transition.bClipId = b->id;
+    seq->transitions.push_back(transition);
     clearClipSelection();          // clears selectedTransitionId_, so claim it after
     selectedGapTrack_ = -1;
-    selectedTransitionId_ = t.id;
+    selectedTransitionId_ = transition.id;
     pushContentUndo("ADD DISSOLVE", before);
-    setStatus("DISSOLVE " + std::to_string(t.duration()) + "F", 2000);
+    setStatus("DISSOLVE " + std::to_string(transition.duration()) + "F", 2000);
 }
 
 void App::addDissolveAtPlayhead() {
@@ -3517,8 +3517,8 @@ void App::splitClipAt(int clipId, int64_t frame) {
     // never leaves its audio whole underneath. Normalise to the parent first - the
     // razor may just as well have landed on the follower.
     int parentId = clipId;
-    if (const Clip* p = timeline_.linkParent(*hit))
-        parentId = p->id;
+    if (const Clip* clip = timeline_.linkParent(*hit))
+        parentId = clip->id;
     std::vector<int> group{ parentId };
     for (int fid : timeline_.linkFollowers(parentId))
         group.push_back(fid);
@@ -3542,21 +3542,21 @@ void App::splitClipAt(int clipId, int64_t frame) {
     // reallocates it, which would dangle every Clip* still held here.
     std::vector<std::pair<int, Clip>> tails; // (head clip id -> its new tail)
     for (int id : cutIds) {
-        Clip* c = clipById(id);
-        if (!c)
+        Clip* clip = clipById(id);
+        if (!clip)
             continue;
-        const int64_t adv = frame - c->timelineStart;
-        Clip tail = *c;
+        const int64_t adv = frame - clip->timelineStart;
+        Clip tail = *clip;
         tail.id            = tailIds[id];
         tail.sourceOffset += adv;
-        tail.duration      = c->end() - frame;
+        tail.duration      = clip->end() - frame;
         tail.timelineStart = frame;
         tail.shotId        = -1;  // the head goes on owning the shot (below)
         tail.fadeInFrames  = 0;   // the head keeps the head ramp, the tail the tail one
-        if (auto it = tailIds.find(c->linkedTo); it != tailIds.end())
+        if (auto it = tailIds.find(clip->linkedTo); it != tailIds.end())
             tail.linkedTo = it->second; // follow the tail parent, not the head
-        c->duration       = adv;
-        c->fadeOutFrames  = 0;
+        clip->duration       = adv;
+        clip->fadeOutFrames  = 0;
         // The shot is deliberately left alone, so its bar still spans both pieces:
         // a razor cuts the edit, not the shot the edit came from. The shot stays on
         // the head, since a shot belongs to exactly one clip and syncShotsToClips
@@ -3565,8 +3565,8 @@ void App::splitClipAt(int clipId, int64_t frame) {
         tails.push_back({ id, tail });
     }
     for (auto& t : tails)
-        if (Sequence* s = timeline_.sequenceOfClipMut(t.first))
-            s->clips.push_back(t.second);
+        if (Sequence* seq = timeline_.sequenceOfClipMut(t.first))
+            seq->clips.push_back(t.second);
     pruneTransitions(); // a dissolve straddling the new cut has lost the handle it spent
     pushContentUndo("CUT CLIP", before);
     hostSnapshotDirty_ = true; // re-push the project to spectators if hosting
@@ -3576,11 +3576,11 @@ void App::splitClipAt(int clipId, int64_t frame) {
 // ------------------------------------------------------------- clip fades
 
 void App::setClipFade(int clipId, int edge, int64_t frames) {
-    Clip* c = clipById(clipId);
-    if (!c)
+    Clip* clip = clipById(clipId);
+    if (!clip)
         return;
-    const int64_t want = std::clamp<int64_t>(frames, 0, Timeline::fadeLimit(*c));
-    int64_t& target = (edge == 0) ? c->fadeInFrames : c->fadeOutFrames;
+    const int64_t want = std::clamp<int64_t>(frames, 0, Timeline::fadeLimit(*clip));
+    int64_t& target = (edge == 0) ? clip->fadeInFrames : clip->fadeOutFrames;
     if (target == want)
         return;
     // Fades are plain clip fields, so a ContentSnapshot restores them and there is
@@ -3603,15 +3603,15 @@ void App::addFadeToSelection(int edge) {
     ContentSnapshot before = captureContent();
     int applied = 0, tooShort = 0;
     for (int id : ids) {
-        Clip* c = clipById(id);
-        if (!c || c->audio)
+        Clip* clip = clipById(id);
+        if (!clip || clip->audio)
             continue;
-        const int64_t cap = Timeline::fadeLimit(*c);
+        const int64_t cap = Timeline::fadeLimit(*clip);
         if (cap <= 0) { ++tooShort; continue; }
         // Where a lower track shows through, ramp exactly across that run so the
         // blend covers the whole overlap; elsewhere fall back to the default.
-        const int64_t cover = fadeCoverageFrames(*c, edge);
-        int64_t& target = (edge == 0) ? c->fadeInFrames : c->fadeOutFrames;
+        const int64_t cover = fadeCoverageFrames(*clip, edge);
+        int64_t& target = (edge == 0) ? clip->fadeInFrames : clip->fadeOutFrames;
         target = std::min(cover > 0 ? cover : deflt, cap);
         ++applied;
     }
@@ -3668,13 +3668,13 @@ void App::beginClipFade(Clip& c, int edge) {
 }
 
 void App::updateClipFade(float mouseX) {
-    Clip* c = clipById(fadeClipId_);
-    if (!c)
+    Clip* clip = clipById(fadeClipId_);
+    if (!clip)
         return;
     const int64_t f = (int64_t)std::llround(xToFrame(mouseX));
-    const int64_t cap = Timeline::fadeLimit(*c);
-    fadeNewFrames_ = (fadeEdge_ == 0) ? std::clamp<int64_t>(f - c->timelineStart, 0, cap)
-                                      : std::clamp<int64_t>(c->end() - f, 0, cap);
+    const int64_t cap = Timeline::fadeLimit(*clip);
+    fadeNewFrames_ = (fadeEdge_ == 0) ? std::clamp<int64_t>(f - clip->timelineStart, 0, cap)
+                                      : std::clamp<int64_t>(clip->end() - f, 0, cap);
 }
 
 void App::commitClipFade() {
@@ -3699,10 +3699,10 @@ int64_t App::fadeCoverageFrames(const Clip& c, int edge) const {
     int64_t frames = 0;
     int64_t f = (edge == 0) ? c.timelineStart : c.end() - 1;
     while (frames < cap) {
-        const Clip* b = getClipBelow(f, c.track);
-        if (!b)
+        const Clip* clip = getClipBelow(f, c.track);
+        if (!clip)
             break;
-        const int64_t adv = std::min(edge == 0 ? b->end() - f : f - b->timelineStart + 1,
+        const int64_t adv = std::min(edge == 0 ? clip->end() - f : f - clip->timelineStart + 1,
                                      cap - frames);
         if (adv <= 0)
             break;
@@ -3845,12 +3845,12 @@ void App::toggleClipSelection(int id) {
 // it doesn't have.
 void App::trimLinkedFollowers(int parentId, int64_t dSrc, int64_t dDur) {
     for (int fid : timeline_.linkFollowers(parentId)) {
-        const Clip* p = timeline_.findClipById(parentId);
+        const Clip* clip = timeline_.findClipById(parentId);
         Clip* f = clipById(fid);
-        if (!p || !f)
+        if (!clip || !f)
             continue;
         const int64_t srcFrames = timeline_.clipSourceFrames(*f);
-        f->timelineStart = std::max<int64_t>(p->timelineStart + f->linkOffset, 0);
+        f->timelineStart = std::max<int64_t>(clip->timelineStart + f->linkOffset, 0);
         f->sourceOffset  = std::clamp<int64_t>(f->sourceOffset + dSrc, 0,
                                               std::max<int64_t>(srcFrames - 1, 0));
         f->duration      = std::clamp<int64_t>(f->duration + dDur, 1,
@@ -3866,8 +3866,8 @@ void App::resyncLinkedClips() {
     timeline_.forEachClipMut([&](Clip& c) {
         if (c.linkedTo == 0)
             return;
-        if (const Clip* p = timeline_.linkParent(c))
-            c.timelineStart = std::max<int64_t>(p->timelineStart + c.linkOffset, 0);
+        if (const Clip* clip = timeline_.linkParent(c))
+            c.timelineStart = std::max<int64_t>(clip->timelineStart + c.linkOffset, 0);
     });
 }
 
@@ -3875,13 +3875,13 @@ void App::linkSelectedClips() {
     const Clip* parent = nullptr;
     std::vector<int> followers;
     for (int id : selectedClipIds_) {
-        const Clip* c = timeline_.findClipById(id);
-        if (!c)
+        const Clip* clip = timeline_.findClipById(id);
+        if (!clip)
             continue;
-        if (c->audio) {
+        if (clip->audio) {
             followers.push_back(id);
         } else if (!parent) {
-            parent = c;
+            parent = clip;
         } else {
             setStatus("LINK NEEDS EXACTLY ONE VIDEO CLIP", 4000);
             return;
@@ -3901,9 +3901,9 @@ void App::linkSelectedClips() {
     for (int id : followers) {
         if (timeline_.seqIndexOfClip(id) != seq)
             continue;
-        Clip* f = clipById(id);
-        f->linkedTo = parentId;
-        f->linkOffset = f->timelineStart - parentStart;
+        Clip* clip = clipById(id);
+        clip->linkedTo = parentId;
+        clip->linkOffset = clip->timelineStart - parentStart;
         ++linked;
     }
     if (linked == 0) {
@@ -3924,7 +3924,7 @@ void App::unlinkSelectedClips() {
             ids.push_back(id);
     };
     for (int id : selectedClipIds_) {
-        if (const Clip* c = timeline_.findClipById(id); c && timeline_.linkParent(*c))
+        if (const Clip* clip = timeline_.findClipById(id); clip && timeline_.linkParent(*clip))
             want(id);
         for (int f : timeline_.linkFollowers(id))
             want(f);
@@ -3961,7 +3961,7 @@ bool App::selectionCanLink() const {
 
 bool App::selectionHasLink() const {
     for (int id : selectedClipIds_) {
-        if (const Clip* c = timeline_.findClipById(id); c && timeline_.linkParent(*c))
+        if (const Clip* clip = timeline_.findClipById(id); clip && timeline_.linkParent(*clip))
             return true;
         if (!timeline_.linkFollowers(id).empty())
             return true;
@@ -3983,8 +3983,8 @@ void App::clearClipSelection() {
 void App::copySelectedClips() {
     std::vector<Clip> buf;
     for (int id : selectedClipIds_)
-        if (const Clip* c = timeline_.findClipById(id))
-            buf.push_back(*c);
+        if (const Clip* clip = timeline_.findClipById(id))
+            buf.push_back(*clip);
     if (buf.empty()) {
         setStatus("NO CLIP SELECTED");
         return;
@@ -3992,10 +3992,10 @@ void App::copySelectedClips() {
     // Rebase on the earliest start so paste can anchor the group at the playhead,
     // and order top-down so the topmost clip claims its track first.
     int64_t base = buf.front().timelineStart;
-    for (const auto& c : buf)
-        base = std::min(base, c.timelineStart);
-    for (auto& c : buf)
-        c.timelineStart -= base;
+    for (const auto& clip : buf)
+        base = std::min(base, clip.timelineStart);
+    for (auto& clip : buf)
+        clip.timelineStart -= base;
     std::sort(buf.begin(), buf.end(), [](const Clip& a, const Clip& b) {
         return a.track != b.track ? a.track < b.track : a.timelineStart < b.timelineStart;
     });
@@ -4048,19 +4048,19 @@ void App::pasteClips() {
     int firstTrack = 0;
     for (const Clip& src : clipboard_) {
         if (!timeline_.findMediaById(src.mediaId)) { ++skipped; continue; } // media gone
-        Clip c = src;
-        c.id = nextClipId_++;
-        copyOf[src.id] = c.id;
-        c.timelineStart = at + src.timelineStart;
-        c.shotId = -1; // a copy is not part of the original's shot
-        int t = firstFreeTrackFor(c.audio, c.timelineStart, c.duration);
+        Clip clip = src;
+        clip.id = nextClipId_++;
+        copyOf[src.id] = clip.id;
+        clip.timelineStart = at + src.timelineStart;
+        clip.shotId = -1; // a copy is not part of the original's shot
+        int t = firstFreeTrackFor(clip.audio, clip.timelineStart, clip.duration);
         if (t >= timeline_.trackCount)
             timeline_.trackCount = t + 1; // clip fits nowhere: add a track for it
-        c.track = t;
+        clip.track = t;
         if (newIds.empty())
             firstTrack = t;
-        newIds.push_back(c.id);
-        timeline_.sequences[targetIdx].clips.push_back(std::move(c));
+        newIds.push_back(clip.id);
+        timeline_.sequences[targetIdx].clips.push_back(std::move(clip));
     }
     if (newIds.empty()) {
         timeline_.trackCount = beforeTracks;
@@ -4128,8 +4128,8 @@ void App::deleteSelectedClip() {
     std::string label;
     if (ids.size() == 1) {
         std::string path;
-        if (Clip* c = clipById(ids[0]))
-            if (auto pm = timeline_.findMediaById(c->mediaId)) path = pm->path();
+        if (Clip* clip = clipById(ids[0]))
+            if (auto pm = timeline_.findMediaById(clip->mediaId)) path = pm->path();
         label = fileLabel(path);
     }
 
@@ -4140,10 +4140,10 @@ void App::deleteSelectedClip() {
     auto beforeShots = timeline_.shots;
     int removed = 0;
     for (int id : ids) {
-        if (Sequence* s = timeline_.sequenceOfClipMut(id)) {
-            auto it = std::find_if(s->clips.begin(), s->clips.end(),
+        if (Sequence* seq = timeline_.sequenceOfClipMut(id)) {
+            auto it = std::find_if(seq->clips.begin(), seq->clips.end(),
                                    [id](const Clip& c) { return c.id == id; });
-            if (it != s->clips.end()) { s->clips.erase(it); ++removed; }
+            if (it != seq->clips.end()) { seq->clips.erase(it); ++removed; }
         }
         // Cancel any in-flight drag/trim referencing this clip.
         if (draggingClip_ && dragClipId_ == id) { draggingClip_ = false; dragClipId_ = -1; }
@@ -4313,21 +4313,21 @@ void App::updateFramePreview() {
     if (length <= 0) { previewHasKey_ = false; previewClipId_ = -1; return; }
     int64_t hf = std::clamp<int64_t>(scrubFrame(tlHoverX_),
                                      0, length - 1);
-    const Clip* c = getTopMostClipAtFrame(hf);
-    if (!c || c->mediaId.empty()) { previewHasKey_ = false; previewClipId_ = -1; return; }
-    auto media = timeline_.findMediaById(c->mediaId);
+    const Clip* clip = getTopMostClipAtFrame(hf);
+    if (!clip || clip->mediaId.empty()) { previewHasKey_ = false; previewClipId_ = -1; return; }
+    auto media = timeline_.findMediaById(clip->mediaId);
     if (!media || media->openFailed()) { previewHasKey_ = false; previewClipId_ = -1; return; }
 
-    int64_t sf = c->sourceOffset + (hf - c->timelineStart);
-    CacheKey key{ c->mediaId, sf };
+    int64_t sf = clip->sourceOffset + (hf - clip->timelineStart);
+    CacheKey key{ clip->mediaId, sf };
     previewKey_ = key;
-    previewClipId_ = c->id;
+    previewClipId_ = clip->id;
     previewHasKey_ = true;
     // The frame we're about to have is also a usable Overview / SOURCES thumbnail
     // for this clip, so pass those keys along for the gap-fill write-through.
     ensurePreviewThumb(key, media, sf,
-                       c->audio ? std::string() : clipThumbKey(*c),
-                       c->audio ? std::string() : sourceThumbKey(media.get()));
+                       clip->audio ? std::string() : clipThumbKey(*clip),
+                       clip->audio ? std::string() : sourceThumbKey(media.get()));
 }
 
 // Ensure a thumbnail exists for `key`: touch it if already cached, lift it from
@@ -4638,10 +4638,10 @@ void App::onDropText(const std::string& text, float x, float y) {
 // pushing the clip under the insertion point (and rippling any that follow).
 Sequence& App::ensureDefaultSequence() {
     if (timeline_.sequences.empty()) {
-        Sequence s;
-        s.id   = nextSeqId_++;
-        s.name = "Default Sequence";
-        timeline_.sequences.push_back(std::move(s));
+        Sequence seq;
+        seq.id   = nextSeqId_++;
+        seq.name = "Default Sequence";
+        timeline_.sequences.push_back(std::move(seq));
         activeSequenceIdx_ = 0;
     }
     return timeline_.sequences[activeSequenceIdx_];
@@ -4654,12 +4654,12 @@ static void rippleClips(std::vector<Clip*>& on, int64_t start, int64_t duration)
     std::sort(on.begin(), on.end(),
               [](const Clip* a, const Clip* b) { return a->timelineStart < b->timelineStart; });
     int64_t frontier = start + duration;
-    for (Clip* c : on) {
-        if (c->end() <= start)
+    for (Clip* clip : on) {
+        if (clip->end() <= start)
             continue;
-        if (c->timelineStart < frontier)
-            c->timelineStart = frontier;
-        frontier = c->end();
+        if (clip->timelineStart < frontier)
+            clip->timelineStart = frontier;
+        frontier = clip->end();
     }
 }
 
@@ -4773,8 +4773,8 @@ void App::syncShotsToClips() {
     // duration and cut in/out are deliberately untouched.
     timeline_.forEachClipMut([&](Clip& c) {
         if (c.shotId < 0) return;
-        if (Shot* s = timeline_.findShotById(c.shotId))
-            s->timelineStart = c.timelineStart;
+        if (Shot* shot = timeline_.findShotById(c.shotId))
+            shot->timelineStart = c.timelineStart;
     });
 }
 
@@ -4788,7 +4788,7 @@ App::PositionSnapshot App::capturePositions() const {
 
 void App::restorePositions(const PositionSnapshot& s) {
     for (const auto& cp : s.clips)
-        if (Clip* k = clipById(cp.id)) { k->track = cp.track; k->timelineStart = cp.start; }
+        if (Clip* clip = clipById(cp.id)) { clip->track = cp.track; clip->timelineStart = cp.start; }
     for (const auto& sp : s.shots)
         if (Shot* sh = timeline_.findShotById(sp.id)) sh->timelineStart = sp.start;
     // Only when the sequence list still lines up; edits that add or remove
@@ -4802,18 +4802,18 @@ void App::restorePositions(const PositionSnapshot& s) {
 std::vector<App::ClipGeom> App::captureClipGeom(const std::vector<int>& ids) const {
     std::vector<ClipGeom> g;
     for (int id : ids)
-        if (const Clip* c = timeline_.findClipById(id))
-            g.push_back({ c->id, c->timelineStart, c->duration, c->sourceOffset, c->linkOffset });
+        if (const Clip* clip = timeline_.findClipById(id))
+            g.push_back({ clip->id, clip->timelineStart, clip->duration, clip->sourceOffset, clip->linkOffset });
     return g;
 }
 
 void App::restoreClipGeom(const std::vector<ClipGeom>& g) {
     for (const auto& e : g)
-        if (Clip* c = clipById(e.id)) {
-            c->timelineStart = e.start;
-            c->duration      = e.duration;
-            c->sourceOffset  = e.sourceOffset;
-            c->linkOffset    = e.linkOffset;
+        if (Clip* clip = clipById(e.id)) {
+            clip->timelineStart = e.start;
+            clip->duration      = e.duration;
+            clip->sourceOffset  = e.sourceOffset;
+            clip->linkOffset    = e.linkOffset;
         }
 }
 
@@ -4988,16 +4988,16 @@ int64_t App::addMediaFileAt(const std::string& path, int track, int64_t start, b
     // a neighbouring sequence.
     rippleMakeRoomInSeq(target, track, start, frameCount);
 
-    Clip c;
-    c.id          = nextClipId_++;
-    c.mediaId     = media->id();
-    c.track       = track;
-    c.audio       = isAudio;
-    c.timelineStart = start;
-    c.duration    = frameCount;
-    c.sourceOffset = sourceOffset;
-    const int clipId = c.id;
-    target.clips.push_back(std::move(c));
+    Clip clip;
+    clip.id          = nextClipId_++;
+    clip.mediaId     = media->id();
+    clip.track       = track;
+    clip.audio       = isAudio;
+    clip.timelineStart = start;
+    clip.duration    = frameCount;
+    clip.sourceOffset = sourceOffset;
+    const int clipId = clip.id;
+    target.clips.push_back(std::move(clip));
 
     // Offer to pair aligned audio with a freshly added image sequence: the naming
     // config's query_audio callback returns an audio path + source-in offset, or
@@ -5104,33 +5104,33 @@ void App::addPairedAudio(Sequence& seq, int videoTrack, int videoClipId,
         }
     }
 
-    Clip a;
-    a.id            = nextClipId_++;
-    a.mediaId       = media->id();
-    a.track         = audioTrack;
-    a.audio         = true;
-    a.timelineStart = start;          // same in/out range as the EXR clip
-    a.duration      = dur;
-    a.sourceOffset  = sourceOffset;   // callback offset: audio source-in, in frames
-    a.linkedTo      = videoClipId;    // follows the picture it was paired with...
-    a.linkOffset    = 0;              // ...starting on the same frame
-    seq.clips.push_back(std::move(a));
+    Clip clip;
+    clip.id            = nextClipId_++;
+    clip.mediaId       = media->id();
+    clip.track         = audioTrack;
+    clip.audio         = true;
+    clip.timelineStart = start;          // same in/out range as the EXR clip
+    clip.duration      = dur;
+    clip.sourceOffset  = sourceOffset;   // callback offset: audio source-in, in frames
+    clip.linkedTo      = videoClipId;    // follows the picture it was paired with...
+    clip.linkOffset    = 0;              // ...starting on the same frame
+    seq.clips.push_back(std::move(clip));
 }
 
 void App::findAndAttachAudio(int clipId) {
-    const Clip* c = timeline_.findClipById(clipId);
-    if (!c)
+    const Clip* clip = timeline_.findClipById(clipId);
+    if (!clip)
         return;
-    auto media = timeline_.findMediaById(c->mediaId);
+    auto media = timeline_.findMediaById(clip->mediaId);
     if (!media || media->type() != ClipType::ImageSequence)
         return;
     const int owner = timeline_.seqIndexOfClip(clipId);
     if (owner < 0)
         return;
 
-    const int track      = c->track;
-    const int64_t start  = c->timelineStart;
-    const int64_t dur    = c->duration;
+    const int track      = clip->track;
+    const int64_t start  = clip->timelineStart;
+    const int64_t dur    = clip->duration;
 
     std::string audioPath;
     int64_t audioOffset = 0;
@@ -5150,24 +5150,24 @@ void App::findAndAttachAudioAll(const std::vector<int>* onlyClipIds) {
     struct Target { int owner; int track; int clipId; int64_t start; int64_t dur; std::string path; };
     auto targets = std::make_shared<std::vector<Target>>();
     const Sequence& seq = activeSequence();
-    for (const Clip& c : seq.clips) {
-        if (c.audio)
+    for (const Clip& clip : seq.clips) {
+        if (clip.audio)
             continue;
         if (onlyClipIds &&
-            std::find(onlyClipIds->begin(), onlyClipIds->end(), c.id) == onlyClipIds->end())
+            std::find(onlyClipIds->begin(), onlyClipIds->end(), clip.id) == onlyClipIds->end())
             continue;
-        auto media = timeline_.findMediaById(c.mediaId);
+        auto media = timeline_.findMediaById(clip.mediaId);
         if (!media || media->type() != ClipType::ImageSequence)
             continue;
         bool hasAudio = false;
         for (const Clip& o : seq.clips)
-            if (o.audio && c.timelineStart < o.end() && c.end() > o.timelineStart) {
+            if (o.audio && clip.timelineStart < o.end() && clip.end() > o.timelineStart) {
                 hasAudio = true;
                 break;
             }
         if (hasAudio)
             continue;
-        targets->push_back({ activeSequenceIdx_, c.track, c.id, c.timelineStart, c.duration,
+        targets->push_back({ activeSequenceIdx_, clip.track, clip.id, clip.timelineStart, clip.duration,
                              media->resolvedPath() });
     }
 

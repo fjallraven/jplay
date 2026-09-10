@@ -164,8 +164,8 @@ struct SegToggle {
     // Index of the segment under (x, y), or -1 if the point is outside.
     int hit(float x, float y) const {
         for (int i = 0; i < 2; ++i) {
-            const SDL_FRect& r = seg[i];
-            if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+            const SDL_FRect& rect = seg[i];
+            if (x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h)
                 return i;
         }
         return -1;

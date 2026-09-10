@@ -317,16 +317,16 @@ std::shared_ptr<Media> Media::deserialize(std::istream& is, bool& ok) {
         m->setMetaValue(std::move(key), std::move(val));
     }
 
-    MediaInfo i;
-    if (!readRaw(is, i.width) || !readRaw(is, i.height) || !readRaw(is, i.frameCount) ||
-        !readRaw(is, i.fps))
+    MediaInfo info;
+    if (!readRaw(is, info.width) || !readRaw(is, info.height) || !readRaw(is, info.frameCount) ||
+        !readRaw(is, info.fps))
         return nullptr;
     // Pixel aspect: pixel width / height, 1 = square.
-    if (!readRaw(is, i.pixelAspect))
+    if (!readRaw(is, info.pixelAspect))
         return nullptr;
-    if (!readRaw(is, i.freshHash))
+    if (!readRaw(is, info.freshHash))
         return nullptr;
-    m->setInfo(i);
+    m->setInfo(info);
 
     // Cached applicable-picker set. Unresolved => resolved lazily on the first
     // frame Python answers.

@@ -75,12 +75,12 @@ const Clip* App::indexedClipAt(int64_t frame, bool includeHidden, int belowTrack
                                    });
         if (it == row.begin())
             continue;
-        const Clip* c = *(it - 1);
-        if (frame >= c->end())
+        const Clip* clip = *(it - 1);
+        if (frame >= clip->end())
             continue; // the gap after that clip
-        if (timeline_.clipDisabled(*c) && !includeHidden)
+        if (timeline_.clipDisabled(*clip) && !includeHidden)
             continue;
-        return c;
+        return clip;
     }
     return nullptr;
 }
@@ -242,8 +242,8 @@ void App::unpackClip(int clipId, const std::string& key) {
 
     // A track is free for this span if no video clip in the sequence overlaps it there.
     auto trackFree = [&](int track) {
-        for (const Clip& c : seq->clips)
-            if (!c.audio && c.track == track && start < c.end() && c.timelineStart < start + dur)
+        for (const Clip& clip : seq->clips)
+            if (!clip.audio && clip.track == track && start < clip.end() && clip.timelineStart < start + dur)
                 return false;
         return true;
     };
@@ -283,16 +283,16 @@ void App::unpackClip(int clipId, const std::string& key) {
             ++track;
 
         int64_t avail = std::max<int64_t>(media->info().frameCount - srcOff, 1);
-        Clip c;
-        c.id            = nextClipId_++;
-        c.mediaId       = media->id();
-        c.track         = track;
-        c.timelineStart = start;
-        c.duration      = std::min<int64_t>(dur, avail); // clamp if the media is shorter
-        c.sourceOffset  = srcOff;
-        c.shotId        = -1;
-        seq->clips.push_back(c);
-        created.push_back(c);
+        Clip clip;
+        clip.id            = nextClipId_++;
+        clip.mediaId       = media->id();
+        clip.track         = track;
+        clip.timelineStart = start;
+        clip.duration      = std::min<int64_t>(dur, avail); // clamp if the media is shorter
+        clip.sourceOffset  = srcOff;
+        clip.shotId        = -1;
+        seq->clips.push_back(clip);
+        created.push_back(clip);
     }
 
     if (created.empty()) {
@@ -309,18 +309,18 @@ void App::unpackClip(int clipId, const std::string& key) {
     undoStack_.push({
         "UNPACK CLIP",
         [this, ids, seqId] {
-            if (Sequence* s = timeline_.findSequenceById(seqId))
-                s->clips.erase(std::remove_if(s->clips.begin(), s->clips.end(),
-                    [&](const Clip& c) {
-                        return std::find(ids.begin(), ids.end(), c.id) != ids.end();
-                    }), s->clips.end());
+            if (Sequence* seq = timeline_.findSequenceById(seqId))
+                seq->clips.erase(std::remove_if(seq->clips.begin(), seq->clips.end(),
+                      [&](const Clip& c) {
+                          return std::find(ids.begin(), ids.end(), c.id) != ids.end();
+                      }), seq->clips.end());
             ensureTrailingEmptyTrack();
             timeline_.repackSequences();
         },
         [this, created, seqId] {
-            if (Sequence* s = timeline_.findSequenceById(seqId))
-                for (const Clip& c : created)
-                    s->clips.push_back(c);
+            if (Sequence* seq = timeline_.findSequenceById(seqId))
+                for (const Clip& clip : created)
+                    seq->clips.push_back(clip);
             ensureTrailingEmptyTrack();
             timeline_.repackSequences();
         },
@@ -361,8 +361,8 @@ void App::appendUnpackItems(const Clip& clip, std::vector<ContextMenu::Item>& it
 // is added, this row pulls the paired audio in on demand via query_audio.
 // Used by the clip right-click menu.
 void App::appendAttachAudioItems(const Clip& clip, std::vector<ContextMenu::Item>& items) {
-    auto m = timeline_.findMediaById(clip.mediaId);
-    if (!m || m->type() != ClipType::ImageSequence)
+    auto media = timeline_.findMediaById(clip.mediaId);
+    if (!media || media->type() != ClipType::ImageSequence)
         return;
     const int owner = timeline_.seqIndexOfClip(clip.id);
     if (owner >= 0)
@@ -412,13 +412,13 @@ void App::openClipContextMenu(const Clip& clip, float mx, float my, bool growDow
     add("Copy Source Path", [this] {
         std::vector<std::string> paths; // one line per distinct source, selection order
         for (int id : selectedClipIds_) {
-            const Clip* c = timeline_.findClipById(id);
-            if (!c || c->mediaId.empty())
+            const Clip* clip = timeline_.findClipById(id);
+            if (!clip || clip->mediaId.empty())
                 continue;
-            auto m = timeline_.findMediaById(c->mediaId);
-            if (!m || std::find(paths.begin(), paths.end(), m->path()) != paths.end())
+            auto media = timeline_.findMediaById(clip->mediaId);
+            if (!media || std::find(paths.begin(), paths.end(), media->path()) != paths.end())
                 continue;
-            paths.push_back(m->path());
+            paths.push_back(media->path());
         }
         std::string text;
         for (const std::string& p : paths) {
@@ -455,7 +455,7 @@ void App::openClipContextMenu(const Clip& clip, float mx, float my, bool growDow
             add("Remove Fades", [this] {
                 ContentSnapshot before = captureContent();
                 for (int id : selectedClipIds_)
-                    if (Clip* c = clipById(id)) { c->fadeInFrames = 0; c->fadeOutFrames = 0; }
+                    if (Clip* clip = clipById(id)) { clip->fadeInFrames = 0; clip->fadeOutFrames = 0; }
                 pushContentUndo("REMOVE FADES", before);
             });
     }
@@ -554,14 +554,14 @@ App::ClipRangeLayout App::clipRangeLayout(const SDL_FRect& box, bool hasShot) co
 }
 
 void App::renderClipRangeHeader(SDL_Renderer* r, const SDL_FRect& box) {
-    const Clip* c = timeline_.findClipById(clipRangeClipId_);
-    if (!c)
+    const Clip* clip = timeline_.findClipById(clipRangeClipId_);
+    if (!clip)
         return;
-    const Shot* shot = timeline_.findShotById(c->shotId);
+    const Shot* shot = timeline_.findShotById(clip->shotId);
     const ClipRangeLayout L = clipRangeLayout(box, shot != nullptr);
 
     int64_t frames = 1, base = 0;
-    clipRangeSource(*c, frames, base);
+    clipRangeSource(*clip, frames, base);
 
     auto text = [&](const SDL_FRect& slot, SDL_Color col, const std::string& s, bool rightAlign) {
         const float tw = textFont_.measure(r, s.c_str());
@@ -581,8 +581,8 @@ void App::renderClipRangeHeader(SDL_Renderer* r, const SDL_FRect& box) {
     fill(track, kRangeTrack);
     const double span = (double)std::max<int64_t>(frames, 1);
     SDL_FRect cut = track;
-    cut.x = track.x + (float)((double)c->sourceOffset / span * track.w);
-    cut.w = std::max(1.0f, (float)((double)c->duration / span * track.w));
+    cut.x = track.x + (float)((double)clip->sourceOffset / span * track.w);
+    cut.w = std::max(1.0f, (float)((double)clip->duration / span * track.w));
     if (cut.x + cut.w > track.x + track.w)
         cut.w = track.x + track.w - cut.x;
     fill(cut, kRangeCut);
@@ -596,9 +596,9 @@ void App::renderClipRangeHeader(SDL_Renderer* r, const SDL_FRect& box) {
     // The editable in/out. While a field has focus it owns its own text; otherwise
     // it mirrors the clip, so an undo or a drag-trim shows up here immediately.
     if (!clipRangeIn_.focused())
-        clipRangeIn_.setText(std::to_string(base + c->sourceOffset));
+        clipRangeIn_.setText(std::to_string(base + clip->sourceOffset));
     if (!clipRangeOut_.focused())
-        clipRangeOut_.setText(std::to_string(base + c->sourceOffset + c->duration - 1));
+        clipRangeOut_.setText(std::to_string(base + clip->sourceOffset + clip->duration - 1));
     clipRangeIn_.setRect(L.inField);
     clipRangeOut_.setRect(L.outField);
     clipRangeIn_.render(r, &textFont_);
@@ -610,10 +610,10 @@ void App::renderClipRangeHeader(SDL_Renderer* r, const SDL_FRect& box) {
 }
 
 bool App::clipRangeHandleEvent(const SDL_Event& e, const SDL_FRect& box) {
-    const Clip* c = timeline_.findClipById(clipRangeClipId_);
-    if (!c)
+    const Clip* clip = timeline_.findClipById(clipRangeClipId_);
+    if (!clip)
         return false;
-    const Shot* shot = timeline_.findShotById(c->shotId);
+    const Shot* shot = timeline_.findShotById(clip->shotId);
     const ClipRangeLayout L = clipRangeLayout(box, shot != nullptr);
 
     // An active field captures typing, Enter (apply) and Escape (drop).
@@ -660,7 +660,7 @@ bool App::clipRangeHandleEvent(const SDL_Event& e, const SDL_FRect& box) {
     endClipRangeEdit(false); // a click on a button drops a half-typed field
     if (inRect(L.srcBtn, mx, my)) {
         int64_t frames = 1, base = 0;
-        clipRangeSource(*c, frames, base);
+        clipRangeSource(*clip, frames, base);
         applyClipRange(clipRangeClipId_, 0, frames - 1);
     } else if (shot && inRect(L.shotBtn, mx, my)) {
         applyClipRange(clipRangeClipId_, shot->cutIn, shot->cutOut - 1);
@@ -679,15 +679,15 @@ void App::endClipRangeEdit(bool apply) {
     clipRangeEditing_ = false;
     SDL_StopTextInput(window_);
 
-    const Clip* c = apply ? timeline_.findClipById(clipRangeClipId_) : nullptr;
-    if (!c)
+    const Clip* clip = apply ? timeline_.findClipById(clipRangeClipId_) : nullptr;
+    if (!clip)
         return;
     int64_t v = 0;
     try { v = std::stoll(txt); } catch (...) { return; }
     int64_t frames = 1, base = 0;
-    clipRangeSource(*c, frames, base);
-    const int64_t curIn  = c->sourceOffset;
-    const int64_t curOut = c->sourceOffset + c->duration - 1;
+    clipRangeSource(*clip, frames, base);
+    const int64_t curIn  = clip->sourceOffset;
+    const int64_t curOut = clip->sourceOffset + clip->duration - 1;
     if (editingIn)
         applyClipRange(clipRangeClipId_, v - base, curOut);
     else
@@ -708,15 +708,15 @@ void App::clipRangeCloseIfMenuClosed() {
 // source frames and are clamped to what the media has; an inverted pair collapses
 // to a single frame rather than being rejected.
 void App::applyClipRange(int clipId, int64_t inSrc, int64_t outSrc) {
-    Clip* c = clipById(clipId);
-    if (!c)
+    Clip* clip = clipById(clipId);
+    if (!clip)
         return;
     int64_t frames = 1, base = 0;
-    clipRangeSource(*c, frames, base);
+    clipRangeSource(*clip, frames, base);
     const int64_t newIn = std::clamp<int64_t>(inSrc, 0, frames - 1);
     const int64_t newOut = std::clamp<int64_t>(outSrc, newIn, frames - 1);
     const int64_t newDur = newOut - newIn + 1;
-    const int64_t oldIn = c->sourceOffset, oldDur = c->duration;
+    const int64_t oldIn = clip->sourceOffset, oldDur = clip->duration;
     if (newIn == oldIn && newDur == oldDur)
         return;
 
@@ -724,14 +724,14 @@ void App::applyClipRange(int clipId, int64_t inSrc, int64_t outSrc) {
     // shift later sequences on repack, so undo has to restore the whole layout.
     // This re-cuts the clip exactly like a drag-trim does, so the linked audio
     // follows it the same way and rides along in the geometry snapshot.
-    const int track = c->track;
-    const int64_t start = c->timelineStart;
+    const int track = clip->track;
+    const int64_t start = clip->timelineStart;
     std::vector<int> geomIds{ clipId };
     addLinkedFollowers(geomIds);
     PositionSnapshot before = capturePositions();
     std::vector<ClipGeom> geomBefore = captureClipGeom(geomIds);
-    c->sourceOffset = newIn;
-    c->duration = newDur;
+    clip->sourceOffset = newIn;
+    clip->duration = newDur;
     trimLinkedFollowers(clipId, newIn - oldIn, newDur - oldDur);
     if (Sequence* seq = timeline_.sequenceOfClipMut(clipId))
         rippleMakeRoomInSeq(*seq, track, start, newDur, clipId);
@@ -778,14 +778,14 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
     std::vector<int> valid;
     std::string rep;
     for (int id : clipIds) {
-        Clip* c = timeline_.findClipById(id);
-        if (!c || c->mediaId.empty())
+        Clip* clip = timeline_.findClipById(id);
+        if (!clip || clip->mediaId.empty())
             continue;
-        auto m = timeline_.findMediaById(c->mediaId);
-        if (!m)
+        auto media = timeline_.findMediaById(clip->mediaId);
+        if (!media)
             continue;
         if (rep.empty())
-            rep = m->resolvedPath();
+            rep = media->resolvedPath();
         valid.push_back(id);
     }
     if (valid.empty() || rep.empty())
@@ -843,13 +843,13 @@ std::vector<PickerOption> App::selectionPickerValues(const std::string& key,
                                                      const std::vector<int>& clipIds) const {
     std::vector<PickerOption> out;
     for (int id : clipIds) {
-        const Clip* c = timeline_.findClipById(id);
-        if (!c || c->mediaId.empty())
+        const Clip* clip = timeline_.findClipById(id);
+        if (!clip || clip->mediaId.empty())
             continue;
-        auto m = timeline_.findMediaById(c->mediaId);
-        if (!m)
+        auto media = timeline_.findMediaById(clip->mediaId);
+        if (!media)
             continue;
-        const std::string& v = m->metaValue(key);
+        const std::string& v = media->metaValue(key);
         if (v.empty())
             continue; // this media carries no value for the key (or doesn't match the convention)
         bool seen = false;
@@ -1352,13 +1352,13 @@ void App::startPickerCommit(PickerCascade& c, const std::string& key, const std:
     struct ClipResolve { int clipId; std::string from; std::string path; bool ok; bool missed; };
     auto starts = std::make_shared<std::vector<ClipResolve>>();
     for (int cid : c.clipIds) {
-        Clip* c = timeline_.findClipById(cid);
-        if (!c || c->mediaId.empty())
+        Clip* clip = timeline_.findClipById(cid);
+        if (!clip || clip->mediaId.empty())
             continue;
-        auto m = timeline_.findMediaById(c->mediaId);
-        if (!m)
+        auto media = timeline_.findMediaById(clip->mediaId);
+        if (!media)
             continue;
-        starts->push_back({ cid, m->resolvedPath(), std::string(), false, false });
+        starts->push_back({ cid, media->resolvedPath(), std::string(), false, false });
     }
     if (starts->empty()) { // nothing the pick could apply to
         c.loading = false;
@@ -1406,13 +1406,13 @@ void App::startPickerCommit(PickerCascade& c, const std::string& key, const std:
         int fellBack = 0;   // loaded, but the asset's latest instead of this pick
         int openFailed = 0; // resolved to a path the media layer wouldn't open
         for (const auto& r : *out) {
-            Clip* c = timeline_.findClipById(r.clipId);
-            if (!c || c->mediaId.empty())
+            Clip* clip = timeline_.findClipById(r.clipId);
+            if (!clip || clip->mediaId.empty())
                 continue;
-            auto m = timeline_.findMediaById(c->mediaId);
-            if (!m)
+            auto media = timeline_.findMediaById(clip->mediaId);
+            if (!media)
                 continue;
-            const bool sameAsNow = r.ok && r.path == m->resolvedPath();
+            const bool sameAsNow = r.ok && r.path == media->resolvedPath();
             // Two ways a pick loads nothing at all: an upstream pick in the chain
             // has no media for this clip (!ok), or the final pick itself doesn't
             // exist and resolvePickerChain kept what it had resolved so far
@@ -1438,9 +1438,9 @@ void App::startPickerCommit(PickerCascade& c, const std::string& key, const std:
             }
             if (sameAsNow) // already on it: the pick asked for nothing new
                 continue;
-            const std::string before = c->mediaId;
-            replaceClipMedia(*c, r.path);
-            if (c->mediaId == before) { // replace bailed (e.g. open failure)
+            const std::string before = clip->mediaId;
+            replaceClipMedia(*clip, r.path);
+            if (clip->mediaId == before) { // replace bailed (e.g. open failure)
                 ++openFailed;
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                             "Picker: %s=%s resolved to %s for clip %d, which failed to open",
@@ -1581,8 +1581,8 @@ bool App::resolvePickerPick(const PickerCascade& c, const std::string& key,
         const Clip* cl = timeline_.findClipById(cid);
         if (!cl || cl->mediaId.empty())
             continue;
-        if (auto m = timeline_.findMediaById(cl->mediaId)) {
-            start = m->resolvedPath();
+        if (auto media = timeline_.findMediaById(cl->mediaId)) {
+            start = media->resolvedPath();
             break;
         }
     }
@@ -1712,8 +1712,8 @@ void App::replaceClipMedia(Clip& clip, const std::string& newPath) {
             if (c.track != clip.track || c.audio != clip.audio || c.id == clip.id) continue;
             if (c.timelineStart < oldEnd) continue;
             c.timelineStart += shift;
-            if (Shot* s = timeline_.findShotById(c.shotId))
-                s->timelineStart += shift;
+            if (Shot* shot = timeline_.findShotById(c.shotId))
+                shot->timelineStart += shift;
         }
         // The shift walks one track, so any audio linked to a clip it moved was
         // left behind. Positions only: the replacement's length says nothing about
