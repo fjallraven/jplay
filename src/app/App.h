@@ -2067,7 +2067,7 @@ private:
     void dropScratchViewUnless(int keepSeqId);
     // The view scope in the form the project file stores it, and its restore.
     Project::ViewState viewState() const;
-    void applyViewState(const Project::ViewState& v);
+    void applyViewState(const Project::ViewState& state);
     // The sequence indices the current view covers: the filtered one, the scoped
     // project's (in timeline order), or all of them.
     std::vector<int> viewSeqIndices() const;
@@ -2393,7 +2393,7 @@ private:
     void reorderProjectSequences(int projId, const Timeline& src);
     // A clip's shot name: its linked Shot's name (set by discovery/import) if any,
     // else the resolved shot cached on its media.
-    std::string shotNameOfClip(const Clip& c) const;
+    std::string shotNameOfClip(const Clip& clip) const;
     // Put the playhead back on the shot it was on before a view change (both
     // setProjectView and scopeToSequence land it on the scope's first frame): the
     // clip in the current view whose media is `mediaPath`, else one whose shot is
@@ -3291,7 +3291,7 @@ private:
     void finishLoad();                 // metadata refresh (imports only) + final status
     void propagateRelocateRules();     // after a relocation, silently repoint every sibling under the moved prefix
     void resolveMissingWithRules();    // per-frame: auto-relocate newly-missing clips via learned rules
-    void openRelocateModal(const Media& m);      // show the Missing Source modal for `m`
+    void openRelocateModal(const Media& media);  // show the Missing Source modal for `media`
     void closeRelocateModal();
     void handleRelocateModalEvent(const SDL_Event& e); // consume input while the modal is open
     void renderRelocateModal();                  // draw the modal overlay (call last)
@@ -3329,8 +3329,8 @@ private:
         return progressActive() && SDL_GetTicks() - progressStartTick_ >= kProgressShowDelayMs;
     }
     void doRelocateFromField();                  // validate the field's dir and apply / show inline error
-    bool candidateMatches(const Media& m, const std::string& candidatePath) const;
-    bool tryRelocateRules(const Media& m, std::string& out) const;
+    bool candidateMatches(const Media& media, const std::string& candidatePath) const;
+    bool tryRelocateRules(const Media& media, std::string& out) const;
     void addRuleFromPaths(const std::string& oldPath, const std::string& newPath);
     void relocateMedia(const std::string& mediaId, const std::string& newPath);
     static void SDLCALL onRelocateChosen(void* userdata, const char* const* filelist, int filter);

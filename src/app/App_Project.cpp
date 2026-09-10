@@ -39,20 +39,20 @@ namespace {
 // upscaled), preserving its display aspect ratio (the frame's pixel aspect is
 // applied here, so an anamorphic plate is stored in its true shape).
 Project::Thumbnail makeThumbnail(const Frame& src, int maxWidth) {
-    Project::Thumbnail t;
+    Project::Thumbnail thumb;
     if (src.width <= 0 || src.height <= 0)
-        return t;
+        return thumb;
 
-    const int sw = src.width, sh = src.height;
-    const double dispW = sw * (src.pixelAspect > 0.0f ? src.pixelAspect : 1.0f);
-    const int tw = std::min(maxWidth, (int)std::lround(dispW));
-    const int th = std::max(1, (int)std::lround((double)tw * sh / dispW));
-    renderFrameScaled(src, tw, th, t.rgba);
-    if (t.rgba.empty())
-        return t; // nothing to scale: the thumbnail stays invalid
-    t.width = tw;
-    t.height = th;
-    return t;
+    const int srcW = src.width, srcH = src.height;
+    const double dispW = srcW * (src.pixelAspect > 0.0f ? src.pixelAspect : 1.0f);
+    const int thumbW = std::min(maxWidth, (int)std::lround(dispW));
+    const int thumbH = std::max(1, (int)std::lround((double)thumbW * srcH / dispW));
+    renderFrameScaled(src, thumbW, thumbH, thumb.rgba);
+    if (thumb.rgba.empty())
+        return thumb; // nothing to scale: the thumbnail stays invalid
+    thumb.width = thumbW;
+    thumb.height = thumbH;
+    return thumb;
 }
 
 // Read a project document into a scratch Timeline, the extension picking the
@@ -72,12 +72,12 @@ bool loadProjectDocument(const std::string& path, Timeline& tl, int& nextClipId,
     // of its sequences may belong to no project at all (ones built by "Create from
     // directory", say) — read as a project document they are this project's own, so
     // stamp them with it.
-    int pid = -1;
-    for (Sequence& s : tl.sequences)
-        if (s.projectId < 0) {
-            if (pid < 0)
-                pid = tl.projectIdForPath(path, fs::u8path(path).stem().u8string());
-            s.projectId = pid;
+    int projId = -1;
+    for (Sequence& seq : tl.sequences)
+        if (seq.projectId < 0) {
+            if (projId < 0)
+                projId = tl.projectIdForPath(path, fs::u8path(path).stem().u8string());
+            seq.projectId = projId;
         }
     return true;
 }
@@ -102,12 +102,12 @@ uint64_t App::projectSignature() {
     timeline_.playhead = playhead;
     if (!ok)
         return savedSignature_; // cannot tell: claim clean rather than nag
-    uint64_t h = 1469598103934665603ull; // FNV-1a
-    for (unsigned char c : buf) {
-        h ^= c;
-        h *= 1099511628211ull;
+    uint64_t hash = 1469598103934665603ull; // FNV-1a
+    for (unsigned char byte : buf) {
+        hash ^= byte;
+        hash *= 1099511628211ull;
     }
-    return h;
+    return hash;
 }
 
 // Is there anything in the project at all? Media in the bin counts: a project
@@ -125,8 +125,8 @@ bool App::hasProjectContent() const {
 bool App::isSingleClipSession() const {
     if (timeline_.sequences.size() != 1)
         return false;
-    const Sequence& s = timeline_.sequences.front();
-    return s.name == "Default Sequence" && s.clips.size() <= 1;
+    const Sequence& seq = timeline_.sequences.front();
+    return seq.name == "Default Sequence" && seq.clips.size() <= 1;
 }
 
 // Gate a destructive action behind the unsaved-changes prompt. The buttons are
@@ -203,10 +203,10 @@ void App::saveProject() {
     // path in the key to get a thumbnail of its own. If it isn't cached (nothing
     // decoded, or playhead over empty space) the thumbnail stays invalid and the
     // previous one on disk, if any, is kept.
-    if (const Clip* c = timeline_.clipAt(timeline_.playhead); c && !c->mediaId.empty()) {
-        CacheKey key{ c->mediaId, c->sourceOffset + (timeline_.playhead - c->timelineStart) };
-        if (FramePtr f = cache_->get(key)) {
-            Project::Thumbnail thumb = makeThumbnail(*f, 256);
+    if (const Clip* clip = timeline_.clipAt(timeline_.playhead); clip && !clip->mediaId.empty()) {
+        CacheKey key{ clip->mediaId, clip->sourceOffset + (timeline_.playhead - clip->timelineStart) };
+        if (FramePtr frame = cache_->get(key)) {
+            Project::Thumbnail thumb = makeThumbnail(*frame, 256);
             if (thumb.valid())
                 UserData::writeThumbnail(projectId_, projectPath_, thumb);
         }
@@ -392,9 +392,9 @@ void App::loadOtio(const std::string& path, bool shared) {
     // on the first sequence alone. Membership is Sequence::projectId, stamped by
     // OtioImport from the same file.
     std::vector<int> seqIds;
-    for (const Sequence& s : timeline_.sequences)
-        if (s.projectId == projId)
-            seqIds.push_back(s.id);
+    for (const Sequence& seq : timeline_.sequences)
+        if (seq.projectId == projId)
+            seqIds.push_back(seq.id);
     if (!seqIds.empty()) {
         setProjectView(projId, std::move(seqIds));
     } else { // nothing carries the project's name (unstamped .otio): first sequence
@@ -500,33 +500,33 @@ void App::createProjectFromDirectory(const std::string& root) {
                 // grouped by sequence, in order).
                 std::string seqName = ds.sequence.empty() ? "Default Sequence" : ds.sequence;
                 if (!haveSeq || seqName != curSeqName) {
-                    Sequence s;
-                    s.id = out->nextSeq++;
-                    s.name = seqName;
-                    tl.sequences.push_back(std::move(s));
+                    Sequence newSeq;
+                    newSeq.id = out->nextSeq++;
+                    newSeq.name = seqName;
+                    tl.sequences.push_back(std::move(newSeq));
                     curSeqName = seqName;
                     haveSeq = true;
                 }
                 Sequence& seq = tl.sequences.back();
 
-                Shot sh;
-                sh.id = out->nextShot++;
-                sh.name = media->name();
-                sh.timelineStart = cursor;
-                sh.duration = frames;
-                sh.initCut(0, frames);
-                tl.shots.push_back(sh);
+                Shot shot;
+                shot.id = out->nextShot++;
+                shot.name = media->name();
+                shot.timelineStart = cursor;
+                shot.duration = frames;
+                shot.initCut(0, frames);
+                tl.shots.push_back(shot);
 
-                Clip c;
-                c.id = out->nextId++;
-                c.mediaId = media->id();
-                c.track = 0;
-                c.timelineStart = cursor;
-                c.duration = frames;
-                c.sourceOffset = 0;
-                c.shotId = sh.id;
-                seq.clips.push_back(c);
-                seq.shotIds.push_back(sh.id);
+                Clip clip;
+                clip.id = out->nextId++;
+                clip.mediaId = media->id();
+                clip.track = 0;
+                clip.timelineStart = cursor;
+                clip.duration = frames;
+                clip.sourceOffset = 0;
+                clip.shotId = shot.id;
+                seq.clips.push_back(clip);
+                seq.shotIds.push_back(shot.id);
 
                 cursor += frames;
             }
@@ -627,18 +627,18 @@ int App::graftOtioSequence(Timeline& src, const std::string& seqName, const std:
     auto findByName = [&](const std::string& name) -> Sequence* {
         if (name.empty())
             return nullptr;
-        for (Sequence& s : src.sequences)
-            if (s.name == name) return &s;
+        for (Sequence& candidate : src.sequences)
+            if (candidate.name == name) return &candidate;
         return nullptr;
     };
     srcSeq = findByName(seqName);
     if (!srcSeq)
         srcSeq = findByName(sceneName);
     if (!srcSeq && !sceneName.empty()) {
-        for (Sequence& s : src.sequences) {
-            for (int sid : s.shotIds)
+        for (Sequence& srcSequence : src.sequences) {
+            for (int sid : srcSequence.shotIds)
                 if (const Shot* sh = src.findShotById(sid))
-                    if (sh->sceneName == sceneName) { srcSeq = &s; break; }
+                    if (sh->sceneName == sceneName) { srcSeq = &srcSequence; break; }
             if (srcSeq) break;
         }
     }
@@ -671,8 +671,8 @@ int App::graftOtioSequence(Timeline& src, const std::string& seqName, const std:
 
     // Lay the source clips end-to-end (create_otio_project emits no intra-sequence
     // gaps), one Shot + Clip each, preserving the OTIO's source offset and cut.
-    for (const Clip& sc : srcSeq->clips) {
-        auto media = src.findMediaById(sc.mediaId);
+    for (const Clip& srcClip : srcSeq->clips) {
+        auto media = src.findMediaById(srcClip.mediaId);
         if (!media)
             continue;
         // Reuse the existing pool entry for this path; otherwise adopt the
@@ -684,36 +684,36 @@ int App::graftOtioSequence(Timeline& src, const std::string& seqName, const std:
         else
             media = existing->second;
 
-        const Shot* srcShot = src.findShotById(sc.shotId);
+        const Shot* srcShot = src.findShotById(srcClip.shotId);
         const std::string shotName = srcShot ? srcShot->name : media->name();
 
-        Shot sh;
-        sh.id = nextShotId_++;
-        sh.name = shotName;
+        Shot shot;
+        shot.id = nextShotId_++;
+        shot.name = shotName;
         // Carry the scene tag across: it is the only thing tying the grafted
         // sequence back to a media path, whose naming convention yields a scene and
         // not the sequence_name this sequence is named after. Without it a second
         // "Show in Sequence" on the same scene can't recognize what it grafted the
         // first time and grafts a duplicate.
         if (srcShot)
-            sh.sceneName = srcShot->sceneName;
-        sh.timelineStart = cursor;
-        sh.duration = sc.duration;
-        sh.initCut(sc.sourceOffset, sc.sourceOffset + sc.duration);
-        timeline_.shots.push_back(sh);
+            shot.sceneName = srcShot->sceneName;
+        shot.timelineStart = cursor;
+        shot.duration = srcClip.duration;
+        shot.initCut(srcClip.sourceOffset, srcClip.sourceOffset + srcClip.duration);
+        timeline_.shots.push_back(shot);
 
-        Clip c;
-        c.id = nextClipId_++;
-        c.mediaId = media->id();
-        c.track = 0;
-        c.timelineStart = cursor;
-        c.duration = sc.duration;
-        c.sourceOffset = sc.sourceOffset;
-        c.shotId = sh.id;
-        seq.clips.push_back(c);
-        seq.shotIds.push_back(sh.id);
+        Clip clip;
+        clip.id = nextClipId_++;
+        clip.mediaId = media->id();
+        clip.track = 0;
+        clip.timelineStart = cursor;
+        clip.duration = srcClip.duration;
+        clip.sourceOffset = srcClip.sourceOffset;
+        clip.shotId = shot.id;
+        seq.clips.push_back(clip);
+        seq.shotIds.push_back(shot.id);
 
-        cursor += sc.duration;
+        cursor += srcClip.duration;
     }
 
     if (seq.clips.empty()) {
@@ -728,13 +728,13 @@ int App::graftOtioSequence(Timeline& src, const std::string& seqName, const std:
     // Keep the originating clip's media for its shot (the OTIO carries the
     // preferred published version). replaceClipMedia keeps the clip's position.
     if (!keepShot.empty() && !keepPath.empty()) {
-        for (Clip& c : timeline_.sequences[newIdx].clips) {
-            const Shot* s = timeline_.findShotById(c.shotId);
-            if (!s || s->name != keepShot)
+        for (Clip& clip : timeline_.sequences[newIdx].clips) {
+            const Shot* shot = timeline_.findShotById(clip.shotId);
+            if (!shot || shot->name != keepShot)
                 continue;
-            auto m = timeline_.findMediaById(c.mediaId);
-            if (!m || m->resolvedPath() != keepPath) {
-                replaceClipMedia(c, keepPath);
+            auto media = timeline_.findMediaById(clip.mediaId);
+            if (!media || media->resolvedPath() != keepPath) {
+                replaceClipMedia(clip, keepPath);
             }
             break;
         }
@@ -797,13 +797,13 @@ void App::showInSequence() {
 
     // A clip's shot name: its linked Shot's name (set by discovery/import) if any,
     // else the resolved shot cached on its media.
-    auto shotNameOfClip = [&](const Clip& c) -> std::string {
-        if (c.shotId >= 0)
-            for (const Shot& s : timeline_.shots)
-                if (s.id == c.shotId)
-                    return s.name;
-        if (auto m = timeline_.findMediaById(c.mediaId))
-            return m->metaValue("shot");
+    auto shotNameOfClip = [&](const Clip& clip) -> std::string {
+        if (clip.shotId >= 0)
+            for (const Shot& shot : timeline_.shots)
+                if (shot.id == clip.shotId)
+                    return shot.name;
+        if (auto clipMedia = timeline_.findMediaById(clip.mediaId))
+            return clipMedia->metaValue("shot");
         return {};
     };
 
@@ -819,8 +819,8 @@ void App::showInSequence() {
         // the whole list first: a name is the exact identity, a scene only narrows
         // to a folder that may hold several sequences.
         for (int i = 0; i < (int)timeline_.sequences.size() && found < 0; ++i) {
-            const Sequence& s = timeline_.sequences[i];
-            if (i != owner && !s.name.empty() && (s.name == sequenceName || s.name == sceneName))
+            const Sequence& seq = timeline_.sequences[i];
+            if (i != owner && !seq.name.empty() && (seq.name == sequenceName || seq.name == sceneName))
                 found = i;
         }
         // Else by the scene tags its shots carry — how a sequence grafted out of the
@@ -841,20 +841,20 @@ void App::showInSequence() {
         // scene when it was matched by tag and carries none.
         const std::string& shownName = seq.name.empty() ? sceneName : seq.name;
         Clip* match = nullptr;
-        for (Clip& c : seq.clips)
-            if (shotName.empty() || shotNameOfClip(c) == shotName) { match = &c; break; }
+        for (Clip& clip : seq.clips)
+            if (shotName.empty() || shotNameOfClip(clip) == shotName) { match = &clip; break; }
         if (match) {
             const int64_t tgtStart = match->timelineStart;
             const int64_t tgtOff   = match->sourceOffset;
             const int64_t tgtDur   = match->duration;
-            auto mm = timeline_.findMediaById(match->mediaId);
-            if (!mm || mm->resolvedPath() != openedPath) {
+            auto matchMedia = timeline_.findMediaById(match->mediaId);
+            if (!matchMedia || matchMedia->resolvedPath() != openedPath) {
                 replaceClipMedia(*match, openedPath); // keeps the clip's position
                 if (gridView()) startClipThumbnails(); // new source -> regenerate grid thumbnail
             }
-            int64_t at = std::clamp<int64_t>(tgtStart + (curSrcFrame - tgtOff),
-                                             tgtStart, tgtStart + tgtDur - 1);
-            setPlayhead(at);
+            int64_t targetFrame = std::clamp<int64_t>(tgtStart + (curSrcFrame - tgtOff),
+                                                      tgtStart, tgtStart + tgtDur - 1);
+            setPlayhead(targetFrame);
         }
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "[jplay] Show in Sequence: matched existing sequence[%d] name=\"%s\" for "
@@ -882,23 +882,23 @@ void App::showInSequence() {
         return;
     }
     auto src    = std::make_shared<Timeline>();
-    auto ok     = std::make_shared<bool>(false);
+    auto loadOk = std::make_shared<bool>(false);
     beginProgress("Show in Sequence: " + sceneName,
-        [projPath, src, ok](ProgressReporter& pr) {
+        [projPath, src, loadOk](ProgressReporter& pr) {
             pr.update(-1.0, "Loading sequence…");
-            int nc = 1, ns = 1, nsh = 1;
+            int nextClip = 1, nextSeq = 1, nextShot = 1;
             std::string err;
-            *ok = loadProjectDocument(projPath, *src, nc, ns, nsh, err);
-            if (!*ok)
+            *loadOk = loadProjectDocument(projPath, *src, nextClip, nextSeq, nextShot, err);
+            if (!*loadOk)
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                              "[jplay] Show in Sequence: project load failed: %s", err.c_str());
         },
-        [this, sequenceName, sceneName, shotName, curSrcFrame, openedPath, src, ok] {
+        [this, sequenceName, sceneName, shotName, curSrcFrame, openedPath, src, loadOk] {
             if (progress_.cancelled()) {
                 setStatus("SHOW IN SEQUENCE: CANCELLED", 3000);
                 return;
             }
-            if (!*ok) {
+            if (!*loadOk) {
                 setStatus("SHOW IN SEQUENCE: PROJECT LOAD FAILED", 5000);
                 return;
             }
@@ -914,20 +914,22 @@ void App::showInSequence() {
             refreshMediaMetadata(); // probe the grafted (unopened) media in the background
             scopeToSequence(newIdx);
             // A clip's shot name (linked Shot name, else the media's cached shot).
-            auto shotNameOfClip = [&](const Clip& c) -> std::string {
-                if (c.shotId >= 0)
-                    for (const Shot& s : timeline_.shots)
-                        if (s.id == c.shotId)
-                            return s.name;
-                if (auto m = timeline_.findMediaById(c.mediaId))
-                    return m->metaValue("shot");
+            auto shotNameOfClip = [&](const Clip& clip) -> std::string {
+                if (clip.shotId >= 0)
+                    for (const Shot& shot : timeline_.shots)
+                        if (shot.id == clip.shotId)
+                            return shot.name;
+                if (auto clipMedia = timeline_.findMediaById(clip.mediaId))
+                    return clipMedia->metaValue("shot");
                 return {};
             };
-            for (Clip& c : timeline_.sequences[newIdx].clips)
-                if (!shotName.empty() && shotNameOfClip(c) == shotName) {
-                    int64_t at = std::clamp<int64_t>(c.timelineStart + (curSrcFrame - c.sourceOffset),
-                                                     c.timelineStart, c.timelineStart + c.duration - 1);
-                    setPlayhead(at);
+            for (Clip& clip : timeline_.sequences[newIdx].clips)
+                if (!shotName.empty() && shotNameOfClip(clip) == shotName) {
+                            int64_t targetFrame =
+                        std::clamp<int64_t>(clip.timelineStart + (curSrcFrame - clip.sourceOffset),
+                                            clip.timelineStart,
+                                            clip.timelineStart + clip.duration - 1);
+                    setPlayhead(targetFrame);
                     break;
                 }
             setStatus("BUILT SEQUENCE \"" + sceneName + "\" (" +
@@ -965,7 +967,7 @@ void App::resolveOpenTargets(bool allowResolve) {
             return;
         if (!jplayPythonReady())
             return; // not cached: retried once Python finishes starting up
-        OpenTarget t;
+        OpenTarget target;
         // The project document, as "{project_root}/{project_name}" with a .jpproj
         // or .otio extension. The naming convention derives it from the media path
         // and returns only what it found on disk, so nothing resolved here can fail
@@ -973,15 +975,15 @@ void App::resolveOpenTargets(bool allowResolve) {
         // narrow std::string in the ANSI codepage, and these paths are UTF-8.
         std::string projPath;
         if (jplayProjectPathFromMedia(path, projPath)) {
-            t.projPath = projPath;
-            t.projName = fs::u8path(projPath).stem().u8string();
+            target.projPath = projPath;
+            target.projName = fs::u8path(projPath).stem().u8string();
             // Cached on the media when it was added with Python ready; parsed from
             // the path now otherwise (and cached back), as showInSequence does.
-            t.seqName = media->metaValue("scene");
-            if (t.seqName.empty()) {
+            target.seqName = media->metaValue("scene");
+            if (target.seqName.empty()) {
                 std::string ctxScene, ctxShot, ctxDept;
                 if (jplayGetPathContext(path, ctxScene, ctxShot, ctxDept) && !ctxScene.empty()) {
-                    t.seqName = ctxScene;
+                    target.seqName = ctxScene;
                     media->setMetaValue("scene", ctxScene);
                 }
             }
@@ -990,10 +992,10 @@ void App::resolveOpenTargets(bool allowResolve) {
                          "[jplay] No project document for \"%s\"; nothing to open from it",
                          path.c_str());
         }
-        it = openTargetCache_.emplace(path, std::move(t)).first;
+        it = openTargetCache_.emplace(path, std::move(target)).first;
     }
-    const OpenTarget& t = it->second;
-    if (t.projPath.empty())
+    const OpenTarget& target = it->second;
+    if (target.projPath.empty())
         return; // nothing published to graft from
 
     // What the view currently shows is timeline state, not a property of the path, so
@@ -1005,28 +1007,29 @@ void App::resolveOpenTargets(bool allowResolve) {
     // The project drops out only while the view is scoped to that whole project.
     const SourceProject* scoped = timeline_.findProjectById(viewProjId_);
     const bool viewingThatProject =
-        scoped && (!scoped->path.empty() && !t.projPath.empty() ? scoped->path == t.projPath
-                                                                : scoped->name == t.projName);
+        scoped && (!scoped->path.empty() && !target.projPath.empty()
+                       ? scoped->path == target.projPath
+                       : scoped->name == target.projName);
     if (!viewingThatProject) {
-        openProjName_ = t.projName;
-        openProjPath_ = t.projPath;
+        openProjName_ = target.projName;
+        openProjPath_ = target.projPath;
     }
     // The sequence drops out once the clip under the playhead lives in it: there is
     // nowhere left to go, and grafting it again would duplicate it. Scoping to a
     // sequence puts the playhead in it, so this covers "already viewing it" too.
     //
-    // t.seqName is the scene the path resolves to, which names a sequence built
+    // target.seqName is the scene the path resolves to, which names a sequence built
     // from a directory but not one grafted out of the OTIO — that one is named after
     // its sequence_name and can span several scenes. So the scene tags its shots
     // carry answer this too, or the graft would go unrecognized and every click
     // would append another copy of it.
-    if (!t.seqName.empty()) {
+    if (!target.seqName.empty()) {
         const int owner = timeline_.seqIndexOfClip(active->id);
         const bool alreadyIn = owner >= 0 && owner < (int)timeline_.sequences.size()
-                            && (timeline_.sequences[owner].name == t.seqName
-                                || timeline_.sequenceHasScene(timeline_.sequences[owner], t.seqName));
+                            && (timeline_.sequences[owner].name == target.seqName
+                                || timeline_.sequenceHasScene(timeline_.sequences[owner], target.seqName));
         if (!alreadyIn)
-            openSeqName_ = t.seqName;
+            openSeqName_ = target.seqName;
     }
 }
 
@@ -1053,7 +1056,7 @@ void App::buildSequenceMenuRows() {
             continue;
         seqProj[i] = proj->id;
         auto it = std::find_if(seqMenuProjects_.begin(), seqMenuProjects_.end(),
-                               [&](const SeqMenuProject& p) { return p.id == proj->id; });
+                               [&](const SeqMenuProject& entry) { return entry.id == proj->id; });
         if (it == seqMenuProjects_.end())
             seqMenuProjects_.push_back({ proj->id, proj->name, { timeline_.sequences[i].id } });
         else
@@ -1061,19 +1064,19 @@ void App::buildSequenceMenuRows() {
     }
 
     auto add = [&](SeqMenuRow::Kind kind, std::string label, int seqIdx, int projIdx, bool indent) {
-        SeqMenuRow r;
-        r.kind = kind;
-        r.label = std::move(label);
-        r.seqIdx = seqIdx;
-        r.projIdx = projIdx;
-        r.indent = indent;
-        sequenceMenuRows_.push_back(std::move(r));
+        SeqMenuRow row;
+        row.kind = kind;
+        row.label = std::move(label);
+        row.seqIdx = seqIdx;
+        row.projIdx = projIdx;
+        row.indent = indent;
+        sequenceMenuRows_.push_back(std::move(row));
     };
 
-    for (int p = 0; p < (int)seqMenuProjects_.size(); ++p) {
-        add(SeqMenuRow::Kind::Project, seqMenuProjects_[p].name, -1, p, false);
+    for (int projIdx = 0; projIdx < (int)seqMenuProjects_.size(); ++projIdx) {
+        add(SeqMenuRow::Kind::Project, seqMenuProjects_[projIdx].name, -1, projIdx, false);
         for (size_t i = 0; i < timeline_.sequences.size(); ++i)
-            if (seqProj[i] == seqMenuProjects_[p].id)
+            if (seqProj[i] == seqMenuProjects_[projIdx].id)
                 add(SeqMenuRow::Kind::Sequence, timeline_.sequences[i].name, (int)i, -1, true);
     }
     for (size_t i = 0; i < timeline_.sequences.size(); ++i)
@@ -1081,13 +1084,13 @@ void App::buildSequenceMenuRows() {
             add(SeqMenuRow::Kind::Sequence, timeline_.sequences[i].name, (int)i, -1, false);
 }
 
-std::string App::shotNameOfClip(const Clip& c) const {
-    if (c.shotId >= 0)
-        for (const Shot& s : timeline_.shots)
-            if (s.id == c.shotId)
-                return s.name;
-    if (auto m = timeline_.findMediaById(c.mediaId))
-        return m->metaValue("shot");
+std::string App::shotNameOfClip(const Clip& clip) const {
+    if (clip.shotId >= 0)
+        for (const Shot& shot : timeline_.shots)
+            if (shot.id == clip.shotId)
+                return shot.name;
+    if (auto media = timeline_.findMediaById(clip.mediaId))
+        return media->metaValue("shot");
     return {};
 }
 
@@ -1100,21 +1103,21 @@ void App::restoreViewPlayhead(const std::string& shotName, const std::string& me
     // hit wins outright, and a shot-name hit is only a fallback.
     const Clip* best = nullptr;
     bool byPath = false;
-    for (int si : viewSeqIndices()) {
-        for (const Clip& c : timeline_.sequences[si].clips) {
-            if (c.audio)
+    for (int seqIdx : viewSeqIndices()) {
+        for (const Clip& clip : timeline_.sequences[seqIdx].clips) {
+            if (clip.audio)
                 continue; // the playhead follows the video program
             bool pathHit = false;
             if (!mediaPath.empty())
-                if (auto m = timeline_.findMediaById(c.mediaId))
-                    pathHit = m->resolvedPath() == mediaPath;
+                if (auto media = timeline_.findMediaById(clip.mediaId))
+                    pathHit = media->resolvedPath() == mediaPath;
             if (pathHit) {
-                best   = &c;
+                best   = &clip;
                 byPath = true;
                 break;
             }
-            if (!best && !shotName.empty() && shotNameOfClip(c) == shotName)
-                best = &c;
+            if (!best && !shotName.empty() && shotNameOfClip(clip) == shotName)
+                best = &clip;
         }
         if (byPath)
             break;
@@ -1144,8 +1147,8 @@ void App::openResolvedProject(const std::string& projPath, const std::string& pr
     if (const Clip* active = getTopMostClipAtFrame(timeline_.playhead)) {
         curShot     = shotNameOfClip(*active);
         curSrcFrame = active->sourceOffset + (timeline_.playhead - active->timelineStart);
-        if (auto m = timeline_.findMediaById(active->mediaId))
-            curPath = m->resolvedPath();
+        if (auto media = timeline_.findMediaById(active->mediaId))
+            curPath = media->resolvedPath();
     }
 
     // Already read whole this session: everything it holds is loaded, so this is
@@ -1155,9 +1158,9 @@ void App::openResolvedProject(const std::string& projPath, const std::string& pr
     if (const SourceProject* done = timeline_.findProjectByPath(projPath, projectName);
         done && done->openedWhole) {
         std::vector<int> seqIds;
-        for (const Sequence& s : timeline_.sequences)
-            if (s.projectId == done->id)
-                seqIds.push_back(s.id);
+        for (const Sequence& seq : timeline_.sequences)
+            if (seq.projectId == done->id)
+                seqIds.push_back(seq.id);
         if (!seqIds.empty()) {
             setProjectView(done->id, std::move(seqIds));
             restoreViewPlayhead(curShot, curPath, curSrcFrame);
@@ -1165,24 +1168,24 @@ void App::openResolvedProject(const std::string& projPath, const std::string& pr
             return;
         }
     }
-    auto src = std::make_shared<Timeline>();
-    auto ok  = std::make_shared<bool>(false);
+    auto src    = std::make_shared<Timeline>();
+    auto loadOk = std::make_shared<bool>(false);
     beginProgress("Open Project: " + projectName,
-        [projPath, src, ok](ProgressReporter& pr) {
+        [projPath, src, loadOk](ProgressReporter& pr) {
             pr.update(-1.0, "Loading project…");
-            int nc = 1, ns = 1, nsh = 1;
+            int nextClip = 1, nextSeq = 1, nextShot = 1;
             std::string err;
-            *ok = loadProjectDocument(projPath, *src, nc, ns, nsh, err);
-            if (!*ok)
+            *loadOk = loadProjectDocument(projPath, *src, nextClip, nextSeq, nextShot, err);
+            if (!*loadOk)
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                              "[jplay] Open Project: load failed: %s", err.c_str());
         },
-        [this, projPath, projectName, curShot, curPath, curSrcFrame, src, ok] {
+        [this, projPath, projectName, curShot, curPath, curSrcFrame, src, loadOk] {
             if (progress_.cancelled()) {
                 setStatus("OPEN PROJECT: CANCELLED", 3000);
                 return;
             }
-            if (!*ok) {
+            if (!*loadOk) {
                 setStatus("OPEN PROJECT: LOAD FAILED", 5000);
                 return;
             }
@@ -1194,26 +1197,27 @@ void App::openResolvedProject(const std::string& projPath, const std::string& pr
             if (SourceProject* rec = timeline_.findProjectById(projId))
                 rec->openedWhole = true;
             int grafted = 0;
-            for (const Sequence& s : src->sequences) {
-                if (s.name.empty())
+            for (const Sequence& srcSeq : src->sequences) {
+                if (srcSeq.name.empty())
                     continue; // nothing to match or name the graft after
                 bool present = false;
                 // Only this project's own sequences, plus any belonging to none, can
                 // already stand for one of its sequences. A same-named sequence of a
                 // *different* project is a different sequence and gets grafted.
-                for (Sequence& e : timeline_.sequences)
-                    if (e.name == s.name && (e.projectId == projId || e.projectId < 0)) {
+                for (Sequence& existing : timeline_.sequences)
+                    if (existing.name == srcSeq.name &&
+                        (existing.projectId == projId || existing.projectId < 0)) {
                         present = true;
                         // The project file names it as one of its own, so adopt it
                         // into the group: it may have been grafted one sequence at a
                         // time before the project was opened.
-                        if (e.projectId < 0)
-                            e.projectId = projId;
+                        if (existing.projectId < 0)
+                            existing.projectId = projId;
                         break;
                     }
                 if (present)
                     continue;
-                const int idx = graftOtioSequence(*src, s.name, s.name, "", "");
+                const int idx = graftOtioSequence(*src, srcSeq.name, srcSeq.name, "", "");
                 if (idx < 0)
                     continue;
                 ++grafted;
@@ -1231,9 +1235,9 @@ void App::openResolvedProject(const std::string& projPath, const std::string& pr
             // built by "Create from directory", which leaves them unstamped until the
             // adoption above) still switches to its project view.
             std::vector<int> seqIds;
-            for (const Sequence& s : timeline_.sequences)
-                if (s.projectId == projId)
-                    seqIds.push_back(s.id);
+            for (const Sequence& seq : timeline_.sequences)
+                if (seq.projectId == projId)
+                    seqIds.push_back(seq.id);
             if (seqIds.empty()) { // named nothing we hold and brought nothing in
                 setStatus("NO SEQUENCES IN \"" + projectName + "\"", 5000);
                 return;
@@ -1271,15 +1275,15 @@ void App::reorderProjectSequences(int projId, const Timeline& src) {
     // Rank by position in the document, matched on name as the graft loop does. One
     // the document doesn't name ranks past every named one and keeps its relative
     // order among the rest.
-    auto rank = [&](const Sequence& s) {
+    auto rank = [&](const Sequence& seq) {
         for (size_t i = 0; i < src.sequences.size(); ++i)
-            if (src.sequences[i].name == s.name)
+            if (src.sequences[i].name == seq.name)
                 return (int)i;
         return (int)src.sequences.size();
     };
     std::vector<int> order = slots;
-    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
-        return rank(timeline_.sequences[a]) < rank(timeline_.sequences[b]);
+    std::stable_sort(order.begin(), order.end(), [&](int lhs, int rhs) {
+        return rank(timeline_.sequences[lhs]) < rank(timeline_.sequences[rhs]);
     });
     if (order == slots)
         return; // already in document order
@@ -1288,9 +1292,9 @@ void App::reorderProjectSequences(int projId, const Timeline& src) {
     // the repack would otherwise re-base everything on whichever sequence is now
     // first (see Timeline::repackSequences).
     int64_t lead = 0;
-    for (const Sequence& s : timeline_.sequences) {
-        int64_t a = 0, b = 0;
-        if (timeline_.sequenceSpan(s, a, b)) { lead = a; break; }
+    for (const Sequence& seq : timeline_.sequences) {
+        int64_t spanStart = 0, spanEnd = 0;
+        if (timeline_.sequenceSpan(seq, spanStart, spanEnd)) { lead = spanStart; break; }
     }
     std::vector<Sequence> reordered;
     reordered.reserve(order.size());
@@ -1309,12 +1313,12 @@ void App::reorderProjectSequences(int projId, const Timeline& src) {
 // A relocated candidate is accepted only if the same-named file is present and,
 // for an image sequence, the frame count matches the count cached in the project
 // (so a same-named-but-different sequence is rejected).
-bool App::candidateMatches(const Media& m, const std::string& candidatePath) const {
-    if (m.type() == ClipType::ImageSequence) {
+bool App::candidateMatches(const Media& media, const std::string& candidatePath) const {
+    if (media.type() == ClipType::ImageSequence) {
         auto files = ImageSeq::files(candidatePath);
         if (files.empty())
             return false;
-        int64_t want = m.info().frameCount;
+        int64_t want = media.info().frameCount;
         return want <= 0 || (int64_t)files.size() == want;
     }
     std::error_code ec;
@@ -1327,15 +1331,15 @@ bool App::candidateMatches(const Media& m, const std::string& candidatePath) con
 // whose substituted path exists on disk wins. Deliberately a plain existence
 // check (no frame-count/content validation): the rule came from a relocation the
 // user just confirmed, so a same-named file at the mirrored location is trusted.
-bool App::tryRelocateRules(const Media& m, std::string& out) const {
-    const std::string& p = m.path();
-    for (const auto& r : relocateRules_) {
-        if (p.size() >= r.oldPrefix.size() &&
-            p.compare(0, r.oldPrefix.size(), r.oldPrefix) == 0) {
-            std::string cand = r.newPrefix + p.substr(r.oldPrefix.size());
+bool App::tryRelocateRules(const Media& media, std::string& out) const {
+    const std::string& path = media.path();
+    for (const auto& rule : relocateRules_) {
+        if (path.size() >= rule.oldPrefix.size() &&
+            path.compare(0, rule.oldPrefix.size(), rule.oldPrefix) == 0) {
+            std::string candidate = rule.newPrefix + path.substr(rule.oldPrefix.size());
             std::error_code ec;
-            if (fs::exists(cand, ec)) {
-                out = std::move(cand);
+            if (fs::exists(candidate, ec)) {
+                out = std::move(candidate);
                 return true;
             }
         }
@@ -1347,11 +1351,14 @@ bool App::tryRelocateRules(const Media& m, std::string& out) const {
 // suffix, and the remaining leading fragments are the (old -> new) prefixes
 // (e.g. "D:\...\main.exr" + "C:\dev\...\main.exr" -> "D:" -> "C:\dev").
 void App::addRuleFromPaths(const std::string& oldPath, const std::string& newPath) {
-    size_t i = oldPath.size(), j = newPath.size();
-    while (i > 0 && j > 0 && oldPath[i - 1] == newPath[j - 1]) { --i; --j; }
-    RelocateRule r{ oldPath.substr(0, i), newPath.substr(0, j) };
-    if (r.oldPrefix != r.newPrefix)
-        relocateRules_.push_back(std::move(r));
+    size_t oldEnd = oldPath.size(), newEnd = newPath.size();
+    while (oldEnd > 0 && newEnd > 0 && oldPath[oldEnd - 1] == newPath[newEnd - 1]) {
+        --oldEnd;
+        --newEnd;
+    }
+    RelocateRule rule{ oldPath.substr(0, oldEnd), newPath.substr(0, newEnd) };
+    if (rule.oldPrefix != rule.newPrefix)
+        relocateRules_.push_back(std::move(rule));
 }
 
 // Point a media item at a new path while keeping its id (clips reference media
@@ -1403,12 +1410,12 @@ void App::resolveMissingWithRules() {
     bool anyResolved = false;
     for (const auto& kv : timeline_.media) {
         const std::string& id = kv.first;
-        Media& m = *kv.second;
-        if (!m.openFailed() || relocateRuleTried_.count(id))
+        Media& media = *kv.second;
+        if (!media.openFailed() || relocateRuleTried_.count(id))
             continue;
         relocateRuleTried_.insert(id); // try each missing source once per rule set
         std::string relocated;
-        if (tryRelocateRules(m, relocated)) {
+        if (tryRelocateRules(media, relocated)) {
             relocateMedia(id, relocated);
             anyResolved = true;
         }
@@ -1421,13 +1428,13 @@ void App::resolveMissingWithRules() {
     }
 }
 
-// Open the Missing Source modal for `m`, pre-filling the directory field with the
+// Open the Missing Source modal for `media`, pre-filling the directory field with the
 // missing file's current folder so the user need only edit the changed prefix.
-void App::openRelocateModal(const Media& m) {
-    relocatingMediaId_ = m.id();
+void App::openRelocateModal(const Media& media) {
+    relocatingMediaId_ = media.id();
     relocateModalOpen_ = true;
     relocateError_.clear();
-    relocateDirInput_.setText(fs::path(m.path()).parent_path().string());
+    relocateDirInput_.setText(fs::path(media.path()).parent_path().string());
     relocateDirInput_.setFocus(true);
     SDL_StartTextInput(window_);
 }
@@ -1444,21 +1451,21 @@ void App::closeRelocateModal() {
 // open. The learned rule is then swept across the whole project so every other
 // source under the same moved directory is repointed silently.
 void App::doRelocateFromField() {
-    auto m = timeline_.findMediaById(relocatingMediaId_);
-    if (!m) { closeRelocateModal(); return; }
+    auto media = timeline_.findMediaById(relocatingMediaId_);
+    if (!media) { closeRelocateModal(); return; }
 
     std::string dir = relocateDirInput_.text();
     if (dir.empty()) { relocateError_ = "Enter or browse to a folder."; return; }
 
-    std::string base = fs::path(m->path()).filename().string();
-    std::string cand = (fs::path(dir) / base).string();
-    if (!candidateMatches(*m, cand)) {
+    std::string base = fs::path(media->path()).filename().string();
+    std::string candidate = (fs::path(dir) / base).string();
+    if (!candidateMatches(*media, candidate)) {
         relocateError_ = "Folder has no \"" + base + "\" with a matching frame count.";
         return;
     }
 
-    addRuleFromPaths(m->path(), cand);
-    relocateMedia(m->id(), cand);
+    addRuleFromPaths(media->path(), candidate);
+    relocateMedia(media->id(), candidate);
     propagateRelocateRules();    // silently repoint every sibling under the same moved prefix
     cache_->clear();             // drop the stale "missing" frames so relocated clips re-decode
     clearFramePreview();
@@ -1583,7 +1590,9 @@ void App::renderRelocateModal() {
                             std::round((winH_ - dh) * .5f), dw, dh };
     const SDL_FRect& dlg = relocateDialogRect_;
 
-    auto setC = [&](SDL_Color c) { SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a); };
+    auto setC = [&](SDL_Color color) {
+        SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
+    };
 
     setC(kOverlay);
     SDL_FRect full{ 0, 0, winW_, winH_ };
@@ -1610,8 +1619,8 @@ void App::renderRelocateModal() {
 
     float y = dlg.y + titleBar.h + padY;
 
-    auto m = timeline_.findMediaById(relocatingMediaId_);
-    std::string path = m ? m->path() : std::string();
+    auto media = timeline_.findMediaById(relocatingMediaId_);
+    std::string path = media ? media->path() : std::string();
     drawText(dlg.x + padX, y, kLabel, "Source not found:");
     y += glyphH + gap * .5f;
     drawText(dlg.x + padX, y, kPathText, elide(path, dw - padX * 2.f).c_str());
@@ -1635,7 +1644,7 @@ void App::renderRelocateModal() {
     // Bottom buttons, right-aligned: Relocate | Cancel.
     const float btnH = rowH;
     const float btnY = dlg.y + dh - padY - btnH;
-    struct BtnDef { Button* b; const char* label; };
+    struct BtnDef { Button* button; const char* label; };
     BtnDef defs[] = {
         { &relocateBtn_,       "Relocate" },
         { &relocateCancelBtn_, "Cancel" },
@@ -1649,9 +1658,9 @@ void App::renderRelocateModal() {
     total += gap * (nBtn - 1);
     float bx = dlg.x + dw - padX - total;
     for (int i = 0; i < nBtn; ++i) {
-        defs[i].b->setRect({ bx, btnY, widths[i], btnH });
-        defs[i].b->setLabel(defs[i].label);
-        defs[i].b->render(renderer_, font);
+        defs[i].button->setRect({ bx, btnY, widths[i], btnH });
+        defs[i].button->setLabel(defs[i].label);
+        defs[i].button->render(renderer_, font);
         bx += widths[i] + gap;
     }
 }
@@ -1675,12 +1684,13 @@ void App::showDialog(std::string title, std::string message,
     msgDialogEnter_   = enterIdx;
 
     msgDialogLines_.clear();
-    for (size_t b = 0;;) {
-        size_t e = message.find('\n', b);
-        msgDialogLines_.push_back(message.substr(b, e == std::string::npos ? e : e - b));
-        if (e == std::string::npos)
+    for (size_t lineStart = 0;;) {
+        size_t lineEnd = message.find('\n', lineStart);
+        msgDialogLines_.push_back(
+            message.substr(lineStart, lineEnd == std::string::npos ? lineEnd : lineEnd - lineStart));
+        if (lineEnd == std::string::npos)
             break;
-        b = e + 1;
+        lineStart = lineEnd + 1;
     }
 }
 
@@ -1783,8 +1793,8 @@ void App::renderDialog() {
         chkW = chkBox + chkGap + font->measure(renderer_, msgDialogCheckLabel_.c_str());
 
     float textW = 0.f;
-    for (const std::string& l : msgDialogLines_)
-        textW = std::max(textW, font->measure(renderer_, l.c_str()));
+    for (const std::string& line : msgDialogLines_)
+        textW = std::max(textW, font->measure(renderer_, line.c_str()));
 
     const float minW = 320.f * scale;
     const float rowW = btnRowW + (chkW > 0.f ? chkW + gap * 2.f : 0.f);
@@ -1801,7 +1811,9 @@ void App::renderDialog() {
     SDL_FRect dlg{ std::round((winW_ - dw) * .5f),
                    std::round((winH_ - dh) * .5f), dw, dh };
 
-    auto setC = [&](SDL_Color c) { SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a); };
+    auto setC = [&](SDL_Color color) {
+        SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
+    };
 
     setC(kOverlay);
     SDL_FRect full{ 0, 0, winW_, winH_ };
@@ -1817,11 +1829,11 @@ void App::renderDialog() {
 
     float y = dlg.y + titleBar.h + padY;
     for (const std::string& line : msgDialogLines_) {
-        std::string s = line;
-        while (s.size() > 1 && font->measure(renderer_, s.c_str()) > dw - padX * 2.f)
-            s.erase(s.size() - 1);
-        if (!s.empty())
-            drawText(dlg.x + padX, y, kMsgText, s);
+        std::string fitted = line;
+        while (fitted.size() > 1 && font->measure(renderer_, fitted.c_str()) > dw - padX * 2.f)
+            fitted.erase(fitted.size() - 1);
+        if (!fitted.empty())
+            drawText(dlg.x + padX, y, kMsgText, fitted);
         y += glyphH + lineGap;
     }
 
@@ -1951,7 +1963,9 @@ void App::renderProgressOverlay() {
     SDL_FRect dlg{ std::round((winW_ - dw) * .5f),
                    std::round((winH_ - dh) * .5f), dw, dh };
 
-    auto setC = [&](SDL_Color c) { SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a); };
+    auto setC = [&](SDL_Color color) {
+        SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
+    };
 
     setC(kOverlay);
     SDL_FRect full{ 0, 0, winW_, winH_ };
@@ -1988,9 +2002,9 @@ void App::renderProgressOverlay() {
         setC(kFill); jplay::fillRect(renderer_, &fill);
     } else {
         const float period = 1200.f;
-        float t = (SDL_GetTicks() % (uint64_t)period) / period;
+        float phase = (SDL_GetTicks() % (uint64_t)period) / period;
         float segW = track.w * 0.3f;
-        float sx = track.x + (track.w + segW) * t - segW;
+        float sx = track.x + (track.w + segW) * phase - segW;
         float x0 = std::max(sx, track.x);
         float x1 = std::min(sx + segW, track.x + track.w);
         if (x1 > x0) { SDL_FRect seg{ x0, track.y, x1 - x0, track.h }; setC(kFill); jplay::fillRect(renderer_, &seg); }
@@ -2030,9 +2044,9 @@ void App::openRecentProject(const std::string& path) {
 }
 
 void App::clearRecentTiles() {
-    for (auto& t : recent_)
-        if (t.tex)
-            SDL_DestroyTexture(t.tex);
+    for (auto& tile : recent_)
+        if (tile.tex)
+            SDL_DestroyTexture(tile.tex);
     recent_.clear();
 }
 
@@ -2075,43 +2089,44 @@ void App::submitRecentRefresh() {
     auto out = std::make_shared<std::vector<LoadedRecent>>();
     work_.submit(
         [out](const std::atomic<bool>& stop) {
-            for (const auto& e : UserData::loadRecent()) {
+            for (const auto& entry : UserData::loadRecent()) {
                 if (stop.load())
                     return; // project switched / quitting: abandon
-                LoadedRecent lr;
-                lr.path = e.path;
-                lr.id = e.id;
-                lr.label = fs::path(e.path).filename().string(); // basename as stored
-                lr.savedUnix = e.savedUnix;
-                Project::Thumbnail th;
-                if (!e.id.empty() && UserData::readThumbnail(e.id, e.path, th) && th.valid()) {
-                    lr.rgba = std::move(th.rgba);
-                    lr.w = th.width;
-                    lr.h = th.height;
+                LoadedRecent loaded;
+                loaded.path = entry.path;
+                loaded.id = entry.id;
+                loaded.label = fs::path(entry.path).filename().string(); // basename as stored
+                loaded.savedUnix = entry.savedUnix;
+                Project::Thumbnail thumb;
+                if (!entry.id.empty() &&
+                    UserData::readThumbnail(entry.id, entry.path, thumb) && thumb.valid()) {
+                    loaded.rgba = std::move(thumb.rgba);
+                    loaded.w = thumb.width;
+                    loaded.h = thumb.height;
                 }
-                out->push_back(std::move(lr));
+                out->push_back(std::move(loaded));
             }
         },
         [this, out] {
             clearRecentTiles();
-            for (auto& lr : *out) {
-                RecentTile t;
-                t.path = std::move(lr.path);
-                t.id = std::move(lr.id);
-                t.label = std::move(lr.label);
-                if (std::string ts = formatSavedTime(lr.savedUnix); !ts.empty())
-                    t.lastOpened = "Last Opened " + ts;
-                if (!lr.rgba.empty() && lr.w > 0 && lr.h > 0) {
-                    t.tex = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGBA32,
-                                              SDL_TEXTUREACCESS_STATIC, lr.w, lr.h);
-                    if (t.tex) {
-                        SDL_SetTextureScaleMode(t.tex, SDL_SCALEMODE_LINEAR);
-                        SDL_UpdateTexture(t.tex, nullptr, lr.rgba.data(), lr.w * 4);
-                        t.texW = lr.w;
-                        t.texH = lr.h;
+            for (auto& loaded : *out) {
+                RecentTile tile;
+                tile.path = std::move(loaded.path);
+                tile.id = std::move(loaded.id);
+                tile.label = std::move(loaded.label);
+                if (std::string timeText = formatSavedTime(loaded.savedUnix); !timeText.empty())
+                    tile.lastOpened = "Last Opened " + timeText;
+                if (!loaded.rgba.empty() && loaded.w > 0 && loaded.h > 0) {
+                    tile.tex = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGBA32,
+                                                 SDL_TEXTUREACCESS_STATIC, loaded.w, loaded.h);
+                    if (tile.tex) {
+                        SDL_SetTextureScaleMode(tile.tex, SDL_SCALEMODE_LINEAR);
+                        SDL_UpdateTexture(tile.tex, nullptr, loaded.rgba.data(), loaded.w * 4);
+                        tile.texW = loaded.w;
+                        tile.texH = loaded.h;
                     }
                 }
-                recent_.push_back(std::move(t));
+                recent_.push_back(std::move(tile));
             }
         });
 }
@@ -2143,8 +2158,8 @@ void App::submitSharedRefresh() {
             // grow the column (and move its rows under the pointer) N times.
             auto pending = std::make_shared<std::vector<SharedProject>>();
             auto outstanding = std::make_shared<int>((int)entries->size());
-            for (auto& e : *entries)
-                submitSharedProbe(std::move(e), pending, outstanding);
+            for (auto& entry : *entries)
+                submitSharedProbe(std::move(entry), pending, outstanding);
         });
 }
 
@@ -2155,16 +2170,17 @@ void App::submitSharedRefresh() {
 void App::submitSharedProbe(SharedProjects::Entry entry,
                             std::shared_ptr<std::vector<SharedProject>> pending,
                             std::shared_ptr<int> outstanding) {
-    auto e = std::make_shared<SharedProjects::Entry>(std::move(entry));
+    auto sharedEntry = std::make_shared<SharedProjects::Entry>(std::move(entry));
     auto present = std::make_shared<bool>(false);
     work_.submit(
-        [e, present](const std::atomic<bool>& stop) {
-            *present = SharedProjects::exists(e->path, 4000, stop);
+        [sharedEntry, present](const std::atomic<bool>& stop) {
+            *present = SharedProjects::exists(sharedEntry->path, 4000, stop);
         },
-        [this, e, present, pending, outstanding] {
+        [this, sharedEntry, present, pending, outstanding] {
             // Completions run on the main thread, so the counter needs no atomics.
             if (*present)
-                pending->push_back(SharedProject{ e->code, e->name, e->path });
+                pending->push_back(
+                    SharedProject{ sharedEntry->code, sharedEntry->name, sharedEntry->path });
             if (--*outstanding == 0)
                 sharedProjects_ = std::move(*pending);
         });
@@ -2246,8 +2262,8 @@ void App::renderMainPanels() {
     const float btnH = 44.0f;
     const float btnGap = 10.0f;
     float btnW = 260.0f; // widened below to fit the longest label (+ icon slot)
-    for (const char* l : btnLabels)
-        btnW = std::max(btnW, textFont_.measure(renderer_, l) + btnH + 22.0f);
+    for (const char* btnLabel : btnLabels)
+        btnW = std::max(btnW, textFont_.measure(renderer_, btnLabel) + btnH + 22.0f);
     float createColH = headerH + 4 * btnH + 3 * btnGap;
 
     // ---- RECENT PROJECTS section geometry: the thumbnail list
@@ -2269,10 +2285,10 @@ void App::renderMainPanels() {
     // before and after the (async) tiles land, instead of widening — and shifting
     // the core columns — a frame or two into the launch.
     float maxTextW = textFont_.measure(renderer_, "Last Opened Jan 01, 2026  00:00") * 0.8f;
-    for (const auto& t : recent_) {
-        maxTextW = std::max(maxTextW, textFont_.measure(renderer_, t.label.c_str()));
-        if (!t.lastOpened.empty())
-            maxTextW = std::max(maxTextW, textFont_.measure(renderer_, t.lastOpened.c_str()) * 0.8f);
+    for (const auto& tile : recent_) {
+        maxTextW = std::max(maxTextW, textFont_.measure(renderer_, tile.label.c_str()));
+        if (!tile.lastOpened.empty())
+            maxTextW = std::max(maxTextW, textFont_.measure(renderer_, tile.lastOpened.c_str()) * 0.8f);
     }
     // Show at most 4 rows; if there are more the list scrolls (recentScroll_).
     const int kMaxVisibleRows = 4;
@@ -2288,8 +2304,8 @@ void App::renderMainPanels() {
     const float tabGap = 4.0f;
     const float tabH = headerH - 4.0f; // also the CREATE PROJECT header's height
     float stripW = -tabGap;
-    for (const char* l : kLauncherTabLabels)
-        stripW += textFont_.measure(renderer_, l) + 2.0f * pad + tabGap;
+    for (const char* tabLabel : kLauncherTabLabels)
+        stripW += textFont_.measure(renderer_, tabLabel) + 2.0f * pad + tabGap;
     const float listW = std::max(std::clamp(neededW, 260.0f, 520.0f), stripW);
     const float rowW = listW - sbW;   // rows stop short of the scrollbar
     int count = std::min((int)recent_.size(), kMaxVisibleRows);
@@ -2311,8 +2327,8 @@ void App::renderMainPanels() {
     // A tab that lost its data while it was the active one (a beacon list timing
     // out) hands the column back to RECENT rather than showing nothing.
     bool tabLive = false;
-    for (const auto& t : launcherTabs_)
-        tabLive = tabLive || (t.tab == launcherTab_ && t.enabled);
+    for (const auto& tab : launcherTabs_)
+        tabLive = tabLive || (tab.tab == launcherTab_ && tab.enabled);
     if (!tabLive)
         launcherTab_ = LauncherTab::Recent;
 
@@ -2332,32 +2348,32 @@ void App::renderMainPanels() {
     // gets, so the two columns read as headed the same way. It isn't clickable —
     // there is only one — so it never takes the inactive or hover palette.
     {
-        SDL_FRect r{ xCreate, by, textFont_.measure(renderer_, "CREATE PROJECT") + 2.0f * pad, tabH };
+        SDL_FRect rect{ xCreate, by, textFont_.measure(renderer_, "CREATE PROJECT") + 2.0f * pad, tabH };
         SDL_SetRenderDrawColor(renderer_, kUiBtnBgHover.r, kUiBtnBgHover.g, kUiBtnBgHover.b, 220);
-        jplay::fillRect(renderer_, &r);
+        jplay::fillRect(renderer_, &rect);
         SDL_SetRenderDrawColor(renderer_, kUiBtnBorderHover.r, kUiBtnBorderHover.g,
                                kUiBtnBorderHover.b, kUiBtnBorderHover.a);
-        jplay::drawRect(renderer_, &r);
-        drawText(r.x + pad, r.y + (tabH - textFont_.lineHeight()) * 0.5f,
+        jplay::drawRect(renderer_, &rect);
+        drawText(rect.x + pad, rect.y + (tabH - textFont_.lineHeight()) * 0.5f,
                  { 215, 215, 225, 255 }, "CREATE PROJECT");
     }
     float cy = by + headerH;
     for (int i = 0; i < 4; ++i) {
-        SDL_FRect b{ xCreate, cy, btnW, btnH };
-        *btnRects[i] = b;
-        bool hover = inRect(b, mx, my);
+        SDL_FRect btn{ xCreate, cy, btnW, btnH };
+        *btnRects[i] = btn;
+        bool hover = inRect(btn, mx, my);
         // 220: translucent over the video.
         {
             SDL_Color bg = hover ? kUiBtnBgHover : kUiBtnBg;
             SDL_Color border = hover ? kUiBtnBorderHover : kUiBtnBorder;
             SDL_SetRenderDrawColor(renderer_, bg.r, bg.g, bg.b, 220);
-            jplay::fillRect(renderer_, &b);
+            jplay::fillRect(renderer_, &btn);
             SDL_SetRenderDrawColor(renderer_, border.r, border.g, border.b, border.a);
-            jplay::drawRect(renderer_, &b); // 1px lighter border
+            jplay::drawRect(renderer_, &btn); // 1px lighter border
         }
-        SDL_FRect iconR{ b.x, b.y, btnH, btnH };
+        SDL_FRect iconR{ btn.x, btn.y, btnH, btnH };
         icons_.drawGlyph(renderer_, btnIcons[i], iconR, { 200, 205, 215, 255 }, 0.30f);
-        drawText(b.x + btnH, b.y + (btnH - textFont_.lineHeight()) * 0.5f, { 215, 215, 225, 255 }, btnLabels[i]);
+        drawText(btn.x + btnH, btn.y + (btnH - textFont_.lineHeight()) * 0.5f, { 215, 215, 225, 255 }, btnLabels[i]);
         cy += btnH + btnGap;
     }
 
@@ -2366,10 +2382,10 @@ void App::renderMainPanels() {
     {
         float tx = xRecent;
         for (auto& tab : launcherTabs_) {
-            SDL_FRect r{ tx, by, textFont_.measure(renderer_, tab.label) + 2.0f * pad, tabH };
-            tab.rect = r;
+            SDL_FRect rect{ tx, by, textFont_.measure(renderer_, tab.label) + 2.0f * pad, tabH };
+            tab.rect = rect;
             const bool active = tab.tab == launcherTab_;
-            const bool hover = tab.enabled && !active && inRect(r, mx, my);
+            const bool hover = tab.enabled && !active && inRect(rect, mx, my);
             { // same palette as the rows below, so the strip reads as part of them
                 SDL_Color bg = (active || hover) ? kUiBtnBgHover : kUiBtnBg;
                 SDL_Color border = active ? kUiBtnBorderHover : kUiBtnBorder;
@@ -2377,16 +2393,16 @@ void App::renderMainPanels() {
                 // and border a live one gets, so the strip says the list isn't there
                 // yet rather than hiding that the tab exists.
                 SDL_SetRenderDrawColor(renderer_, bg.r, bg.g, bg.b, tab.enabled ? 220 : 110);
-                jplay::fillRect(renderer_, &r);
+                jplay::fillRect(renderer_, &rect);
                 SDL_SetRenderDrawColor(renderer_, border.r, border.g, border.b,
                                        tab.enabled ? border.a : (Uint8)(border.a / 2));
-                jplay::drawRect(renderer_, &r);
+                jplay::drawRect(renderer_, &rect);
             }
             SDL_Color fg = !tab.enabled ? SDL_Color{ 25, 25, 35, 255 }
                          : active       ? SDL_Color{ 215, 215, 225, 255 }
                                         : SDL_Color{ 150, 150, 160, 255 };
-            drawText(r.x + pad, r.y + (tabH - textFont_.lineHeight()) * 0.5f, fg, tab.label);
-            tx += r.w + tabGap;
+            drawText(rect.x + pad, rect.y + (tabH - textFont_.lineHeight()) * 0.5f, fg, tab.label);
+            tx += rect.w + tabGap;
         }
     }
 
@@ -2395,9 +2411,9 @@ void App::renderMainPanels() {
     // replaced it. (launcherSyncRows_ is cleared above and only refilled below.)
     if (launcherTab_ != LauncherTab::Recent) {
         recentListRect_ = SDL_FRect{};
-        for (auto& t : recent_) {
-            t.rect = SDL_FRect{};
-            t.closeRect = SDL_FRect{};
+        for (auto& tile : recent_) {
+            tile.rect = SDL_FRect{};
+            tile.closeRect = SDL_FRect{};
         }
     }
     if (launcherTab_ != LauncherTab::Shared) {
@@ -2431,23 +2447,23 @@ void App::renderMainPanels() {
                 sp.rect = SDL_FRect{}; // scrolled out of view — not clickable
                 continue;
             }
-            SDL_FRect r{ xRecent, y, shRowW, btnH };
+            SDL_FRect rect{ xRecent, y, shRowW, btnH };
             bool fullyVisible = y >= viewTop - 0.5f && y + btnH <= viewTop + viewH + 0.5f;
-            sp.rect = fullyVisible ? r : SDL_FRect{};
-            bool hover = fullyVisible && inRect(r, mx, my);
+            sp.rect = fullyVisible ? rect : SDL_FRect{};
+            bool hover = fullyVisible && inRect(rect, mx, my);
             { // translucent over the video
                 SDL_Color bg = hover ? kUiBtnBgHover : kUiBtnBg;
                 SDL_Color border = hover ? kUiBtnBorderHover : kUiBtnBorder;
                 SDL_SetRenderDrawColor(renderer_, bg.r, bg.g, bg.b, 220);
-                jplay::fillRect(renderer_, &r);
+                jplay::fillRect(renderer_, &rect);
                 SDL_SetRenderDrawColor(renderer_, border.r, border.g, border.b, border.a);
-                jplay::drawRect(renderer_, &r);
+                jplay::drawRect(renderer_, &rect);
             }
-            SDL_FRect iconR{ r.x, r.y, btnH, btnH };
+            SDL_FRect iconR{ rect.x, rect.y, btnH, btnH };
             icons_.drawGlyph(renderer_, 0xF0770, iconR, // ICON_MDI_FOLDER_OPEN
                              { 200, 205, 215, 255 }, 0.30f);
             std::string label = sp.code + " - " + sp.name;
-            drawText(r.x + btnH, r.y + (btnH - textFont_.lineHeight()) * 0.5f,
+            drawText(rect.x + btnH, rect.y + (btnH - textFont_.lineHeight()) * 0.5f,
                      { 215, 215, 225, 255 },
                      fitText(label, shRowW - btnH - 8.0f).c_str());
         }
@@ -2471,37 +2487,37 @@ void App::renderMainPanels() {
         SDL_Rect clip{ (int)xRecent, (int)viewTop, (int)listW, (int)viewH };
         SDL_SetRenderClipRect(renderer_, &clip);
         for (int i = 0; i < (int)beacons.size(); ++i) {
-            const auto& b = beacons[i];
+            const auto& beacon = beacons[i];
             float y = viewTop + i * rowH - launcherSyncScroll_;
             if (y + rowH <= viewTop || y >= viewTop + viewH)
                 continue; // scrolled out of view — and so not joinable
-            SDL_FRect r{ xRecent, y, syncRowW, btnH };
+            SDL_FRect rect{ xRecent, y, syncRowW, btnH };
             bool fullyVisible = y >= viewTop - 0.5f && y + btnH <= viewTop + viewH + 0.5f;
-            bool hover = fullyVisible && inRect(r, mx, my);
+            bool hover = fullyVisible && inRect(rect, mx, my);
             { // translucent over the video
                 SDL_Color bg = hover ? kUiBtnBgHover : kUiBtnBg;
                 SDL_Color border = hover ? kUiBtnBorderHover : kUiBtnBorder;
                 SDL_SetRenderDrawColor(renderer_, bg.r, bg.g, bg.b, 220);
-                jplay::fillRect(renderer_, &r);
+                jplay::fillRect(renderer_, &rect);
                 SDL_SetRenderDrawColor(renderer_, border.r, border.g, border.b, border.a);
-                jplay::drawRect(renderer_, &r);
+                jplay::drawRect(renderer_, &rect);
             }
-            SDL_FRect iconR{ r.x, r.y, btnH, btnH };
+            SDL_FRect iconR{ rect.x, rect.y, btnH, btnH };
             icons_.drawGlyph(renderer_, 0xF0849, iconR, // ICON_MDI_ACCOUNT_GROUP
                              { 200, 205, 215, 255 }, 0.34f);
             // Host name on top, dimmer "hostname (ip)" beneath it.
-            std::string name = b.username.empty() ? b.hostname : b.username;
-            const float lh = textFont_.lineHeight();
+            std::string name = beacon.username.empty() ? beacon.hostname : beacon.username;
+            const float lineH = textFont_.lineHeight();
             const float subScale = 0.8f;
-            float blockTextH = lh + lh * subScale;
-            float ty = r.y + (btnH - blockTextH) * 0.5f;
-            drawText(r.x + btnH, ty, { 215, 215, 225, 255 },
+            float blockTextH = lineH + lineH * subScale;
+            float ty = rect.y + (btnH - blockTextH) * 0.5f;
+            drawText(rect.x + btnH, ty, { 215, 215, 225, 255 },
                      fitText(name, syncRowW - btnH - 8.0f).c_str());
-            std::string sub = b.hostname.empty() ? b.ip : (b.hostname + "  (" + b.ip + ")");
-            textFont_.draw(renderer_, r.x + btnH, ty + lh, { 130, 130, 140, 255 },
+            std::string sub = beacon.hostname.empty() ? beacon.ip : (beacon.hostname + "  (" + beacon.ip + ")");
+            textFont_.draw(renderer_, rect.x + btnH, ty + lineH, { 130, 130, 140, 255 },
                            fitText(sub, syncRowW - btnH - 8.0f).c_str(), subScale);
             if (fullyVisible)
-                launcherSyncRows_.push_back({ b.ip, b.tcpPort, r });
+                launcherSyncRows_.push_back({ beacon.ip, beacon.tcpPort, rect });
         }
         SDL_SetRenderClipRect(renderer_, nullptr);
         drawScrollbar(renderer_, launcherSyncListRect_, (float)beacons.size() * rowH,
@@ -2532,17 +2548,17 @@ void App::renderMainPanels() {
             // dont show more than 20 recent projects
             break;
         }
-        RecentTile& t = recent_[i];
+        RecentTile& tile = recent_[i];
         float y = viewTop + i * rowH - recentScroll_;
         if (y + rowH <= viewTop || y >= viewTop + viewH) {
-            t.rect = SDL_FRect{};      // scrolled out of view — not clickable
-            t.closeRect = SDL_FRect{};
+            tile.rect = SDL_FRect{};      // scrolled out of view — not clickable
+            tile.closeRect = SDL_FRect{};
             continue;
         }
         SDL_FRect row{ xRecent, y, rowW, rowDrawH };
         // Only act on fully-visible rows so a clipped peek row isn't clickable.
         bool fullyVisible = y >= viewTop - 0.5f && y + rowDrawH <= viewTop + viewH + 0.5f;
-        t.rect = fullyVisible ? row : SDL_FRect{};
+        tile.rect = fullyVisible ? row : SDL_FRect{};
         bool hover = fullyVisible && inRect(row, mx, my);
 
         // Same palette as the CREATE PROJECT / SHARED / SYNC rows — these are
@@ -2561,24 +2577,24 @@ void App::renderMainPanels() {
         const float closeSz = 16.0f;
         SDL_FRect close{ row.x + row.w - closeSz - pad,
                          row.y + (row.h - closeSz) * 0.5f, closeSz, closeSz };
-        t.closeRect = fullyVisible ? close : SDL_FRect{};
+        tile.closeRect = fullyVisible ? close : SDL_FRect{};
         bool closeHover = fullyVisible && inRect(close, mx, my);
         {
-            float cp = 4.0f; // inset of the X strokes within the box
-            Uint8 c = closeHover ? 235 : 150;
-            SDL_SetRenderDrawColor(renderer_, c, c, c, 255);
-            jplay::drawLine(renderer_, close.x + cp, close.y + cp,
-                           close.x + close.w - cp, close.y + close.h - cp);
-            jplay::drawLine(renderer_, close.x + close.w - cp, close.y + cp,
-                           close.x + cp, close.y + close.h - cp);
+            float crossPad = 4.0f; // inset of the X strokes within the box
+            Uint8 shade = closeHover ? 235 : 150;
+            SDL_SetRenderDrawColor(renderer_, shade, shade, shade, 255);
+            jplay::drawLine(renderer_, close.x + crossPad, close.y + crossPad,
+                            close.x + close.w - crossPad, close.y + close.h - crossPad);
+            jplay::drawLine(renderer_, close.x + close.w - crossPad, close.y + crossPad,
+                            close.x + crossPad, close.y + close.h - crossPad);
         }
 
         SDL_FRect slot{ row.x + pad, row.y + pad, thumbW, thumbH };
-        if (t.tex && t.texW > 0 && t.texH > 0) {
-            float sc = std::min(slot.w / (float)t.texW, slot.h / (float)t.texH);
-            float dw = t.texW * sc, dh = t.texH * sc;
-            SDL_FRect dst{ slot.x + (slot.w - dw) * 0.5f, slot.y + (slot.h - dh) * 0.5f, dw, dh };
-            SDL_RenderTexture(renderer_, t.tex, nullptr, &dst);
+        if (tile.tex && tile.texW > 0 && tile.texH > 0) {
+            float scale = std::min(slot.w / (float)tile.texW, slot.h / (float)tile.texH);
+            float drawW = tile.texW * scale, drawH = tile.texH * scale;
+            SDL_FRect dst{ slot.x + (slot.w - drawW) * 0.5f, slot.y + (slot.h - drawH) * 0.5f, drawW, drawH };
+            SDL_RenderTexture(renderer_, tile.tex, nullptr, &dst);
         } else {
             SDL_SetRenderDrawColor(renderer_, 22, 22, 26, 255);
             jplay::fillRect(renderer_, &slot);
@@ -2586,18 +2602,18 @@ void App::renderMainPanels() {
         }
 
         float textX = slot.x + slot.w + 14.0f;
-        if (t.lastOpened.empty()) {
+        if (tile.lastOpened.empty()) {
             drawText(textX, row.y + rowDrawH * 0.5f - 4.0f,
-                     { 215, 215, 225, 255 }, t.label);
+                     { 215, 215, 225, 255 }, tile.label);
         } else {
             // Basename on top, dimmer "Last Opened <date>" beneath it.
-            const float lh = textFont_.lineHeight();
+            const float lineH = textFont_.lineHeight();
             const float dateScale = 0.8f;
-            const float blockTextH = lh + lh * dateScale;
+            const float blockTextH = lineH + lineH * dateScale;
             float ty = row.y + (rowDrawH - blockTextH) * 0.5f;
-            drawText(textX, ty, { 215, 215, 225, 255 }, t.label);
-            textFont_.draw(renderer_, textX, ty + lh, { 130, 130, 140, 255 },
-                           t.lastOpened.c_str(), dateScale);
+            drawText(textX, ty, { 215, 215, 225, 255 }, tile.label);
+            textFont_.draw(renderer_, textX, ty + lineH, { 130, 130, 140, 255 },
+                           tile.lastOpened.c_str(), dateScale);
         }
     }
     SDL_SetRenderClipRect(renderer_, nullptr);
@@ -2622,9 +2638,9 @@ void App::refreshMediaMetadata() {
     if (pool.empty())
         return;
     auto next = std::make_shared<std::atomic<size_t>>(0);
-    int n = std::clamp((int)std::thread::hardware_concurrency() - 1, 1, 8);
-    n = std::min<int>(n, (int)pool.size());
-    for (int t = 0; t < n; ++t) {
+    int workerCount = std::clamp((int)std::thread::hardware_concurrency() - 1, 1, 8);
+    workerCount = std::min<int>(workerCount, (int)pool.size());
+    for (int threadIdx = 0; threadIdx < workerCount; ++threadIdx) {
         refreshThreads_.emplace_back([this, pool, next] {
             for (;;) {
                 if (refreshStop_.load())
@@ -2691,20 +2707,20 @@ void App::tagMediaPathValues() {
         [paths, values](const std::atomic<bool>&) { jplayGetPathValues(paths, *values); },
         [this, ids, values] {
             for (size_t i = 0; i < ids.size() && i < values->size(); ++i) {
-                auto m = timeline_.findMediaById(ids[i]);
-                if (!m)
+                auto media = timeline_.findMediaById(ids[i]);
+                if (!media)
                     continue; // media dropped while the query was in flight
                 for (auto& kv : (*values)[i])
-                    m->setMetaValue(kv.first, std::move(kv.second));
+                    media->setMetaValue(kv.first, std::move(kv.second));
             }
         });
 }
 
 void App::joinRefresh() {
     refreshStop_ = true;
-    for (auto& t : refreshThreads_)
-        if (t.joinable())
-            t.join();
+    for (auto& thread : refreshThreads_)
+        if (thread.joinable())
+            thread.join();
     refreshThreads_.clear();
     refreshStop_ = false;
 }
@@ -2727,12 +2743,12 @@ void App::updateWindowTitle() {
 // ---------------------------------------------------------------- view history
 
 App::ViewHistoryEntry App::currentViewEntry() const {
-    ViewHistoryEntry e;
+    ViewHistoryEntry entry;
     if (projScoped())
-        e.projId = viewProjId_;
+        entry.projId = viewProjId_;
     else if (int fsi = filteredSeqIdx(); fsi >= 0)
-        e.seqId = timeline_.sequences[fsi].id;
-    return e; // {-1,-1} = All
+        entry.seqId = timeline_.sequences[fsi].id;
+    return entry; // {-1,-1} = All
 }
 
 void App::pushViewHistory(const ViewHistoryEntry& next) {
@@ -2761,20 +2777,20 @@ void App::goBackView() {
     }
     viewHistoryLock_ = true;
     while (!viewHistory_.empty()) {
-        ViewHistoryEntry e = viewHistory_.back();
+        ViewHistoryEntry entry = viewHistory_.back();
         viewHistory_.pop_back();
-        if (e.projId >= 0) {
+        if (entry.projId >= 0) {
             std::vector<int> seqIds;
-            for (const Sequence& s : timeline_.sequences)
-                if (s.projectId == e.projId)
-                    seqIds.push_back(s.id);
+            for (const Sequence& seq : timeline_.sequences)
+                if (seq.projectId == entry.projId)
+                    seqIds.push_back(seq.id);
             if (seqIds.empty())
                 continue;
-            setProjectView(e.projId, std::move(seqIds));
-        } else if (e.seqId >= 0) {
+            setProjectView(entry.projId, std::move(seqIds));
+        } else if (entry.seqId >= 0) {
             int idx = -1;
             for (int i = 0; i < (int)timeline_.sequences.size(); ++i)
-                if (timeline_.sequences[i].id == e.seqId)
+                if (timeline_.sequences[i].id == entry.seqId)
                     idx = i;
             if (idx < 0)
                 continue;
@@ -2811,11 +2827,11 @@ int App::beginScratchSequence(const std::string& name, ScratchKind kind) {
                        timeline_.playhead, viewStart_, framesPerPx_,
                        selectedClipIds_, selectedClipId_ };
 
-    Sequence s;
-    s.id = nextSeqId_++;
-    s.temporary = true;
-    s.name = name;
-    timeline_.sequences.push_back(std::move(s));
+    Sequence seq;
+    seq.id = nextSeqId_++;
+    seq.temporary = true;
+    seq.name = name;
+    timeline_.sequences.push_back(std::move(seq));
     timeline_.repackSequences();
     const int idx = (int)timeline_.sequences.size() - 1;
     scratchSeqId_ = timeline_.sequences[idx].id;
@@ -2841,11 +2857,11 @@ void App::openSourceView(const std::string& path, int64_t srcFrame) {
     if (path.empty())
         return;
 
-    const fs::path p = fs::u8path(path);
+    const fs::path filePath = fs::u8path(path);
     const std::string name =
-        "SOURCE: " + hashSeqStem(p.stem().u8string(),
+        "SOURCE: " + hashSeqStem(filePath.stem().u8string(),
                                  mediaTypeForPath(path) == ClipType::ImageSequence) +
-        p.extension().u8string();
+        filePath.extension().u8string();
     const int idx = beginScratchSequence(name, ScratchKind::Source);
 
     const int newClipId = nextClipId_; // the clip addMediaFileAt is about to create
@@ -2856,24 +2872,24 @@ void App::openSourceView(const std::string& path, int64_t srcFrame) {
         dropScratchView(); // rejected (open failed); it set the status
         return;
     }
-    if (const Clip* c = clipById(newClipId))
-        setPlayhead(c->timelineStart + std::clamp<int64_t>(srcFrame, 0, c->duration - 1));
+    if (const Clip* clip = clipById(newClipId))
+        setPlayhead(clip->timelineStart + std::clamp<int64_t>(srcFrame, 0, clip->duration - 1));
 }
 
 // F1: match-frame out of the program into the top-most clip's source, so the
 // handles either side of its cut are there to look at.
 void App::openSourceViewAtPlayhead() {
-    const Clip* c = getTopMostClipAtFrame(timeline_.playhead);
-    if (!c) {
+    const Clip* clip = getTopMostClipAtFrame(timeline_.playhead);
+    if (!clip) {
         setStatusWarn("NO CLIP UNDER THE PLAYHEAD", 2000);
         return;
     }
-    auto m = timeline_.findMediaById(c->mediaId);
-    if (!m) {
+    auto media = timeline_.findMediaById(clip->mediaId);
+    if (!media) {
         setStatusWarn("CLIP HAS NO SOURCE", 2000);
         return;
     }
-    openSourceView(m->path(), c->sourceOffset + (timeline_.playhead - c->timelineStart));
+    openSourceView(media->path(), clip->sourceOffset + (timeline_.playhead - clip->timelineStart));
 }
 
 void App::dropScratchView() {
@@ -2897,24 +2913,24 @@ void App::dropScratchView() {
 
     // The scope, exactly as it was. viewHistory_ is deliberately untouched: opening
     // the view added no entry to it (see beginScratchSequence).
-    const ScratchReturn& r = scratchReturn_;
-    viewSeqIdx_ = r.seqIdx;
-    viewProjId_ = r.projId;
-    viewProjSeqIds_ = r.projSeqIds;
+    const ScratchReturn& ret = scratchReturn_;
+    viewSeqIdx_ = ret.seqIdx;
+    viewProjId_ = ret.projId;
+    viewProjSeqIds_ = ret.projSeqIds;
     activeSequenceIdx_ =
-        std::clamp(r.activeSeqIdx, 0, std::max((int)timeline_.sequences.size() - 1, 0));
-    viewStart_ = r.viewStart;
-    framesPerPx_ = r.framesPerPx;
+        std::clamp(ret.activeSeqIdx, 0, std::max((int)timeline_.sequences.size() - 1, 0));
+    viewStart_ = ret.viewStart;
+    framesPerPx_ = ret.framesPerPx;
     viewInitialized_ = true;
     // The selection the view was opened from, minus anything deleted since. The
     // view's own clips have just gone with it, so nothing of it survives here.
     clearClipSelection();
-    for (int cid : r.selectedClipIds)
+    for (int cid : ret.selectedClipIds)
         if (clipById(cid))
             selectedClipIds_.push_back(cid);
-    if (clipById(r.selectedClipId))
-        selectedClipId_ = r.selectedClipId;
-    setPlayhead(r.playhead);
+    if (clipById(ret.selectedClipId))
+        selectedClipId_ = ret.selectedClipId;
+    setPlayhead(ret.playhead);
     hostSnapshotDirty_ = true; // re-push the project to spectators if hosting
 
     // The Layout and Stack stages exist only for the sequence just dropped, so
@@ -2943,28 +2959,28 @@ void App::setSequenceView(int seqIdx) {
     clearProjectView();     // a single sequence and a project scope are exclusive
     viewSeqIdx_ = seqIdx;   // -1 = All
     focusedShotId_ = -1;    // changing the view filter drops any shot focus
-    int fsi = filteredSeqIdx();
+    int filteredIdx = filteredSeqIdx();
     // Selecting a sequence in the view filter also makes it the active
     // sequence (where freshly added clips land).
-    if (fsi >= 0)
-        activeSequenceIdx_ = fsi;
+    if (filteredIdx >= 0)
+        activeSequenceIdx_ = filteredIdx;
     fitToFilteredSequence();
-    if (fsi >= 0) {
-        const Sequence& seq = timeline_.sequences[fsi];
-        int64_t a = 0, b = 0;
-        const bool hasSpan = timeline_.sequenceSpan(seq, a, b);
+    if (filteredIdx >= 0) {
+        const Sequence& seq = timeline_.sequences[filteredIdx];
+        int64_t seqStart = 0, seqEnd = 0;
+        const bool hasSpan = timeline_.sequenceSpan(seq, seqStart, seqEnd);
         // Scoping to the sequence the playhead is already inside is a narrowing of
         // the view, not a jump: leave the current clip and frame alone.
-        if (hasSpan && timeline_.playhead >= a && timeline_.playhead < b)
+        if (hasSpan && timeline_.playhead >= seqStart && timeline_.playhead < seqEnd)
             return;
         // Move playhead to the earliest shot in the sequence.
         // Fall back to the sequence's first clip frame if there are no shots.
-        int64_t target = a;
+        int64_t target = seqStart;
         bool foundShot = false;
         for (int shotId : seq.shotIds) {
-            if (const Shot* s = timeline_.findShotById(shotId)) {
-                if (!foundShot || s->timelineStart < target) {
-                    target = s->timelineStart;
+            if (const Shot* shot = timeline_.findShotById(shotId)) {
+                if (!foundShot || shot->timelineStart < target) {
+                    target = shot->timelineStart;
                     foundShot = true;
                 }
             }
@@ -2972,7 +2988,7 @@ void App::setSequenceView(int seqIdx) {
         // ...unless the playhead is already inside this sequence: picking the
         // sequence you are watching is a change of scope, not of position, so
         // the frame under the player stays put.
-        if (timeline_.playhead >= a && timeline_.playhead < b)
+        if (timeline_.playhead >= seqStart && timeline_.playhead < seqEnd)
             target = timeline_.playhead;
         setPlayhead(target);
     }
@@ -2992,41 +3008,41 @@ void App::setProjectView(int projId, std::vector<int> seqIds) {
     std::vector<int> idxs = viewSeqIndices();
     if (!idxs.empty())
         activeSequenceIdx_ = idxs.front();
-    int64_t a = 0, b = 0;
-    if (viewSpan(a, b)) {
-        fitRange(a, b);
-        setPlayhead(a);
+    int64_t spanStart = 0, spanEnd = 0;
+    if (viewSpan(spanStart, spanEnd)) {
+        fitRange(spanStart, spanEnd);
+        setPlayhead(spanStart);
     } else {
         fitView();
     }
 }
 
 Project::ViewState App::viewState() const {
-    Project::ViewState v;
+    Project::ViewState state;
     // A scratch view reports the scope it was opened from: the temporary sequence it
     // points at is not written, so storing its index would leave the file naming a
     // sequence that isn't there — and it would make merely looking at a source (or a
     // layout) read as an edit to the dirty signature, which is this same state hashed.
-    v.seqIdx = scratchActive() ? scratchReturn_.seqIdx : viewSeqIdx_;
-    v.projId = scratchActive() ? scratchReturn_.projId : viewProjId_;
-    return v;
+    state.seqIdx = scratchActive() ? scratchReturn_.seqIdx : viewSeqIdx_;
+    state.projId = scratchActive() ? scratchReturn_.projId : viewProjId_;
+    return state;
 }
 
 // Restore the scope a load handed back. Unlike the picker paths (setSequenceView /
 // setProjectView) the playhead stays where the file put it — only the horizontal
 // fit follows the scope. A project scope whose sequences are all gone, or a state
 // with no scope at all, falls back to the first sequence.
-void App::applyViewState(const Project::ViewState& v) {
+void App::applyViewState(const Project::ViewState& state) {
     viewHistory_.clear(); // a loaded scope is a starting point, not a step back from
     resetProjectScopeState();
     viewSeqIdx_ = 0;
-    if (v.projId >= 0) {
+    if (state.projId >= 0) {
         std::vector<int> seqIds;
-        for (const Sequence& s : timeline_.sequences)
-            if (s.projectId == v.projId)
-                seqIds.push_back(s.id);
+        for (const Sequence& seq : timeline_.sequences)
+            if (seq.projectId == state.projId)
+                seqIds.push_back(seq.id);
         if (!seqIds.empty()) {
-            viewProjId_ = v.projId;
+            viewProjId_ = state.projId;
             viewProjSeqIds_ = std::move(seqIds);
             viewSeqIdx_ = -1; // the two scopes are exclusive
             activeSequenceIdx_ = viewSeqIndices().front();
@@ -3034,16 +3050,16 @@ void App::applyViewState(const Project::ViewState& v) {
             return;
         }
     }
-    if (v.seqIdx >= 0 && v.seqIdx < (int)timeline_.sequences.size())
-        viewSeqIdx_ = v.seqIdx;
+    if (state.seqIdx >= 0 && state.seqIdx < (int)timeline_.sequences.size())
+        viewSeqIdx_ = state.seqIdx;
     activeSequenceIdx_ = std::max(viewSeqIdx_, 0);
     fitToFilteredSequence();
 }
 
 std::vector<int> App::viewSeqIndices() const {
     std::vector<int> out;
-    if (int fsi = filteredSeqIdx(); fsi >= 0) {
-        out.push_back(fsi);
+    if (int filteredIdx = filteredSeqIdx(); filteredIdx >= 0) {
+        out.push_back(filteredIdx);
         return out;
     }
     if (projScoped()) {
@@ -3067,19 +3083,19 @@ void App::forEachViewClip(const std::function<void(const Clip&)>& fn) const {
         timeline_.forEachClip(fn);
         return;
     }
-    for (int si : viewSeqIndices())
-        for (const Clip& c : timeline_.sequences[si].clips)
-            fn(c);
+    for (int seqIdx : viewSeqIndices())
+        for (const Clip& clip : timeline_.sequences[seqIdx].clips)
+            fn(clip);
 }
 
 bool App::viewSpan(int64_t& start, int64_t& end) const {
     bool any = false;
-    for (int si : viewSeqIndices()) {
-        int64_t a = 0, b = 0;
-        if (!timeline_.sequenceSpan(timeline_.sequences[si], a, b))
+    for (int seqIdx : viewSeqIndices()) {
+        int64_t seqStart = 0, seqEnd = 0;
+        if (!timeline_.sequenceSpan(timeline_.sequences[seqIdx], seqStart, seqEnd))
             continue;
-        start = any ? std::min(start, a) : a;
-        end   = any ? std::max(end, b) : b;
+        start = any ? std::min(start, seqStart) : seqStart;
+        end   = any ? std::max(end, seqEnd) : seqEnd;
         any = true;
     }
     return any;
@@ -3102,26 +3118,26 @@ bool App::scopeRange(int64_t& start, int64_t& end) const {
 void App::playbackRange(int64_t& lo, int64_t& hi) const {
     lo = std::min(timeline_.inPoint, timeline_.effectiveOut());
     hi = std::max(timeline_.inPoint, timeline_.effectiveOut());
-    int64_t a = 0, b = 0;
-    if (scopeRange(a, b)) {
-        const int64_t last = std::max(a, b - 1); // empty scope: the insert point itself
-        lo = std::clamp(lo, a, last);
-        hi = std::clamp(hi, a, last);
+    int64_t scopeStart = 0, scopeEnd = 0;
+    if (scopeRange(scopeStart, scopeEnd)) {
+        const int64_t last = std::max(scopeStart, scopeEnd - 1); // empty scope: the insert point itself
+        lo = std::clamp(lo, scopeStart, last);
+        hi = std::clamp(hi, scopeStart, last);
     }
 }
 
 std::string App::sequenceViewLabel() const {
-    if (int fsi = filteredSeqIdx(); fsi >= 0)
-        return timeline_.sequences[fsi].name;
-    if (const SourceProject* p = timeline_.findProjectById(viewProjId_))
-        return p->name;
+    if (int filteredIdx = filteredSeqIdx(); filteredIdx >= 0)
+        return timeline_.sequences[filteredIdx].name;
+    if (const SourceProject* proj = timeline_.findProjectById(viewProjId_))
+        return proj->name;
     return "All";
 }
 
 void App::fitToFilteredSequence() {
-    int64_t a = 0, b = 0;
-    if (!viewAll() && viewSpan(a, b))
-        fitRange(a, b);
+    int64_t start = 0, end = 0;
+    if (!viewAll() && viewSpan(start, end))
+        fitRange(start, end);
     else
         fitView();
 }
@@ -3213,13 +3229,13 @@ static void buildFrameSnapshot(const Timeline& tl,
                                 std::vector<ExportDialog::FrameSource>& out) {
     int64_t len = tl.length();
     out.resize((size_t)std::max<int64_t>(len, 0));
-    for (int64_t f = 0; f < len; ++f) {
-        const Clip* c = clipAt(f);
-        if (!c || c->mediaId.empty()) continue;
-        auto m = tl.findMediaById(c->mediaId);
-        if (!m) continue;
-        out[f] = { m->path(), m->type(),
-                   c->sourceOffset + (f - c->timelineStart) };
+    for (int64_t frame = 0; frame < len; ++frame) {
+        const Clip* clip = clipAt(frame);
+        if (!clip || clip->mediaId.empty()) continue;
+        auto media = tl.findMediaById(clip->mediaId);
+        if (!media) continue;
+        out[frame] = { media->path(), media->type(),
+                       clip->sourceOffset + (frame - clip->timelineStart) };
     }
 }
 
@@ -3228,40 +3244,40 @@ std::map<std::string, OcioManager::CpuTransform> App::exportColorTransforms() {
     if (!ocio_.isReady() || !ocio_.isEnabled())
         return out;
     for (auto& kv : timeline_.media) {
-        auto& m = kv.second;
-        if (!m || m->type() == ClipType::Audio)
+        auto& media = kv.second;
+        if (!media || media->type() == ClipType::Audio)
             continue;
-        std::string cs = mediaColorSpace(*m);
-        if (cs.empty())
+        std::string colorSpace = mediaColorSpace(*media);
+        if (colorSpace.empty())
             continue;
         // No exposure: the export writes the display rendering, not the grade. The
         // grade is a review control and has never been baked into an export; gain
         // is part of it, so it stays out here too.
-        out.emplace(m->path(), ocio_.cpuTransformFor(cs, 0.0f));
+        out.emplace(media->path(), ocio_.cpuTransformFor(colorSpace, 0.0f));
     }
     return out;
 }
 
 void App::openExportMovie() {
     // Determine output resolution from the clip under the playhead (or first clip).
-    int w = 0, h = 0;
-    const Clip* c = getTopMostClipAtFrame(timeline_.playhead);
-    if (!c) {
+    int outW = 0, outH = 0;
+    const Clip* clip = getTopMostClipAtFrame(timeline_.playhead);
+    if (!clip) {
         // Fall back to the first clip in the timeline.
-        timeline_.forEachClip([&](const Clip& cl) {
-            if (!w) {
-                auto m = timeline_.findMediaById(cl.mediaId);
-                if (m) { auto info = m->info(); w = info.width; h = info.height; }
+        timeline_.forEachClip([&](const Clip& timelineClip) {
+            if (!outW) {
+                auto media = timeline_.findMediaById(timelineClip.mediaId);
+                if (media) { auto info = media->info(); outW = info.width; outH = info.height; }
             }
         });
     } else {
-        auto m = timeline_.findMediaById(c->mediaId);
-        if (m) { auto info = m->info(); w = info.width; h = info.height; }
+        auto media = timeline_.findMediaById(clip->mediaId);
+        if (media) { auto info = media->info(); outW = info.width; outH = info.height; }
     }
 
     exportDialog_.open(ExportDialog::Mode::Movie,
                        timeline_.length(), timeline_.inPoint, timeline_.outPoint,
-                       timeline_.fps, w, h, window_);
+                       timeline_.fps, outW, outH, window_);
 
     std::vector<ExportDialog::FrameSource> frames;
     buildFrameSnapshot(timeline_, [this](int64_t f) { return getTopMostClipAtFrame(f); }, frames);
@@ -3270,23 +3286,23 @@ void App::openExportMovie() {
 }
 
 void App::openExportImageSequence() {
-    int w = 0, h = 0;
-    const Clip* c = getTopMostClipAtFrame(timeline_.playhead);
-    if (!c) {
-        timeline_.forEachClip([&](const Clip& cl) {
-            if (!w) {
-                auto m = timeline_.findMediaById(cl.mediaId);
-                if (m) { auto info = m->info(); w = info.width; h = info.height; }
+    int outW = 0, outH = 0;
+    const Clip* clip = getTopMostClipAtFrame(timeline_.playhead);
+    if (!clip) {
+        timeline_.forEachClip([&](const Clip& timelineClip) {
+            if (!outW) {
+                auto media = timeline_.findMediaById(timelineClip.mediaId);
+                if (media) { auto info = media->info(); outW = info.width; outH = info.height; }
             }
         });
     } else {
-        auto m = timeline_.findMediaById(c->mediaId);
-        if (m) { auto info = m->info(); w = info.width; h = info.height; }
+        auto media = timeline_.findMediaById(clip->mediaId);
+        if (media) { auto info = media->info(); outW = info.width; outH = info.height; }
     }
 
     exportDialog_.open(ExportDialog::Mode::ImageSequence,
                        timeline_.length(), timeline_.inPoint, timeline_.outPoint,
-                       timeline_.fps, w, h, window_);
+                       timeline_.fps, outW, outH, window_);
 
     std::vector<ExportDialog::FrameSource> frames;
     buildFrameSnapshot(timeline_, [this](int64_t f) { return getTopMostClipAtFrame(f); }, frames);
@@ -3325,8 +3341,8 @@ void App::onMediaChosen(void* userdata, const char* const* filelist, int) {
     if (!filelist || !filelist[0]) // null => error; empty first entry => cancelled
         return;
     std::lock_guard<std::mutex> lock(self->dialogMutex_);
-    for (const char* const* p = filelist; *p; ++p)
-        self->pendingMediaPaths_.push_back(*p);
+    for (const char* const* path = filelist; *path; ++path)
+        self->pendingMediaPaths_.push_back(*path);
 }
 
 void App::onReplaceSourceChosen(void* userdata, const char* const* filelist, int) {
@@ -3431,12 +3447,12 @@ void App::processPendingDialogs() {
         // media kind (track -1), at the playhead, laying selections end-to-end.
         dropInsertTrack_ = -1;
         dropInsertFrame_ = timeline_.playhead;
-        for (const auto& p : mediaPaths) {
+        for (const auto& path : mediaPaths) {
             std::error_code ec;
-            if (fs::is_directory(p, ec)) {
-                addMediaFolder(p);
+            if (fs::is_directory(path, ec)) {
+                addMediaFolder(path);
             } else {
-                int64_t end = addMediaFileAt(p, dropInsertTrack_,
+                int64_t end = addMediaFileAt(path, dropInsertTrack_,
                                              dropInsertFrame_);
                 if (end >= 0)
                     dropInsertFrame_ = end;
