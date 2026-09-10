@@ -63,31 +63,40 @@ def _dbg(msg):
 
 # ─────────────────── config resolution ───────────────────
 
-def _preferences_path():
-    """Resolve jplay_preferences.conf the way the app documents it:
-        1. $JPLAY_PREFERENCES                       explicit override
+def _preferences_paths():
+    """The jplay_preferences.conf files to load, weakest first, matching
+    Preferences.h: every tier is read and merged option by option, so a higher
+    tier overrides only the options it names.
+        1. <exe dir>/jplay_preferences.conf         shipped default (weakest)
         2. ~/.jplay/jplay_preferences.conf          deployed user override
-        3. <exe dir>/jplay_preferences.conf         shipped default
-    Step 3 needs the executable's directory, which only the host knows; $JPLAY_EXE
+        3. $JPLAY_PREFERENCES                       explicit override (strongest)
+    Step 1 needs the executable's directory, which only the host knows; $JPLAY_EXE
     supplies it out-of-process (the MCP plugin sets it), and failing that we fall
-    back to the repo root, since this file lives in <root>/python."""
-    env = os.environ.get("JPLAY_PREFERENCES")
-    if env:
-        return env
+    back to the repo root, since this file lives in <root>/python.
+
+    Only existing files are listed. The shipped path is listed even when absent,
+    so a caller reporting "no preferences found" can still name a concrete file."""
+    exe = os.environ.get("JPLAY_EXE")
+    if exe:
+        shipped = os.path.join(os.path.dirname(exe), "jplay_preferences.conf")
+    else:
+        here = os.path.dirname(os.path.abspath(__file__))
+        shipped = os.path.join(os.path.dirname(here), "jplay_preferences.conf")
+
+    paths = [shipped]
     user_dir = nc._user_config_dir()
     user = os.path.join(user_dir, "jplay_preferences.conf") if user_dir else ""
     if user and os.path.isfile(user):
-        return user
-    exe = os.environ.get("JPLAY_EXE")
-    if exe:
-        candidate = os.path.join(os.path.dirname(exe), "jplay_preferences.conf")
-        if os.path.isfile(candidate):
-            return candidate
-    here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(os.path.dirname(here), "jplay_preferences.conf")
+        paths.append(user)
+    env = os.environ.get("JPLAY_PREFERENCES")
+    if env and os.path.isfile(env):
+        paths.append(env)
+    return paths
 
 
 def _read_conf(path):
+    """Parse one conf file, or a list of them merged option by option with later
+    files winning (configparser.read's own semantics). Missing files are skipped."""
     cfg = configparser.ConfigParser()
     try:
         cfg.read(path)
@@ -203,7 +212,7 @@ def _shared_projects():
     work-queue thread under a wall-clock budget because std::filesystem::exists
     can hang forever on a dead mount; a synchronous stat here would hang the
     caller instead. Entries are candidates — reaching one is what confirms it."""
-    cfg = _read_conf(_preferences_path())
+    cfg = _read_conf(_preferences_paths())
     ini = cfg.get("shared_projects", "projects_ini_config", fallback="").strip()
     tmpl = cfg.get("shared_projects", "project_otio_path", fallback="").strip()
     if not ini or not tmpl or not os.path.isfile(ini):

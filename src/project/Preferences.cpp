@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -30,24 +31,33 @@ std::string envVar(const char* name) {
 #endif
 }
 
-// Resolve the preferences file to load; see Preferences.h for the order.
-std::string configPath() {
-    std::string env = envVar("JPLAY_PREFERENCES");
-    if (!env.empty())
-        return env;
+// The preferences files to load, weakest first; see Preferences.h for the order.
+// Only files that exist are listed, so an absent tier contributes nothing and
+// leaves the tiers below it in force.
+std::vector<std::string> configPaths() {
+    std::vector<std::string> paths;
+    std::error_code ec;
+
+    const char* base = SDL_GetBasePath(); // exe dir, trailing sep; do not free
+    std::string shipped = std::string(base ? base : "") + kFileName;
+    if (fs::is_regular_file(shipped, ec))
+        paths.push_back(shipped);
 
     std::string home = envVar("USERPROFILE");
     if (home.empty())
         home = envVar("HOME");
     if (!home.empty()) {
         fs::path user = fs::path(home) / ".jplay" / kFileName;
-        std::error_code ec;
         if (fs::is_regular_file(user, ec))
-            return user.string();
+            paths.push_back(user.string());
     }
 
-    const char* base = SDL_GetBasePath(); // exe dir, trailing sep; do not free
-    return std::string(base ? base : "") + kFileName;
+    // Last, so its keys beat both tiers below.
+    std::string env = envVar("JPLAY_PREFERENCES");
+    if (!env.empty() && fs::is_regular_file(env, ec))
+        paths.push_back(env);
+
+    return paths;
 }
 
 // section -> (key -> value). Trimmed of surrounding whitespace.
@@ -61,28 +71,37 @@ std::string trim(const std::string& s) {
     return s.substr(b, e - b + 1);
 }
 
+// Merge one file into `c`, option by option: an option the file sets overwrites
+// whatever was there, one it does not mention is left alone. Called weakest file
+// first, so a later file overrides only the keys it actually names — a user file
+// holding a single option keeps every other value from the shipped default.
+void parseInto(Config& c, const std::string& path) {
+    std::ifstream is(path);
+    std::string line, section;
+    while (std::getline(is, line)) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        std::string t = trim(line);
+        if (t.empty() || t[0] == '#' || t[0] == ';')
+            continue;
+        if (t[0] == '[') {
+            size_t close = t.find(']');
+            if (close != std::string::npos)
+                section = trim(t.substr(1, close - 1));
+            continue;
+        }
+        size_t eq = t.find('=');
+        if (eq == std::string::npos || section.empty())
+            continue;
+        c[section][trim(t.substr(0, eq))] = trim(t.substr(eq + 1));
+    }
+}
+
 const Config& config() {
     static const Config cfg = [] {
         Config c;
-        std::ifstream is(configPath());
-        std::string line, section;
-        while (std::getline(is, line)) {
-            if (!line.empty() && line.back() == '\r')
-                line.pop_back();
-            std::string t = trim(line);
-            if (t.empty() || t[0] == '#' || t[0] == ';')
-                continue;
-            if (t[0] == '[') {
-                size_t close = t.find(']');
-                if (close != std::string::npos)
-                    section = trim(t.substr(1, close - 1));
-                continue;
-            }
-            size_t eq = t.find('=');
-            if (eq == std::string::npos || section.empty())
-                continue;
-            c[section][trim(t.substr(0, eq))] = trim(t.substr(eq + 1));
-        }
+        for (const std::string& path : configPaths())
+            parseInto(c, path);
         return c;
     }();
     return cfg;

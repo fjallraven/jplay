@@ -3,11 +3,15 @@
 #include <string>
 
 // Reads jplay_preferences.conf, the app-wide preferences file (INI-style:
-// [section] headers with `key = value` options). The file is loaded once and
-// cached on first access. Resolution order (first existing file wins):
-//   1. $JPLAY_PREFERENCES                 explicit override
+// [section] headers with `key = value` options). Loaded once and cached on first
+// access. All three tiers below are read and merged option by option, weakest
+// first, so a higher tier overrides only the options it actually names:
+//   1. <exe dir>/jplay_preferences.conf   shipped default (weakest)
 //   2. ~/.jplay/jplay_preferences.conf    deployed user override
-//   3. <exe dir>/jplay_preferences.conf   shipped default
+//   3. $JPLAY_PREFERENCES                 explicit override (strongest)
+// A user file therefore need only carry the options it changes; everything it
+// omits keeps the shipped value. Missing files are skipped, so a fresh install
+// with no user file behaves exactly as the shipped default alone.
 namespace Preferences {
 
 // Value of `key` under `[section]`, or an empty string if the section/key is

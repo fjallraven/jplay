@@ -27,7 +27,7 @@ color_pipeline = ocio
 In order, first hit is used:
 
 1. **`$OCIO`** — environment variable.
-2. Resolve ocio config from filepath
+2. Resolve ocio config from media filepath
 
    Add ocio section to jplay_preferences.conf, for example:
 

@@ -355,6 +355,74 @@ def test_list_projects():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_preferences_cascade():
+    print("test_preferences_cascade")
+    home = tempfile.mkdtemp()
+    exe_dir = tempfile.mkdtemp()
+    saved = {k: os.environ.get(k)
+             for k in ("USERPROFILE", "HOME", "JPLAY_EXE", "JPLAY_PREFERENCES")}
+    try:
+        # The shipped default, standing in for <exe dir>/jplay_preferences.conf.
+        with open(os.path.join(exe_dir, "jplay_preferences.conf"), "w",
+                  encoding="utf-8") as f:
+            f.write("[timeline]\nclip_metadata_label = {department}\n")
+            f.write("[control]\nenabled = false\nport = 52154\n")
+        os.environ["JPLAY_EXE"] = os.path.join(exe_dir, "jplay.exe")
+        os.environ["USERPROFILE"] = home
+        os.environ["HOME"] = home
+        os.environ.pop("JPLAY_PREFERENCES", None)
+
+        cfg = disc._read_conf(disc._preferences_paths())
+        check("shipped default read when it is the only tier",
+              cfg.get("control", "port") == "52154",
+              cfg.get("control", "port", fallback="<missing>"))
+
+        # A user file naming a single option overrides only that option.
+        conf_dir = os.path.join(home, ".jplay")
+        os.makedirs(conf_dir, exist_ok=True)
+        with open(os.path.join(conf_dir, "jplay_preferences.conf"), "w",
+                  encoding="utf-8") as f:
+            f.write("[control]\nenabled = true\n")
+        cfg = disc._read_conf(disc._preferences_paths())
+        check("user file overrides the option it names",
+              cfg.get("control", "enabled") == "true",
+              cfg.get("control", "enabled", fallback="<missing>"))
+        check("options the user file omits keep the shipped value",
+              cfg.get("control", "port") == "52154",
+              cfg.get("control", "port", fallback="<missing>"))
+        check("sections the user file omits survive intact",
+              cfg.get("timeline", "clip_metadata_label") == "{department}",
+              cfg.get("timeline", "clip_metadata_label", fallback="<missing>"))
+
+        # $JPLAY_PREFERENCES is the strongest tier, and also merges.
+        env_conf = os.path.join(exe_dir, "explicit.conf")
+        with open(env_conf, "w", encoding="utf-8") as f:
+            f.write("[control]\nport = 60001\n")
+        os.environ["JPLAY_PREFERENCES"] = env_conf
+        cfg = disc._read_conf(disc._preferences_paths())
+        check("$JPLAY_PREFERENCES wins for the option it names",
+              cfg.get("control", "port") == "60001",
+              cfg.get("control", "port", fallback="<missing>"))
+        check("$JPLAY_PREFERENCES leaves the user tier in force elsewhere",
+              cfg.get("control", "enabled") == "true",
+              cfg.get("control", "enabled", fallback="<missing>"))
+
+        # A path that does not exist must not wipe the tiers below it.
+        os.environ["JPLAY_PREFERENCES"] = os.path.join(exe_dir, "absent.conf")
+        cfg = disc._read_conf(disc._preferences_paths())
+        check("missing $JPLAY_PREFERENCES file falls through",
+              cfg.get("control", "port") == "52154",
+              cfg.get("control", "port", fallback="<missing>"))
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(exe_dir, ignore_errors=True)
+
+
 def main():
     tests = [
         test_describe_convention,
@@ -368,6 +436,7 @@ def main():
         test_find_media_reports_unsupported_selector,
         test_version_provider_override,
         test_list_projects,
+        test_preferences_cascade,
     ]
     for t in tests:
         t()
