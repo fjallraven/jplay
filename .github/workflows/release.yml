@@ -58,8 +58,49 @@ jobs:
           printf 'Building **%s** (release=%s, prerelease=%s)\n' \
             "$version" "$is_release" "$prerelease" >> "$GITHUB_STEP_SUMMARY"
 
+  # The naming/discovery layer is plain Python shipped as-is into the bundle, so
+  # it is worth checking before a release is cut and costs seconds. The suite is
+  # stdlib-only and stubs the embedded `jplay` module itself, so it needs neither
+  # a build nor the interpreter vcpkg resolves for the bundle.
+  tests:
+    name: python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run python tests
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          tests=(tests/test_*.py)
+          if [ ${#tests[@]} -eq 0 ]; then
+            echo "No tests/test_*.py found"; exit 1
+          fi
+          # Every suite runs even after one fails, so a red build names all of
+          # them rather than only the first. Each is its own main() returning
+          # non-zero on failure; the statuses are collected and re-raised here.
+          failed=()
+          for t in "${tests[@]}"; do
+            echo ""
+            echo "===== $t ====="
+            if ! python "$t"; then
+              failed+=("$t")
+            fi
+          done
+          echo ""
+          if [ ${#failed[@]} -ne 0 ]; then
+            echo "FAILED: ${failed[*]}" >> "$GITHUB_STEP_SUMMARY"
+            echo "FAILED: ${failed[*]}"
+            exit 1
+          fi
+          echo "All ${#tests[@]} python suites passed." >> "$GITHUB_STEP_SUMMARY"
+
   build:
-    needs: version
+    needs: [version, tests]
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
