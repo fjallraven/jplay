@@ -12,6 +12,15 @@ movies files.
 - Extended desktop, NDI and DeckLink SDI support
 - Local control channel (JSON over loopback TCP) for MCP servers etc
 
+## Screenshots
+
+<table>
+<tr>
+<td align="center">Timeline view<br><img src="docs/images/timeline.png" width="400"></td>
+<td align="center">Compact player mode<br><img src="docs/images/compact_player.png" width="400"></td>
+</tr>
+</table>
+
 ## Colour management (OCIO)
 
 OCIO is opt-in. By defualt jplay starts in the built-in scene-linear → sRGB pipeline.
