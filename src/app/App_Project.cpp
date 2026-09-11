@@ -3078,6 +3078,29 @@ std::vector<int> App::viewSeqIndices() const {
     return out;
 }
 
+// Whether the shot bar has anything to say in the current view: at least one
+// shot that is both drawn here and named. Scoped the way the bar's draw pass is
+// (see App_Timeline.cpp) - the All view shows every shot, a scope only the ones
+// its sequences own - so a scope whose shots are all nameless collapses the bar
+// rather than leaving an empty strip.
+bool App::viewHasNamedShots() const {
+    if (viewAll()) {
+        return std::any_of(timeline_.shots.begin(), timeline_.shots.end(),
+                           [](const Shot& s) { return !s.name.empty(); });
+    }
+    const std::vector<int> seqs = viewSeqIndices();
+    for (const Shot& shot : timeline_.shots) {
+        if (shot.name.empty())
+            continue;
+        for (int seqIdx : seqs) {
+            const Sequence& seq = timeline_.sequences[seqIdx];
+            if (std::find(seq.shotIds.begin(), seq.shotIds.end(), shot.id) != seq.shotIds.end())
+                return true;
+        }
+    }
+    return false;
+}
+
 void App::forEachViewClip(const std::function<void(const Clip&)>& fn) const {
     if (viewAll()) {
         timeline_.forEachClip(fn);

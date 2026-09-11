@@ -2071,6 +2071,9 @@ private:
     // The sequence indices the current view covers: the filtered one, the scoped
     // project's (in timeline order), or all of them.
     std::vector<int> viewSeqIndices() const;
+    // Whether any shot the current view draws carries a name; drives whether the
+    // shot bar takes vertical space at all.
+    bool viewHasNamedShots() const;
     // fn(const Clip&) over the clips of every in-view sequence.
     void forEachViewClip(const std::function<void(const Clip&)>& fn) const;
     // Absolute [start,end) the in-view sequences span; false when they hold no clips.

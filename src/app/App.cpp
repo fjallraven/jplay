@@ -3680,11 +3680,11 @@ void App::computeLayout() {
     // Compact mode drops both bars along with the track stack below them, leaving
     // the info bar, ruler and cache strip.
     float seqH  = (!compactTimeline_ && timeline_.sequences.size() > 1) ? kSeqBarH : 0.0f;
-    // An unnamed shot draws a blank block, so a project whose shots are all
-    // nameless leaves the bar reading as an empty strip: drop it as well.
-    const bool namedShots = std::any_of(timeline_.shots.begin(), timeline_.shots.end(),
-                                        [](const Shot& s) { return !s.name.empty(); });
-    float shotH = (compactTimeline_ || !namedShots) ? 0.0f : kShotBarH;
+    // An unnamed shot draws a blank block, so a view whose shots are all nameless
+    // leaves the bar reading as an empty strip: drop it as well. Asked of the
+    // view, not the project, so a scope holding only nameless shots collapses the
+    // bar even when some other sequence names its own.
+    float shotH = (compactTimeline_ || !viewHasNamedShots()) ? 0.0f : kShotBarH;
     // ... and gains the flattened clip band in their place, the cache strip's twin:
     // with the rows gone it is the only reading of where the clips and cuts are.
     float clipStripH = compactTimeline_ ? kCacheStripH : 0.0f;
