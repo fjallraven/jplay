@@ -2397,6 +2397,15 @@ private:
     // A clip's shot name: its linked Shot's name (set by discovery/import) if any,
     // else the resolved shot cached on its media.
     std::string shotNameOfClip(const Clip& clip) const;
+    // What the playhead is on right now, as (shot name, media path, clip-local
+    // source frame): the anchor the "Open …" actions carry across a view change so
+    // restoreViewPlayhead can land on the same frame of the same shot. The shot name
+    // is the half that survives a change of version, and a source view's clip has
+    // none of its own — it is one file opened on its own, linked to no shot — so
+    // the naming convention is asked for it here and the answer cached back on the
+    // media, as showInSequence does. Everything empty when no clip is under the
+    // playhead.
+    void captureViewAnchor(std::string& shotName, std::string& mediaPath, int64_t& srcFrame);
     // Put the playhead back on the shot it was on before a view change (both
     // setProjectView and scopeToSequence land it on the scope's first frame): the
     // clip in the current view whose media is `mediaPath`, else one whose shot is

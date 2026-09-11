@@ -867,17 +867,23 @@ void App::showInSequence() {
         for (Clip& clip : seq.clips)
             if (shotName.empty() || shotNameOfClip(clip) == shotName) { match = &clip; break; }
         if (match) {
-            const int64_t tgtStart = match->timelineStart;
-            const int64_t tgtOff   = match->sourceOffset;
-            const int64_t tgtDur   = match->duration;
+            const int matchId = match->id;
             auto matchMedia = timeline_.findMediaById(match->mediaId);
             if (!matchMedia || matchMedia->resolvedPath() != openedPath) {
                 replaceClipMedia(*match, openedPath); // keeps the clip's position
                 if (gridView()) startClipThumbnails(); // new source -> regenerate grid thumbnail
             }
-            int64_t targetFrame = std::clamp<int64_t>(tgtStart + (curSrcFrame - tgtOff),
-                                                      tgtStart, tgtStart + tgtDur - 1);
-            setPlayhead(targetFrame);
+            // Re-read after the swap rather than before it: replaceClipMedia keeps the
+            // clip's start and in-point but re-fits its out to what the new media
+            // supplies (and ripples the clips behind it), so a length taken ahead of
+            // it would clamp the frame below against a span the clip no longer has.
+            if (const Clip* tgt = clipById(matchId)) {
+                const int64_t tgtStart = tgt->timelineStart;
+                const int64_t tgtOff   = tgt->sourceOffset;
+                const int64_t tgtDur   = tgt->duration;
+                setPlayhead(std::clamp<int64_t>(tgtStart + (curSrcFrame - tgtOff),
+                                                tgtStart, tgtStart + tgtDur - 1));
+            }
         }
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "[jplay] Show in Sequence: matched existing sequence[%d] name=\"%s\" for "
@@ -925,6 +931,14 @@ void App::showInSequence() {
                 setStatus("SHOW IN SEQUENCE: PROJECT LOAD FAILED", 5000);
                 return;
             }
+            // Leave a source view here, before the graft rather than as a side effect
+            // of scopeToSequence below: the scratch sequence is the last in the vector
+            // and everything that drops it relies on that, but graftOtioSequence
+            // appends past it, which would leave newIdx pointing one slot beyond the
+            // grafted sequence once the scratch was erased from under it. Dropping on
+            // this side of the two returns above also leaves the source up when the
+            // load was cancelled or failed, which is the point of those.
+            dropScratchView();
             int newIdx = graftOtioSequence(*src, sequenceName, sceneName, shotName, openedPath);
             if (newIdx < 0) {
                 setStatus("NO SHOTS FOUND FOR SEQUENCE \"" + sceneName + "\"", 5000);
@@ -1205,6 +1219,47 @@ std::string App::shotNameOfClip(const Clip& clip) const {
     return {};
 }
 
+// The anchor the two "Open …" actions carry across the view change, so the
+// sequence or project they open lands on the frame being looked at rather than on
+// its own first frame. Both halves are needed: the media path is the exact match,
+// and the shot name is what still matches when the target's clip sits on a
+// different version than the one under review.
+//
+// A clip of the cut names its shot already (its linked Shot, or the shot its media
+// was tagged with). A source view's clip names neither — it is one file opened on
+// its own, linked to no shot, and its media carries the naming convention's values
+// only if it happened to be added while the interpreter was up — so the convention
+// is asked for the shot here, exactly as showInSequence does, and the answer cached
+// back on the media so the next action doesn't pay for it again.
+void App::captureViewAnchor(std::string& shotName, std::string& mediaPath, int64_t& srcFrame) {
+    shotName.clear();
+    mediaPath.clear();
+    srcFrame = 0;
+    const Clip* active = getTopMostClipAtFrame(timeline_.playhead);
+    if (!active)
+        return;
+    // Clip-local source frame. A source view holds the whole media from its first
+    // frame (sourceOffset 0) and the target's clip is a cut of that same media, so
+    // both are offsets into one frame space and the mapping back is exact.
+    srcFrame = active->sourceOffset + (timeline_.playhead - active->timelineStart);
+    shotName = shotNameOfClip(*active);
+    auto media = timeline_.findMediaById(active->mediaId);
+    if (!media)
+        return;
+    mediaPath = media->resolvedPath();
+    if (!shotName.empty() || mediaPath.empty())
+        return;
+    std::string ctxScene, ctxShot, ctxDept;
+    if (jplayGetPathContext(mediaPath, ctxScene, ctxShot, ctxDept) && !ctxShot.empty()) {
+        shotName = ctxShot;
+        media->setMetaValue("shot", ctxShot);
+    } else {
+        // Only the path match is left; a target on another version won't be found.
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "[jplay] view anchor: no shot resolved for \"%s\"", mediaPath.c_str());
+    }
+}
+
 void App::restoreViewPlayhead(const std::string& shotName, const std::string& mediaPath,
                               int64_t srcFrame) {
     if (shotName.empty() && mediaPath.empty())
@@ -1252,15 +1307,11 @@ void App::restoreViewPlayhead(const std::string& shotName, const std::string& me
 void App::openResolvedProject(const std::string& projPath, const std::string& projectName) {
     // The clip under the playhead now, as (media path, shot name, clip-local source
     // frame) — the clip itself can't be held onto across the graft, which may
-    // reallocate the sequences' clip vectors.
+    // reallocate the sequences' clip vectors. A source view answers this too: the
+    // anchor resolves the shot off the path when the clip names none.
     std::string curPath, curShot;
     int64_t curSrcFrame = 0;
-    if (const Clip* active = getTopMostClipAtFrame(timeline_.playhead)) {
-        curShot     = shotNameOfClip(*active);
-        curSrcFrame = active->sourceOffset + (timeline_.playhead - active->timelineStart);
-        if (auto media = timeline_.findMediaById(active->mediaId))
-            curPath = media->resolvedPath();
-    }
+    captureViewAnchor(curShot, curPath, curSrcFrame);
 
     // Already read whole this session: everything it holds is loaded, so this is
     // purely a change of view and the file doesn't need re-reading. Matched on the
@@ -1300,6 +1351,13 @@ void App::openResolvedProject(const std::string& projPath, const std::string& pr
                 setStatus("OPEN PROJECT: LOAD FAILED", 5000);
                 return;
             }
+            // Leave a source view before grafting, for the reason showInSequence
+            // gives: the scratch sequence has to stay last in the vector, and the
+            // grafts below append past it. Left to setProjectView at the end it would
+            // be erased out of the middle instead, repacking every sequence grafted
+            // behind it. Dropping it after the two returns above keeps the source up
+            // on a cancelled or failed load.
+            dropScratchView();
             // Recorded before the graft loop: the project file was read whole, so its
             // header is earned even when every sequence in it was already loaded
             // (grafted == 0 below) — otherwise the popup would keep offering to open
