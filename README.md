@@ -21,32 +21,35 @@ movies files.
 </tr>
 </table>
 
-## Colour management (OCIO)
+## Documentation
 
-OCIO is opt-in. By defualt jplay starts in the built-in scene-linear → sRGB pipeline.
-To switch to OCIO open up settings and enable under "Color Management".
-You can also update jplay_preferences.conf:
+**Start here**
 
-```
-[color_management]
-color_pipeline = ocio
-```
-### How a OCIO config path is resolved
+- [Getting started](docs/GETTING_STARTED.md) — supported formats, timecode vs
+  frames, the naming convention, and building a timeline from a directory
+- [Mouse and keyboard shortcuts](docs/SHORTCUTS.md)
 
-In order, first hit is used:
+**Review**
 
-1. **`$OCIO`** — environment variable.
-2. Resolve ocio config from media filepath
+- [Presentation mode](docs/PRESENTATION_MODE.md) — fullscreen, review monitor,
+  NDI / SDI output, burn-in, letterbox
+- [Sync session](docs/SYNC_SESSION.md) — LAN review, one host and many spectators
+- [Draw tool](docs/DRAW_TOOL.md) — pencil annotations
+- [Proxy modes](docs/PROXY_MODES.md) — the global media-representation switch
 
-   Add ocio section to jplay_preferences.conf, for example:
+**Colour**
 
-```ini
-[ocio]
-source_regex = /share/project/(?P<project_name>[^/]+)/
-ocio         = /share/project/{project_name}/config.ocio
-```
+- [Colour management](docs/COLOUR_MANAGEMENT.md) — OCIO, and how a config is resolved
+- [Colour tools](docs/COLOR_TOOLS.md) — grading, tech check, pixel inspector
+- [Colour inspect](docs/COLOR_INSPECT.md) — what is actually on screen, and where
 
-3. **OCIO built-in cg config**
+**Configuring and extending**
+
+- [Config files](docs/CONFIG_FILES.md) — `jplay_preferences.conf`, `naming_convention.conf`
+- [Python](docs/PYTHON.md) — `jplay_init.py`, the callbacks, site overrides
+- [MCP control channel](docs/MCP_CONTROL_CHANNEL.md) — driving jplay from another process
+- [Building the player](docs/BUILDING.md)
+- [Adding a panel](docs/ADDING_A_PANEL.md)
 
 ## Dependencies
 
