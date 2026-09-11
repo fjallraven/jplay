@@ -1165,7 +1165,7 @@ private:
     syncreview::Session syncSession_;
     bool hoveredSessionBtn_ = false;
     TextInput sessionUserFld_;         // username used when hosting / joining
-    TextInput sessionHostFld_;         // manual host IP[:port] for Join
+    TextInput sessionHostFld_;         // manual host name or IP[:port] for Join
     TextInput sessionPortFld_;         // TCP port this machine hosts on
     // Master switch for all sync-review networking, persisted in settings.conf and
     // OFF by default: while it is off no socket is opened (no discovery listener,
@@ -1245,7 +1245,7 @@ private:
     bool sessionHandleEvent(const SDL_Event& e); // returns true if consumed
     void refreshHostSnapshot();        // (re)serialize the current project for joiners
     void startJoinFromField();         // parse the manual host field and connect
-    void joinHost(const std::string& ip, uint16_t port); // connect as spectator
+    void joinHost(const std::string& host, uint16_t port); // connect as spectator
     void leaveSession();               // end the session and reset broadcast tracking
     void toggleSyncNetwork();          // flip syncNetwork_, closing sockets when off
     void commitSyncPort();             // validate + persist the port field

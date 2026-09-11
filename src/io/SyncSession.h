@@ -99,9 +99,12 @@ public:
     // beacon. The beacon carries the port, so a browsing spectator picks it up
     // even when the host isn't on kDefaultPort.
     bool startHost(const std::string& username, uint16_t port, std::string& err);
-    // Spectator: connect to a host over TCP. On success the host will push the
-    // project, which surfaces as a Project message from drain().
-    bool join(const std::string& ip, uint16_t port, const std::string& username,
+    // Spectator: connect to a host over TCP. The host may be given as an IPv4 or
+    // IPv6 literal or as a resolvable name (DNS, mDNS ".local", NetBIOS); it is
+    // passed through getaddrinfo, so this call blocks for as long as resolution
+    // takes. On success the host will push the project, which surfaces as a
+    // Project message from drain().
+    bool join(const std::string& host, uint16_t port, const std::string& username,
               std::string& err);
     // Tear everything down and return to Role::None.
     void leave();

@@ -11,6 +11,7 @@
 #include <SDL3/SDL_log.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 
@@ -577,7 +578,7 @@ void App::renderSessionPanel() {
     }
 
     gapTop(body, 8.0f * dpiScale);
-    field(sessionHostFld_, "Host IP (manual)");
+    field(sessionHostFld_, "Host name or IP (manual)");
     button(sessionJoinManualRect_, "Join", kBtnBg);
 }
 
@@ -726,32 +727,72 @@ void App::commitSyncPort() {
     writePrefs();
 }
 
-// Parse the manual "Host IP" field as "ip" or "ip:port" and connect.
+// Parse the manual host field and connect. The host half is anything the system
+// resolver accepts (see Session::join): an IPv4 literal, a machine name, or an
+// IPv6 literal. IPv6 is the awkward case, since the address is itself full of
+// colons and "fe80::1:45777" cannot be split — so a port may only be appended to
+// the bracketed form, "[fe80::1]:45777", the same rule URLs use. An unbracketed
+// string with more than one colon is therefore taken whole, as a bare IPv6
+// literal on the default port.
 void App::startJoinFromField() {
     std::string s = sessionHostFld_.text();
+    const auto notSpace = [](unsigned char c) { return !std::isspace(c); };
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), notSpace));
+    s.erase(std::find_if(s.rbegin(), s.rend(), notSpace).base(), s.end());
     if (s.empty()) {
-        setStatus("ENTER A HOST IP", 3000);
+        setStatus("ENTER A HOST NAME OR IP", 3000);
         return;
     }
-    uint16_t port = syncreview::kDefaultPort;
-    std::string ip = s;
-    if (auto c = s.find(':'); c != std::string::npos) {
-        ip = s.substr(0, c);
-        port = (uint16_t)std::strtoul(s.c_str() + c + 1, nullptr, 10);
+
+    std::string host = s;
+    std::string portTxt;
+    if (s.front() == '[') {
+        const auto close = s.find(']');
+        if (close == std::string::npos) {
+            setStatus("UNCLOSED [ IN HOST", 3000);
+            return;
+        }
+        host = s.substr(1, close - 1);
+        const std::string rest = s.substr(close + 1);
+        if (!rest.empty()) {
+            if (rest.front() != ':') {
+                setStatus("EXPECTED :PORT AFTER ]", 3000);
+                return;
+            }
+            portTxt = rest.substr(1);
+        }
+    } else if (const auto c = s.find(':');
+               c != std::string::npos && s.find(':', c + 1) == std::string::npos) {
+        host = s.substr(0, c);
+        portTxt = s.substr(c + 1);
     }
-    joinHost(ip, port);
+    if (host.empty()) {
+        setStatus("ENTER A HOST NAME OR IP", 3000);
+        return;
+    }
+
+    uint16_t port = syncreview::kDefaultPort;
+    if (!portTxt.empty()) {
+        const long n = std::strtol(portTxt.c_str(), nullptr, 10);
+        if (n <= 0 || n > 65535) {
+            setStatus("PORT MUST BE 1-65535", 3000);
+            return;
+        }
+        port = (uint16_t)n;
+    }
+    joinHost(host, port);
 }
 
 // Joining adopts the host's project wholesale (see loadProjectFromBuffer), so it
 // discards the local one — gated here, the single choke point for all three join
 // entries (launcher column, session panel row, manual host field).
-void App::joinHost(const std::string& ip, uint16_t port) {
-    confirmDiscard("Join Session", [this, ip, port] {
+void App::joinHost(const std::string& host, uint16_t port) {
+    confirmDiscard("Join Session", [this, host, port] {
         std::string user = sessionUserFld_.text().empty() ? "guest" : sessionUserFld_.text();
         std::string err;
-        if (syncSession_.join(ip, port, user, err)) {
+        if (syncSession_.join(host, port, user, err)) {
             SDL_StopTextInput(window_);
-            setStatus("CONNECTING TO " + ip + "…");
+            setStatus("CONNECTING TO " + host + "…");
         } else {
             setStatus("JOIN FAILED: " + err, 5000);
         }

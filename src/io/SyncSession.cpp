@@ -12,6 +12,7 @@
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -568,28 +569,45 @@ bool Session::startHost(const std::string& username, uint16_t port, std::string&
     return true;
 }
 
-bool Session::join(const std::string& ip, uint16_t port, const std::string& username,
+// getaddrinfo covers every form the host field accepts with one call: IPv4 and
+// IPv6 literals resolve locally, names go to the system resolver (DNS, and on
+// both platforms the mDNS ".local" responder), and it hands back one entry per
+// usable address. AF_UNSPEC lets a host that only publishes AAAA work; each
+// candidate is tried in the order the resolver ranked them, so a machine with
+// both records still falls back to IPv4 when v6 has no route.
+bool Session::join(const std::string& host, uint16_t port, const std::string& username,
                    std::string& err) {
     leave();
     d_->username = username;
     d_->hostLost.store(false);
 
-    SOCKET cs = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    addrinfo* res = nullptr;
+    const std::string portStr = std::to_string(port);
+    if (::getaddrinfo(host.c_str(), portStr.c_str(), &hints, &res) != 0 || !res) {
+        err = "cannot resolve " + host;
+        if (res)
+            ::freeaddrinfo(res);
+        return false;
+    }
+
+    SOCKET cs = INVALID_SOCKET;
+    for (addrinfo* ai = res; ai; ai = ai->ai_next) {
+        SOCKET s = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (s == INVALID_SOCKET)
+            continue;
+        if (::connect(s, ai->ai_addr, (socklen_t)ai->ai_addrlen) == 0) {
+            cs = s;
+            break;
+        }
+        ::closesocket(s);
+    }
+    ::freeaddrinfo(res);
     if (cs == INVALID_SOCKET) {
-        err = "socket() failed";
-        return false;
-    }
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    if (::inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1) {
-        err = "invalid host address";
-        ::closesocket(cs);
-        return false;
-    }
-    if (::connect(cs, (sockaddr*)&addr, sizeof(addr)) != 0) {
         err = "connection refused";
-        ::closesocket(cs);
         return false;
     }
 
