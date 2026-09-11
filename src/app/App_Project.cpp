@@ -82,6 +82,29 @@ bool loadProjectDocument(const std::string& path, Timeline& tl, int& nextClipId,
     return true;
 }
 
+// Is the file at `path` inside directory `dir`? A lexical compare -- normalize
+// away '.'/'..', unify the separator, and fold case on Windows -- so a media path
+// on a slow or missing network share costs nothing to test. Same tradeoff
+// samePathLexical (UserData.cpp) makes: two spellings that meet only through a
+// symlink/junction or an 8.3 short name read as different directories.
+bool pathIsUnder(const std::string& path, const std::string& dir) {
+    auto norm = [](const std::string& s) {
+        std::string n = fs::u8path(s).lexically_normal().generic_string();
+        while (n.size() > 1 && n.back() == '/')
+            n.pop_back();
+#ifdef _WIN32
+        std::transform(n.begin(), n.end(), n.begin(),
+                       [](unsigned char c) { return (char)std::tolower(c); });
+#endif
+        return n;
+    };
+    const std::string np = norm(path), nd = norm(dir);
+    // The separator has to be there, or "/show/houses" would read as under
+    // "/show/house".
+    return !nd.empty() && nd.size() < np.size()
+        && np.compare(0, nd.size(), nd) == 0 && np[nd.size()] == '/';
+}
+
 } // namespace
 
 // ---------------------------------------------------------------- unsaved changes
@@ -877,7 +900,7 @@ void App::showInSequence() {
     // graft the matching sequence into the current project on the main thread. The
     // graft keeps the originating clip's media for its own shot.
     std::string projPath;
-    if (!jplayProjectPathFromMedia(openedPath, projPath)) {
+    if (!projectDocForMedia(openedPath, projPath)) {
         setStatus("SHOW IN SEQUENCE: NO PROJECT FOR \"" + sceneName + "\"", 5000);
         return;
     }
@@ -939,15 +962,87 @@ void App::showInSequence() {
         });
 }
 
-// What the clip under the playhead can open, from its naming convention: the
-// sequence its path points at, and the project that sequence belongs to. Feeds the
-// two "Open …" buttons in the top bar. Both actions graft out of the same project
-// document, so neither is offered unless that document is actually on disk.
+// The project document governing `mediaPath`: what the naming convention derives
+// from the path, else the loaded project whose own directory holds it.
 //
-// The lookup is an interpreter call that stats a network path, so it is done
-// once per media path and remembered in openTargetCache_. With allowResolve false
-// (playback) a path that isn't cached yet simply offers nothing rather than paying
-// for the lookup mid-play; it resolves as soon as playback stops.
+// The convention's rule is that a project directory publishes a document named
+// after itself -- "frogtake/frogtake.jpproj" -- and get_project_path_from_media
+// answers nothing for a document named anything else, so neither "Open ..." button
+// is offered for any media under it. But when that project is one already open, its
+// path is right here in the timeline, and re-deriving it from the path is the only
+// thing standing in the way. Hence the fallback: the deepest loaded project whose
+// directory is an ancestor of the media. Deepest, because a shot folder carrying
+// its own document beats the show above it -- the same order the convention's own
+// _nearest_project_doc_path walk up from the media gives.
+//
+// A project loaded from somewhere else entirely (a .jpproj beside no media of its
+// own) contains nothing and so matches nothing, which is the wanted answer.
+//
+// Deliberately outside openTargetCache_: which projects are loaded changes as the
+// session runs, and that cache is a session-long negative cache -- a miss recorded
+// before the project was opened would outlive the open that fixes it.
+bool App::projectDocForMedia(const std::string& mediaPath, std::string& outPath) const {
+    if (jplayProjectPathFromMedia(mediaPath, outPath))
+        return true;
+    return loadedProjectDocForMedia(mediaPath, outPath);
+}
+
+// The fallback half of the above on its own: no interpreter call, no stat, just a
+// walk over the project files this session has in hand. resolveOpenTargets wants it
+// separately because it caches the naming convention's answer and must not pay for
+// that call again each frame to reach the part that is cheap.
+//
+// Two places hold one. timeline_.projects is the table Sequence::projectId indexes,
+// which covers a project reached by grafting and one an earlier save recorded --
+// but NOT the .jpproj the session itself has open: loadProject sets projectPath_
+// and leaves the table to whatever the file carried, which for a project saved
+// before any graft is nothing at all. That open file is the likeliest answer of the
+// two, so it is a candidate in its own right rather than something inferred from
+// the table.
+bool App::loadedProjectDocForMedia(const std::string& mediaPath, std::string& outPath) const {
+    outPath.clear();
+    if (mediaPath.empty())
+        return false;
+    // Deepest wins: a shot folder carrying its own document beats the show above
+    // it, the same order the convention's own _nearest_project_doc_path walk
+    // up from the media gives.
+    size_t bestLen = 0;
+    auto consider = [&](const std::string& docPath) {
+        if (docPath.empty())
+            return;
+        const std::string dir = fs::u8path(docPath).parent_path().u8string();
+        if (dir.empty() || dir.size() <= bestLen || !pathIsUnder(mediaPath, dir))
+            return;
+        bestLen = dir.size();
+        outPath = docPath;
+    };
+    // projectHasPath_ gates the open file: without it projectPath_ is the
+    // "project.jpproj" placeholder a new or shared project carries, which names no
+    // directory and so would match nothing anyway -- but saying so is cheaper than
+    // relying on it.
+    if (projectHasPath_)
+        consider(projectPath_);
+    for (const SourceProject& proj : timeline_.projects)
+        consider(proj.path);
+    if (!outPath.empty())
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+                     "[jplay] No project document derived for \"%s\"; falling back to the "
+                     "open project \"%s\"",
+                     mediaPath.c_str(), outPath.c_str());
+    return !outPath.empty();
+}
+
+// What the clip under the playhead can open: the sequence its naming convention
+// points at, and the project document holding it (projectDocForMedia, so a project
+// the convention cannot derive still counts while it is open). Feeds the two
+// "Open …" buttons in the top bar. Both actions graft out of that document, so
+// neither is offered unless one was found.
+//
+// The convention's half is an interpreter call that stats a network path, so it is
+// done once per media path and remembered in openTargetCache_. With allowResolve
+// false (playback) a path that isn't cached yet skips it rather than paying for it
+// mid-play, and offers whatever the open projects alone can answer; the rest
+// resolves as soon as playback stops.
 void App::resolveOpenTargets(bool allowResolve) {
     openSeqName_.clear();
     openProjName_.clear();
@@ -961,12 +1056,13 @@ void App::resolveOpenTargets(bool allowResolve) {
         return;
     const std::string path = media->resolvedPath();
 
+    // The naming convention's answer, cached. Not having one yet is not the end of
+    // it -- the fallback below asks only the timeline and so needs neither.
+    const OpenTarget* cached = nullptr;
     auto it = openTargetCache_.find(path);
-    if (it == openTargetCache_.end()) {
-        if (!allowResolve)
-            return;
-        if (!jplayPythonReady())
-            return; // not cached: retried once Python finishes starting up
+    if (it != openTargetCache_.end()) {
+        cached = &it->second;
+    } else if (allowResolve && jplayPythonReady()) { // else: retried once it is ready
         OpenTarget target;
         // The project document, as "{project_root}/{project_name}" with a .jpproj
         // or .otio extension. The naming convention derives it from the media path
@@ -992,11 +1088,19 @@ void App::resolveOpenTargets(bool allowResolve) {
                          "[jplay] No project document for \"%s\"; nothing to open from it",
                          path.c_str());
         }
-        it = openTargetCache_.emplace(path, std::move(target)).first;
+        cached = &openTargetCache_.emplace(path, std::move(target)).first->second;
     }
-    const OpenTarget& target = it->second;
-    if (target.projPath.empty())
-        return; // nothing published to graft from
+
+    // What to open, the convention first and the loaded projects after it. The
+    // fallback is re-run per frame rather than folded into the cache above, because
+    // it reads which projects are open and that changes as the session runs.
+    std::string projPath = cached ? cached->projPath : std::string();
+    std::string projName = cached ? cached->projName : std::string();
+    if (projPath.empty()) {
+        if (!loadedProjectDocForMedia(path, projPath))
+            return; // nothing published, and no open project holds this media
+        projName = fs::u8path(projPath).stem().u8string();
+    }
 
     // What the view currently shows is timeline state, not a property of the path, so
     // it is filtered here rather than baked into the cache. The test is where you are
@@ -1007,29 +1111,36 @@ void App::resolveOpenTargets(bool allowResolve) {
     // The project drops out only while the view is scoped to that whole project.
     const SourceProject* scoped = timeline_.findProjectById(viewProjId_);
     const bool viewingThatProject =
-        scoped && (!scoped->path.empty() && !target.projPath.empty()
-                       ? scoped->path == target.projPath
-                       : scoped->name == target.projName);
+        scoped && (!scoped->path.empty() && !projPath.empty() ? scoped->path == projPath
+                                                              : scoped->name == projName);
     if (!viewingThatProject) {
-        openProjName_ = target.projName;
-        openProjPath_ = target.projPath;
+        openProjName_ = std::move(projName);
+        openProjPath_ = std::move(projPath);
     }
     // The sequence drops out once the clip under the playhead lives in it: there is
     // nowhere left to go, and grafting it again would duplicate it. Scoping to a
     // sequence puts the playhead in it, so this covers "already viewing it" too.
     //
-    // target.seqName is the scene the path resolves to, which names a sequence built
+    // seqName is the scene the path resolves to, which names a sequence built
     // from a directory but not one grafted out of the OTIO — that one is named after
     // its sequence_name and can span several scenes. So the scene tags its shots
     // carry answer this too, or the graft would go unrecognized and every click
     // would append another copy of it.
-    if (!target.seqName.empty()) {
+    //
+    // Only ever the convention's own scene, never one guessed off the fallback
+    // above: a path whose project could not be derived is a path whose [dir:*]
+    // templates slid (see _match_dir, floored on the same lookup), so its scene is
+    // as likely to name the project folder as the sequence. "Open Project" is still
+    // exactly right in that case; a sequence button pointing at a sequence that
+    // does not exist is not.
+    const std::string seqName = cached ? cached->seqName : std::string();
+    if (!seqName.empty()) {
         const int owner = timeline_.seqIndexOfClip(active->id);
         const bool alreadyIn = owner >= 0 && owner < (int)timeline_.sequences.size()
-                            && (timeline_.sequences[owner].name == target.seqName
-                                || timeline_.sequenceHasScene(timeline_.sequences[owner], target.seqName));
+                            && (timeline_.sequences[owner].name == seqName
+                                || timeline_.sequenceHasScene(timeline_.sequences[owner], seqName));
         if (!alreadyIn)
-            openSeqName_ = target.seqName;
+            openSeqName_ = seqName;
     }
 }
 

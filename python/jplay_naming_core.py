@@ -344,17 +344,52 @@ def _match_file(basename):
     return None, None
 
 
-def _project_doc(directory):
-    """The project document governing `directory`: the nearest ancestor (itself
-    included) holding "{dir}/{basename(dir)}" with a project extension — ".jpproj"
-    first, ".otio" only if no .jpproj sits beside it. Returns the _norm'd path of
-    the document, or None when no ancestor publishes either.
+def _only_project_doc_path_in(directory):
+    """Path of the one project document in `directory` when it publishes exactly
+    one, else None. The fallback for a directory whose document is not named after
+    it — "frogtake/frogger.jpproj" — which is a project root just as surely as a
+    self-named one, only not derivable from the path.
+
+    ".jpproj" decides on its own: a directory holding one is answered with it, and
+    a directory holding several is ambiguous and answered with None rather than a
+    guess. ".otio" is consulted only when there is no .jpproj at all, matching the
+    preference _nearest_project_doc_path applies to the self-named spelling.
+    """
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return None  # unreadable or gone: no document to find here
+    for ext in (".jpproj", ".otio"):
+        hits = [e for e in entries if e.lower().endswith(ext)]
+        if hits:
+            # Several of the same kind name no single project; the walk carries on
+            # above, exactly as it does for a directory publishing nothing.
+            return f"{directory}/{hits[0]}" if len(hits) == 1 else None
+    return None
+
+
+def _nearest_project_doc_path(directory):
+    """_norm'd path of the project document governing `directory`: the nearest
+    ancestor (itself included) publishing one, or None when no ancestor publishes
+    any.
+
+    Within one directory the self-named spelling wins — "{dir}/{basename(dir)}"
+    with ".jpproj" preferred over ".otio" — and a document named anything else is
+    taken only when it is the directory's only one (see _only_project_doc_path_in).
+    Both are project roots; only the first is derivable from the path, which is
+    why the convention asks for it, and why leaning on it alone used to leave a
+    project like "frogtake/frogger.jpproj" with no root at all: no "Open Project"
+    button, and every [dir:*] template sliding a level because _match_dir had
+    nothing to floor itself on.
 
     The one place in this module that consults the disk rather than the path, and
     the only thing that can say where a project starts: a [dir:*] template match
-    cannot (see _match_dir).
+    cannot (see _match_dir). The self-named probe is two stats and runs first, so a
+    conforming layout never pays for the directory scan behind it.
 
-        "/show/house/school3/comp"  -> "/show/show.jpproj"   (if that file exists)
+        "/show/house/school3/comp"  -> "/show/show.jpproj"    (if that file exists)
+        "/frogtake/seq/shot"        -> "/frogtake/frogger.jpproj"
+                                                              (its only document)
         "/nowhere/at/all"           -> None
     """
     walked = directory
@@ -365,6 +400,9 @@ def _project_doc(directory):
                 candidate = f"{walked}/{name}{ext}"
                 if os.path.isfile(candidate):
                     return candidate
+            unnamed = _only_project_doc_path_in(walked)
+            if unnamed:
+                return unnamed
         parent = walked.rpartition("/")[0]
         if parent == walked:
             break
@@ -373,8 +411,9 @@ def _project_doc(directory):
 
 
 def _project_root(directory):
-    """The directory `_project_doc` found the project document in, or None."""
-    doc = _project_doc(directory)
+    """Path of the directory `_nearest_project_doc_path` found its document in,
+    or None."""
+    doc = _nearest_project_doc_path(directory)
     return doc.rpartition("/")[0] if doc else None
 
 
@@ -748,7 +787,7 @@ def get_project_path_from_media(media_info):
 
     norm = _norm(path)
     directory = norm.rsplit("/", 1)[0].rstrip("/") if "/" in norm else ""
-    doc = _project_doc(directory or _norm(os.getcwd()))
+    doc = _nearest_project_doc_path(directory or _norm(os.getcwd()))
     if doc is None:
         _dbg(f"get_project_path_from_media({path!r}): no project file at or above "
              f"{directory!r}")

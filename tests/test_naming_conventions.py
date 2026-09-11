@@ -568,6 +568,68 @@ def test_project_path_from_media():
             {"path": os.path.join(proj4, "a", "main_0001.exr")})
         check("no document -> empty", found == "", found)
         check("empty path -> empty", nc.get_project_path_from_media({"path": ""}) == "")
+
+        # A document NOT named after its folder: "frogtake/frogger.jpproj" is a
+        # project root too, and being the folder's only document says so
+        # unambiguously. Before this it resolved to nothing, which cost the two
+        # "Open ..." buttons AND slid every [dir:*] template a level (see the
+        # context assertions below).
+        proj5 = os.path.join(root, "frogtake")
+        shot5 = os.path.join(proj5, "Foraging in the Brambles", "Venturing Out")
+        make_exr_seq(shot5, "main_tk01", range(1, 4))
+        touch(os.path.join(proj5, "frogger.jpproj"))
+        media5 = os.path.join(shot5, "main_tk01_0001.exr")
+        found = nc.get_project_path_from_media({"path": media5})
+        check("sole document names its project",
+              found == os.path.join(proj5, "frogger.jpproj"), found)
+        ctx = nc.get_path_context({"path": media5})
+        check("and the templates floor on it",
+              ctx == {"sequence": "Foraging in the Brambles",
+                      "shot": "Venturing Out", "department": ""}, str(ctx))
+
+        # The self-named spelling still wins inside one directory, so a folder
+        # holding both is never decided by listing order.
+        proj6 = os.path.join(root, "named")
+        touch(os.path.join(proj6, "a", "main_0001.exr"))
+        touch(os.path.join(proj6, "aaa_other.jpproj"))
+        touch(os.path.join(proj6, "named.jpproj"))
+        found = nc.get_project_path_from_media(
+            {"path": os.path.join(proj6, "a", "main_0001.exr")})
+        check("self-named beats a sibling document",
+              found == os.path.join(proj6, "named.jpproj"), found)
+
+        # Several documents, none self-named: ambiguous, so the walk carries on
+        # above rather than guessing one.
+        proj7 = os.path.join(root, "ambiguous")
+        touch(os.path.join(proj7, "a", "main_0001.exr"))
+        touch(os.path.join(proj7, "one.jpproj"))
+        touch(os.path.join(proj7, "two.jpproj"))
+        found = nc.get_project_path_from_media(
+            {"path": os.path.join(proj7, "a", "main_0001.exr")})
+        check("two documents -> no project", found == "", found)
+
+        # A sole .jpproj beats a sole .otio in the same folder, as the self-named
+        # probe prefers .jpproj.
+        proj8 = os.path.join(root, "mixed")
+        touch(os.path.join(proj8, "a", "main_0001.exr"))
+        touch(os.path.join(proj8, "cut.otio"))
+        touch(os.path.join(proj8, "cut.jpproj"))
+        found = nc.get_project_path_from_media(
+            {"path": os.path.join(proj8, "a", "main_0001.exr")})
+        check("sole .jpproj preferred over sole .otio",
+              found == os.path.join(proj8, "cut.jpproj"), found)
+
+        # The nearest publishing ancestor still wins: a shot folder carrying its
+        # own oddly-named document beats the show above it.
+        proj9 = os.path.join(root, "show")
+        inner = os.path.join(proj9, "seq", "shot")
+        touch(os.path.join(inner, "main_0001.exr"))
+        touch(os.path.join(proj9, "show.jpproj"))
+        touch(os.path.join(inner, "odd_name.jpproj"))
+        found = nc.get_project_path_from_media(
+            {"path": os.path.join(inner, "main_0001.exr")})
+        check("nearest ancestor wins",
+              found == os.path.join(inner, "odd_name.jpproj"), found)
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

@@ -2403,6 +2403,13 @@ private:
     // `shotName`, at the same clip-local source frame. No-op when nothing matches.
     void restoreViewPlayhead(const std::string& shotName, const std::string& mediaPath,
                              int64_t srcFrame);
+    // The project document a media path belongs to: what the naming convention
+    // derives from it, else the deepest open project whose own directory holds it --
+    // which is what answers for a project document not named after its folder, the
+    // one shape the convention cannot derive. False when neither finds one.
+    bool projectDocForMedia(const std::string& mediaPath, std::string& outPath) const;
+    // That fallback alone: no interpreter call, no stat, cheap enough per frame.
+    bool loadedProjectDocForMedia(const std::string& mediaPath, std::string& outPath) const;
     // Refresh what the clip under the playhead can open (openSeqName_ /
     // openProjName_ / openProjPath_) out of openTargetCache_. allowResolve = false is
     // cache-only, so during playback this never calls the interpreter or stats a path.
