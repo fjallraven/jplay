@@ -8,7 +8,7 @@ movies files.
 - Real-time playback of EXR sequences, still images and movies (ProRes, H.264, MXF, …)
 - Proxy/full media switching
 - OpenColorIO
-- Project/Timeline read/write OTIO support
+- OpenTimelineIO
 - Extended desktop, NDI and DeckLink SDI support
 - Local control channel (JSON over loopback TCP) for MCP servers etc
 
