@@ -91,6 +91,12 @@ public:
     // keep it clickable instead of treating it as a window-drag region).
     bool pointOverTitle(float x, float y) const { return titleAt(x, y) >= 0; }
 
+    // True if the point falls on the open dropdown (or its flyout). The bar
+    // already swallows the events that land there, but a host whose widgets read
+    // the cursor position directly each frame rather than from motion events
+    // needs to ask, or they hover under a panel drawn over them.
+    bool pointInPopup(float x, float y) const;
+
 private:
     // Base (1x) metrics; scaled by `scale_` (set from layout()'s scale param) at use.
     static constexpr float kBarH = 24.0f;

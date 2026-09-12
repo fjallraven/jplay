@@ -219,6 +219,18 @@ int MenuBar::submenuItemAt(float x, float y) const {
 
 // ---------------------------------------------------------------- input
 
+bool MenuBar::pointInPopup(float x, float y) const {
+    if (openMenu_ < 0)
+        return false;
+    auto in = [&](const SDL_FRect& r) {
+        return r.w > 0.0f && r.h > 0.0f &&
+               x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+    };
+    if (in(dropdownRect(openMenu_)))
+        return true;
+    return openSubmenu_ >= 0 && in(submenuDropdownRect());
+}
+
 bool MenuBar::handleEvent(const SDL_Event& e) {
     switch (e.type) {
     case SDL_EVENT_MOUSE_BUTTON_DOWN: {

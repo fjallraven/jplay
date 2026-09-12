@@ -244,6 +244,28 @@ void ContextMenu::layoutTable(SDL_Renderer* r) {
     }
 }
 
+bool ContextMenu::pointInPopup(float x, float y) const {
+    if (!open_)
+        return false;
+    auto in = [&](const SDL_FRect& r) {
+        return r.w > 0.0f && r.h > 0.0f &&
+               x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+    };
+    if (grid_)
+        return in(gridRect_);
+    if (table_) {
+        for (const SDL_FRect& r : colRects_)
+            if (in(r))
+                return true;
+        return false;
+    }
+    // The parts, not listBounds(): a flyout is offset from the rows it hangs off,
+    // so their union box spans ground neither panel actually covers.
+    if (in(rootRect_) || in(headerRect_))
+        return true;
+    return openParent_ >= 0 && in(childRect_);
+}
+
 SDL_FRect ContextMenu::listBounds() const {
     if (table_ || grid_ || rootRect_.w <= 0.0f)
         return {};

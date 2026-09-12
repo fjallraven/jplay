@@ -310,7 +310,7 @@ void App::renderGradeCurves(SDL_FRect& body) {
     SDL_FRect tabs = cutTop(body, 22.0f * dpiScale);
     const float tabW = tabs.w / 4.0f;
     float mx = 0.0f, my = 0.0f;
-    uiMouse(mx, my);
+    uiHoverMouse(mx, my);
     for (int i = 0; i < 4; ++i) {
         SDL_FRect tr = cutLeft(tabs, tabW);
         gapRight(tr, 2.0f); // separation between tabs

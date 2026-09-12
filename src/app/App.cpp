@@ -3613,6 +3613,39 @@ void App::uiMouse(float& x, float& y) const {
     SDL_RenderCoordinatesFromWindow(renderer_, x, y, &x, &y);
 }
 
+// Every popup here keeps the box it last drew, so the test is the same one the
+// popups' own event handlers make: inside the panel, not merely "something is
+// open". A menu open on the far side of the window leaves the widgets it does not
+// cover hovering as usual.
+bool App::pointOverOpenMenu(float x, float y) const {
+    auto in = [&](const SDL_FRect& r) {
+        return r.w > 0.0f && r.h > 0.0f &&
+               x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+    };
+    if (menuBar_.pointInPopup(x, y))
+        return true;
+    // The toolbar popups only refresh their rect while they render, so each is
+    // paired with its open flag rather than trusted to have cleared it on close.
+    if ((sequenceMenuOpen_     && in(sequenceMenuRect_)) ||
+        (proxyMenuOpen_        && in(proxyMenuRect_)) ||
+        (letterboxMenuOpen_    && in(letterboxMenuRect_)) ||
+        (ocioDisplayMenuOpen_  && in(ocioDisplayMenuRect_)) ||
+        (ocioViewMenuOpen_     && in(ocioViewMenuRect_)) ||
+        (ocioLookMenuOpen_     && in(ocioLookMenuRect_)) ||
+        (ocioInputCsMenuOpen_  && in(ocioInputCsMenuRect_)))
+        return true;
+    return clipMenu_.pointInPopup(x, y) || clipToolboxMenu_.pointInPopup(x, y) ||
+           fitMenu_.pointInPopup(x, y) || trackMenu_.pointInPopup(x, y) ||
+           peSortMenu_.pointInPopup(x, y) || peMediaMenu_.pointInPopup(x, y) ||
+           peSeqColorMenu_.pointInPopup(x, y) || appIconMenu_.pointInPopup(x, y);
+}
+
+void App::uiHoverMouse(float& x, float& y) const {
+    uiMouse(x, y);
+    if (pointOverOpenMenu(x, y))
+        x = y = -1.0e6f;
+}
+
 void App::computeLayout() {
     // Everything below lays out in logical units; the renderer scales them to the
     // window's real pixels. Recomputed every frame so a resize, a renderer rebuild

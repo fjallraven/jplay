@@ -2402,7 +2402,7 @@ void App::renderMainPanels() {
     }
 
     float mx = 0.0f, my = 0.0f;
-    uiMouse(mx, my);
+    uiHoverMouse(mx, my);
 
     // Refilled below by whichever tab draws a scrollbar; the other tab's stays
     // empty, so a press can be offered to both without testing the tab.

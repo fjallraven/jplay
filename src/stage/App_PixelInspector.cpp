@@ -101,7 +101,7 @@ void App::samplePixelInspector() {
         return;
     }
     float mx = 0.0f, my = 0.0f;
-    uiMouse(mx, my);
+    uiHoverMouse(mx, my);
     // Cursor reaching the panel: send it to the other bottom corner rather than let it
     // sit over the pixels being probed. renderPixelInspector picks the corner up. Only
     // where the two corners don't overlap — in a player too narrow to hold the panel

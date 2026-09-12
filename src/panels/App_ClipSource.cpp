@@ -397,7 +397,7 @@ void App::renderClipSourcePanel() {
     const float contentTop = view.y - clipSourceScroll_;
     SDL_FRect content = { view.x, contentTop, view.w, kUnbounded };
     float mouseX = 0.0f, mouseY = 0.0f;
-    uiMouse(mouseX, mouseY);
+    uiHoverMouse(mouseX, mouseY);
 
     // One chip width for the whole panel, the widest status in it: the badges then
     // line up in a column of their own down the right edge instead of each ending

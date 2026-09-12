@@ -438,7 +438,7 @@ void App::renderSessionPanel() {
     jplay::drawLine(renderer_, panelX + openPanelW() - 0.5f, pY, panelX + openPanelW() - 0.5f, panelsBottom_);
 
     float mx = 0.0f, my = 0.0f;
-    uiMouse(mx, my);
+    uiHoverMouse(mx, my);
 
     const float pad = 10.0f * dpiScale;
     const float lh = textFont_.lineHeight();

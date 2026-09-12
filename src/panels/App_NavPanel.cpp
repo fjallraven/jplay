@@ -338,7 +338,7 @@ void App::renderSidePanel() {
     // square inset within it, so icon size is independent of the band's bounds. The
     // open panel additionally gets a 2px accent bar down the band's left edge.
     float mx = 0.0f, my = 0.0f;
-    uiMouse(mx, my);
+    uiHoverMouse(mx, my);
     for (size_t i = 0; i < leftPanels_.size(); ++i) {
         const jplay::LeftPanelDesc& d = leftPanels_[i];
         const SDL_FRect& btn = d.btnRect;
@@ -383,7 +383,7 @@ void App::renderLeftPanel() {
 // whichever panel is open beside the strip rather than being covered by it.
 void App::renderIconStripTooltips() {
     float mx = 0.0f, my = 0.0f;
-    uiMouse(mx, my);
+    uiHoverMouse(mx, my);
     const int hit = leftPanelAt(mx, my);
     if (hit < 0)
         return;

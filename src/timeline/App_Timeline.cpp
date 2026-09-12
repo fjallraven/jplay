@@ -3473,7 +3473,7 @@ void App::setTimelineTool(TimelineTool t) {
 
 bool App::razorOverTracks() const {
     float mx = 0.0f, my = 0.0f;
-    uiMouse(mx, my);
+    uiHoverMouse(mx, my);
     return mx >= headerX_ && my >= tracksTop_ && my < tracksViewBottom();
 }
 

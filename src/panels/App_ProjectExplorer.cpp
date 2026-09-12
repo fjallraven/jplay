@@ -128,7 +128,7 @@ void App::renderProjectExplorer() {
     const float topH = panel.y; // pane top edge
 
     float mx = 0.0f, my = 0.0f;
-    uiMouse(mx, my);
+    uiHoverMouse(mx, my);
     const float pad = 8.0f;
     const float lh = textFont_.lineHeight();
     const float rh = 22.0f * dpiScale;           // header / sequence / source row

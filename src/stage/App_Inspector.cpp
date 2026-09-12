@@ -321,7 +321,7 @@ void App::renderInspector() {
         inspectorCloseRect_ = { inspectorRect_.x + inspectorRect_.w - pad - closeBtn,
                                 viewTop + (lineH - closeBtn) * 0.5f, closeBtn, closeBtn };
         float mx = 0.0f, my = 0.0f;
-        uiMouse(mx, my);
+        uiHoverMouse(mx, my);
         bool hov = inRect(inspectorCloseRect_, mx, my);
         icons_.drawGlyph(renderer_, 0xF0156, inspectorCloseRect_, // ICON_MDI_CLOSE
                          hov ? SDL_Color{ 235, 238, 245, 255 } : SDL_Color{ 140, 145, 156, 255 });
@@ -458,7 +458,7 @@ void App::renderSourceInfoPanel(const SDL_FRect& area) {
                              viewTop + (lineH - closeBtn) * 0.5f, closeBtn, closeBtn };
     {
         float mx = 0.0f, my = 0.0f;
-        uiMouse(mx, my);
+        uiHoverMouse(mx, my);
         bool hov = inRect(sourceInfoCloseRect_, mx, my);
         icons_.drawGlyph(renderer_, 0xF0156, sourceInfoCloseRect_, // ICON_MDI_CLOSE
                          hov ? SDL_Color{ 235, 238, 245, 255 } : SDL_Color{ 140, 145, 156, 255 });

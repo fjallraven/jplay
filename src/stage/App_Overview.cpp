@@ -489,7 +489,7 @@ void App::renderGridView(const Clip* liveClip) {
     const float oy = areaY - gridScroll_; // content y -> screen y
 
     float mx = 0.0f, my = 0.0f;
-    uiMouse(mx, my);
+    uiHoverMouse(mx, my);
     // The rows just off the top and bottom are laid out (and so hit-testable) but
     // clipped away, so hover only counts while the cursor is over the grid itself.
     const bool mouseOverGrid = inRect(playerRect_, mx, my);

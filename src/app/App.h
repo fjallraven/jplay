@@ -405,6 +405,19 @@ private:
     // from logical ones whenever uiScale_ != 1.
     void uiMouse(float& x, float& y) const;
 
+    // True when the point lands on an open overlay panel: a menu-bar dropdown or
+    // its flyout, a top-toolbar popup (OCIO, sequence, proxy, letterbox) or a
+    // cursor-anchored context menu.
+    bool pointOverOpenMenu(float x, float y) const;
+
+    // uiMouse for a hover test. Hover highlights and tooltips are resolved during
+    // the frame from the live cursor rather than from motion events, so an open
+    // panel drawn over a widget does not stop that widget lighting up beneath it
+    // the way consuming the events does. This hands back a point far outside every
+    // laid-out rect while the cursor is over such a panel, so each caller's own
+    // hit test misses without it having to know an overlay is up.
+    void uiHoverMouse(float& x, float& y) const;
+
     // Layout, recomputed every frame — in logical units, not device pixels.
     float winW_ = 0, winH_ = 0;
     SDL_FRect playerRect_{}, tlRect_{}, infoRect_{}, rulerRect_{}, cacheStripRect_{}, seqBarRect_{}, shotBarRect_{};

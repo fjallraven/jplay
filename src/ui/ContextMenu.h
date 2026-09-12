@@ -142,6 +142,14 @@ public:
     // Returns true if the event was consumed (host should skip its own handling).
     bool handleEvent(const SDL_Event& e);
 
+    // True if the point falls on the open popup, in whichever mode it was opened
+    // (list rows and header band, table columns, swatch grid) or on an open
+    // flyout. False once it is closed. The popup already swallows the events that
+    // land there; this is for a host whose widgets read the cursor position
+    // directly each frame rather than from motion events, which would otherwise
+    // hover under a panel drawn over them.
+    bool pointInPopup(float x, float y) const;
+
     // Recomputes geometry for the current window/anchor, then draws. Call last so
     // the popup overlays everything.
     void render(SDL_Renderer* r);
