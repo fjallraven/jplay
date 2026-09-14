@@ -1,4 +1,4 @@
-// Windows application icon, embedded into jplay2.exe.
+// Windows application icon, embedded into jplay.exe.
 //
 // Resource id 1 is the lowest icon id, so it becomes the default icon used by
 // Explorer, the taskbar, and Alt-Tab. SDL3 (with no SDL_HINT_WINDOWS_INTRESOURCE_ICON

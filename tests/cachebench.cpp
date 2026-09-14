@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -56,14 +57,15 @@ static FramePtr makeFrame(size_t bytes) {
 // the app than it does here, and every O(P) walk over it costs more.
 static void benchRequest(const char* label, bool resident, int numThreads) {
     const size_t kFrameBytes = 4096;
+    // A missing path under a real local directory: the open fails in
+    // microseconds, without an unmapped drive letter's lookup latency.
+    const std::string absentPath =
+        (std::filesystem::temp_directory_path() / "cachebench_absent.####.exr").generic_string();
 
     printf("\n  %s (%d worker%s)\n", label, numThreads, numThreads == 1 ? "" : "s");
     printf("    %8s %16s %18s\n", "window P", "median tick (ms)", "of a 60fps tick");
     for (int P : { 64, 256, 1024, 2048, 4096 }) {
-        // A missing path under a real local directory: the open fails in
-        // microseconds, without an unmapped drive letter's lookup latency.
-        auto media = std::make_shared<Media>(ClipType::ImageSequence,
-                                             "D:/sdk/jplay2/build/cachebench_absent.####.exr");
+        auto media = std::make_shared<Media>(ClipType::ImageSequence, absentPath);
         FrameCache cache(resident ? (size_t)P * kFrameBytes * 2 : (size_t)1 << 30, numThreads);
         if (resident) {
             // Make every key a map_ hit, so request() takes its early-return path
@@ -109,12 +111,14 @@ static void benchEvict(size_t frameBytes) {
 }
 
 int main(int argc, char** argv) {
-    const char* exrPath = argc > 1 ? argv[1]
-                                   : "D:/exr_sequences-v1.0.0/unh0400_0010_lighting.####.exr";
-
-    printf("== real media: %s\n", exrPath);
-    size_t realBytes = 0;
-    {
+    // Optional EXR sequence (e.g. "shot.####.exr"), used only to report how many of
+    // its frames a cache holds. The benchmarks below are synthetic and run without it.
+    if (argc < 2) {
+        printf("== real media: skipped (usage: cachebench [path/to/sequence.####.exr])\n");
+    } else {
+        const char* exrPath = argv[1];
+        printf("== real media: %s\n", exrPath);
+        size_t realBytes = 0;
         auto real = std::make_shared<Media>(ClipType::ImageSequence, exrPath);
         std::string err;
         auto src = real->ensureOpen(err);
