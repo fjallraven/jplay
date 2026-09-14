@@ -385,7 +385,7 @@ jobs:
         run: |
           set -euo pipefail
           ls -l artifacts
-          flags=(--draft)
+          flags=()
           if [ "$PRERELEASE" = true ]; then
             flags+=(--prerelease)
           fi
