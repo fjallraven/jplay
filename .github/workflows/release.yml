@@ -393,6 +393,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: jplay-*
           merge-multiple: true
 
       - name: Create draft release
@@ -419,4 +420,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "jplay $VERSION" \
             "${flags[@]}" \
-            artifacts/*
+            artifacts/*.zip artifacts/*.tar.gz
