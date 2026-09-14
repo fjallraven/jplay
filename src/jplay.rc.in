@@ -1,0 +1,10 @@
+// Windows application icon, embedded into jplay2.exe.
+//
+// Resource id 1 is the lowest icon id, so it becomes the default icon used by
+// Explorer, the taskbar, and Alt-Tab. SDL3 (with no SDL_HINT_WINDOWS_INTRESOURCE_ICON
+// hint set) also enumerates RT_GROUP_ICON and picks this first icon for the
+// window class, so the running window gets it too. One resource covers all cases.
+//
+// The path is injected by CMake's configure_file so rc.exe finds the icon
+// regardless of its working directory.
+1 ICON "@JPLAY_ICON_PATH@"

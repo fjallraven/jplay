@@ -1,0 +1,32 @@
+{
+  "name": "jplay",
+  "version": "1.0.0",
+  "dependencies": [
+    "pybind11",
+    "rapidjson",
+    "imath",
+    "shaderc",
+    "opentimelineio",
+    "opencolorio",
+    {
+      "name": "sdl3",
+      "features": [
+        "vulkan"
+      ]
+    },
+    {
+      "name": "sdl3-image",
+      "features": [
+        "jpeg",
+        "png",
+        "tiff"
+      ]
+    },
+    "vulkan-headers",
+    "vulkan-loader",
+    "sdl3-ttf",
+    "openexr",
+    "ffmpeg",
+    "freetype"
+  ]
+}
