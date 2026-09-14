@@ -289,6 +289,24 @@ jobs:
           fi
           echo "All shared libraries resolve."
 
+      # copy all windows dll needed
+      - name: Check bundled DLLs are installed (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for dll in build/Release/*.dll; do
+            name=$(basename "$dll")
+            [ -f "dist/$STAGE/$name" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "DLLs in build/Release not installed into the bundle:"
+            printf '  %s\n' "${missing[@]}"
+            exit 1
+          fi
+          echo "All build/Release DLLs are in the bundle."
+
       - name: Check glibc baseline (Linux)
         if: runner.os == 'Linux'
         run: |

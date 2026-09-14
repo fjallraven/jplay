@@ -209,6 +209,7 @@ if(WIN32)
         "${_vcpkg_dir}/bin/z.dll"
         "${_vcpkg_dir}/bin/zlib*.dll"
         "${_vcpkg_dir}/bin/bz2.dll"
+        "${_vcpkg_dir}/bin/freetype*.dll"
         "${_vcpkg_dir}/bin/libpng16.dll"
         "${_vcpkg_dir}/bin/jpeg62.dll"
         "${_vcpkg_dir}/bin/tiff.dll"
