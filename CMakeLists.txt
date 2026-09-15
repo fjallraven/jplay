@@ -557,6 +557,38 @@ if(WIN32 OR JPLAY_BUNDLE_PYTHON)
         PATTERN "pydoc_data"  EXCLUDE)
 endif()
 
+# The stdlib's C extensions (lib-dynload/*.so) are dlopen'ed by the interpreter,
+# so the jplay_deps set above never sees what they link: _blake2 -> libb2,
+# _hashlib/_ssl -> libcrypto/libssl, _ctypes -> libffi, ... Missing ones fail
+# quietly at import time (hashlib logs "unsupported hash type blake2s"), or
+# worse, pick up whatever the host has. vcpkg rewrote their RUNPATH to
+# $ORIGIN:$ORIGIN/../.., which is pyhome/lib once installed, so ship them there.
+if(NOT WIN32 AND JPLAY_BUNDLE_PYTHON)
+    cmake_path(GET Python3_STDLIB PARENT_PATH _py_libdir)
+    install(CODE "
+        set(_py_dynload \"${Python3_STDLIB}/lib-dynload\")
+        set(_py_libdir  \"${_py_libdir}\")
+        set(_py_dest    \"\${CMAKE_INSTALL_PREFIX}/${JPLAY_INSTALL_DIR}/pyhome/lib\")")
+    install(CODE [[
+        file(GLOB _py_mods "${_py_dynload}/*.so")
+        file(GET_RUNTIME_DEPENDENCIES
+            MODULES ${_py_mods}
+            DIRECTORIES "${_py_libdir}"
+            RESOLVED_DEPENDENCIES_VAR _py_deps
+            UNRESOLVED_DEPENDENCIES_VAR _py_missing
+            PRE_EXCLUDE_REGEXES
+                "^ld-linux.*" "^libc\\.so" "^libm\\.so" "^libdl\\.so"
+                "^librt\\.so" "^libpthread\\.so" "^libgcc_s\\.so"
+                "^libstdc\\+\\+\\.so" "^libpython3"
+            POST_EXCLUDE_REGEXES
+                "^/lib" "^/lib64" "^/usr/lib" "^/usr/lib64")
+        if(_py_missing)
+            message(WARNING "Unresolved python extension dependencies: ${_py_missing}")
+        endif()
+        file(INSTALL ${_py_deps} DESTINATION "${_py_dest}" FOLLOW_SYMLINK_CHAIN)
+    ]])
+endif()
+
 
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/python/"
     DESTINATION "${JPLAY_INSTALL_DIR}/python"

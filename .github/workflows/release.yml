@@ -281,7 +281,13 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          missing=$(ldd "dist/$STAGE/jplay" | grep 'not found' || true)
+          # The stdlib extensions are dlopen'ed, so the executable's ldd never
+          # covers them; a missing lib there only shows up as a failed import.
+          missing=""
+          for f in "dist/$STAGE/jplay" "dist/$STAGE"/pyhome/lib/python3.*/lib-dynload/*.so; do
+            nf=$(ldd "$f" | grep 'not found' || true)
+            [ -z "$nf" ] || missing+="${f#dist/$STAGE/}:"$'\n'"$nf"$'\n'
+          done
           if [ -n "$missing" ]; then
             echo "Unresolved shared libraries:"
             echo "$missing"
