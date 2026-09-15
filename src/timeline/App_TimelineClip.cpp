@@ -201,9 +201,9 @@ void App::buildMetaPickers() {
 }
 
 // "Unpack Clip > <picker>": for every option of picker `key` other than the one
-// the clip already matches, add a new clip that mirrors the source clip's span
-// (same start / duration / source offset) but with its media resolved to that
-// option. Each new clip is stacked on the first track below the source whose
+// the clip already matches, add a new clip with its media resolved to that option,
+// lined up with the source clip frame-for-frame (see alignedSourceRange).
+// Each new clip is stacked on the first track below the source whose
 // frame span is free, growing the track count as needed. Undoable as one step.
 void App::unpackClip(int clipId, const std::string& key) {
     Clip* src = timeline_.findClipById(clipId);
@@ -233,15 +233,14 @@ void App::unpackClip(int clipId, const std::string& key) {
         return;
     const int seqId = seq->id;
 
-    // Every unpacked clip mirrors the source clip's span, so they all occupy the
-    // same [start, end) and must each land on a distinct track below the source.
-    const int64_t start   = src->timelineStart;
-    const int64_t dur     = src->duration;
-    const int64_t srcOff  = src->sourceOffset;
-    const int srcTrack    = src->track;
+    // Copy the source clip: adding clips to the sequence invalidates `src`.
+    const Clip ref     = *src;
+    const int srcTrack = ref.track;
 
-    // A track is free for this span if no video clip in the sequence overlaps it there.
-    auto trackFree = [&](int track) {
+    // Unpacked clips overlap the source clip's span, so each lands on its own
+    // track below the source. A track is free for [start, start + dur) if no video
+    // clip in the sequence overlaps it there.
+    auto trackFree = [&](int track, int64_t start, int64_t dur) {
         for (const Clip& clip : seq->clips)
             if (!clip.audio && clip.track == track && start < clip.end() && clip.timelineStart < start + dur)
                 return false;
@@ -261,13 +260,16 @@ void App::unpackClip(int clipId, const std::string& key) {
         // Reuse an existing pool entry, else open and metadata-tag new media.
         ClipType type = ImageSeq::isSequencePath(newPath) ? ClipType::ImageSequence : ClipType::Video;
         auto media = timeline_.findMediaByPath(type, newPath);
-        if (!media) {
+        const bool isNew = !media;
+        if (isNew)
             media = std::make_shared<Media>(type, newPath);
-            std::string err;
-            if (!media->ensureOpen(err)) {
-                setStatus("FAILED TO OPEN " + fileLabel(newPath) + ": " + err, 5000);
-                continue;
-            }
+        // alignedSourceRange reads the media's extent, so a pooled entry must be open too.
+        std::string err;
+        if (!media->ensureOpen(err)) {
+            setStatus("FAILED TO OPEN " + fileLabel(newPath) + ": " + err, 5000);
+            continue;
+        }
+        if (isNew) {
             media->refreshMetadata();
             std::map<std::string, std::string> vals;
             jplayGetPathValues(media->resolvedPath(), vals);
@@ -276,20 +278,30 @@ void App::unpackClip(int clipId, const std::string& key) {
             timeline_.media[media->id()] = media;
         }
 
-        // First free track below the source (already-created clips share this
+        // Line the element up with the source clip frame-for-frame, matched on
+        // absolute frame numbers as an aligned Clip Source drop is (the two need
+        // not be numbered alike). No overlap at all: place the whole source.
+        int64_t start = ref.timelineStart, srcIn = 0, dur = 0, shift = 0;
+        if (alignedSourceRange(ref, *media, srcIn, dur, shift)) {
+            start += shift;
+        } else {
+            srcIn = 0;
+            dur   = std::max<int64_t>(media->info().frameCount, 1);
+        }
+
+        // First free track below the source (already-created clips overlap this
         // span, so trackFree() naturally stacks each new one on its own row).
         int track = srcTrack + 1;
-        while (!trackFree(track))
+        while (!trackFree(track, start, dur))
             ++track;
 
-        int64_t avail = std::max<int64_t>(media->info().frameCount - srcOff, 1);
         Clip clip;
         clip.id            = nextClipId_++;
         clip.mediaId       = media->id();
         clip.track         = track;
         clip.timelineStart = start;
-        clip.duration      = std::min<int64_t>(dur, avail); // clamp if the media is shorter
-        clip.sourceOffset  = srcOff;
+        clip.duration      = dur;
+        clip.sourceOffset  = srcIn;
         clip.shotId        = -1;
         seq->clips.push_back(clip);
         created.push_back(clip);
