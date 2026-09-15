@@ -1782,9 +1782,10 @@ private:
 
     // Gates the top-bar Proxy dropdown entirely: off, the button is not laid out
     // (zero width — see the top-bar measurement pass) and the active mode is
-    // forced to Full regardless of timeline_.proxyMode. Off by default, like the
-    // other opt-in Advanced switches above. Persisted in user prefs.
-    bool proxyEnabled_ = true;
+    // forced to Full regardless of timeline_.proxyMode. Off unless
+    // jplay_preferences.conf ([proxy_media] enabled) says otherwise, like the other
+    // opt-in Advanced switches above. Persisted in user prefs.
+    bool proxyEnabled_ = false;
     SDL_FRect proxyEnabledRect_{};
 
     // HDR output. When enabled (persisted in prefs) the main window uses SDL's "gpu"

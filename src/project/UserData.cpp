@@ -253,12 +253,13 @@ void removeRecent(const std::string& path) {
 
 Prefs loadPrefs() {
     Prefs p;
-    // The two networking switches take their starting position from the deployed
-    // jplay_preferences.conf rather than from the struct, so a site can decide
-    // what a machine with no saved settings does. A settings.conf key below still
-    // overrides — which it always has once the user has saved anything at all.
+    // The networking and proxy switches take their starting position from the
+    // deployed jplay_preferences.conf rather than from the struct, so a site can
+    // decide what a machine with no saved settings does. A settings.conf key below
+    // still overrides — which it always has once the user has saved anything at all.
     p.syncNetwork = Preferences::getBool("sync", "enabled", p.syncNetwork);
     p.mcpEnabled = Preferences::getBool("control", "enabled", p.mcpEnabled);
+    p.proxyEnabled = Preferences::getBool("proxy_media", "enabled", p.proxyEnabled);
 
     const std::string& base = dir();
     if (base.empty())

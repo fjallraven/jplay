@@ -21,7 +21,7 @@ struct RecentProject {
 
 // Application-wide display preferences persisted in settings.conf alongside the
 // recent-projects list. Defaults match the in-code defaults of the App members,
-// except for the two networking switches: those default to whatever
+// except for the networking and proxy switches: those default to whatever
 // jplay_preferences.conf says (see loadPrefs), so a site can ship its own
 // starting position for them.
 struct Prefs {
@@ -79,8 +79,9 @@ void recordRecent(const RecentProject& rp);
 void removeRecent(const std::string& path);
 
 // Display preferences from settings.conf. Absent keys keep their defaults —
-// which for syncNetwork/mcpEnabled come from jplay_preferences.conf ([sync] and
-// [control] `enabled`), so an untouched machine follows the deployed config.
+// which for syncNetwork/mcpEnabled/proxyEnabled come from jplay_preferences.conf
+// ([sync], [control] and [proxy_media] `enabled`), so an untouched machine
+// follows the deployed config.
 Prefs loadPrefs();
 
 // Persist display preferences, preserving the recent-projects list. No-op when
