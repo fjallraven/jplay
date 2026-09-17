@@ -21,6 +21,11 @@ movies files.
 </tr>
 </table>
 
+## Download
+
+Prebuilt x64 binaries for Linux and Windows are available on the
+[Releases](https://github.com/fjallraven/jplay/releases) page.
+
 ## Documentation
 
 **Start here**
