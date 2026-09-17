@@ -1590,6 +1590,9 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
             expandClipRange(dir);
             break;
         }
+        // Reviewing while playing keeps playing: the jump stops the transport (as
+        // Ctrl+Up/Down should), so pick it back up on the newly marked clip.
+        const bool wasPlaying = playing_;
         // From no range at all, the first press marks the clip already under the
         // playhead rather than moving off it: starting a clip-by-clip review keeps
         // you where you are, and the press after that steps on.
@@ -1600,6 +1603,11 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
             markClipRange(*cur);
         else
             jumpClip(dir, /*markRange=*/true);
+        if (wasPlaying && !playing_) {
+            playing_ = true;
+            playAcc_ = 0.0;
+            playDir_ = 1; // a PgDn jump back leaves the look-ahead pointing backward
+        }
         break;
     }
     case SDLK_H:

@@ -534,10 +534,18 @@ void App::jumpClip(int dir, bool markRange) {
     playing_ = false;
     int64_t last = std::max<int64_t>(timeline_.length() - 1, 0);
     int64_t target = dir < 0 ? 0 : last;
+    // Backward from a marked range steps off the range's in point, not the playhead:
+    // with the playhead part-way into the marked clip, "previous start" would be that
+    // clip's own first frame, and PgDn would replay it instead of moving on. A range
+    // the playhead sits before (set elsewhere with [ ]) still goes by the playhead.
+    const bool hasRange = !(timeline_.inPoint == 0 && timeline_.outPoint < 0);
+    const int64_t from = (dir < 0 && markRange && hasRange)
+                             ? std::min(timeline_.playhead, timeline_.inPoint)
+                             : timeline_.playhead;
     auto check = [&](const Clip& c) {
         if (c.audio)
             return; // prev/next clip navigates the video program only
-        if (dir < 0 && c.timelineStart < timeline_.playhead)
+        if (dir < 0 && c.timelineStart < from)
             target = std::max(target, c.timelineStart);
         if (dir > 0 && c.timelineStart > timeline_.playhead)
             target = std::min(target, c.timelineStart);
