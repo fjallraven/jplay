@@ -157,10 +157,10 @@ void App::samplePixelInspector() {
         probe_.srcMax = 65535.0f;
         for (int k = 0; k < 4; ++k)
             probe_.src[k] = (float)frame->rgba16[i * 4 + k];
-    } else if (frame->rgba.size() >= (i + 1) * 4) {
+    } else if (frame->rgba8().size() >= (i + 1) * 4) {
         probe_.srcMax = 255.0f;
         for (int k = 0; k < 4; ++k)
-            probe_.src[k] = (float)frame->rgba[i * 4 + k];
+            probe_.src[k] = (float)frame->rgba8()[i * 4 + k];
     } else {
         return;
     }
@@ -190,8 +190,8 @@ void App::samplePixelInspector() {
                     one.rgba16 = { (uint16_t)probe_.src[0], (uint16_t)probe_.src[1],
                                    (uint16_t)probe_.src[2], (uint16_t)probe_.src[3] };
                 } else {
-                    one.rgba = { (uint8_t)probe_.src[0], (uint8_t)probe_.src[1],
-                                 (uint8_t)probe_.src[2], (uint8_t)probe_.src[3] };
+                    one.setRgba8({ (uint8_t)probe_.src[0], (uint8_t)probe_.src[1],
+                                   (uint8_t)probe_.src[2], (uint8_t)probe_.src[3] });
                 }
                 probeXf_.applyToWorking(one, probe_.work);
                 probe_.workValid = true;

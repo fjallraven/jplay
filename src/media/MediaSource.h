@@ -2,23 +2,33 @@
 
 #include <Imath/half.h>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 // A decoded image.
 //
-// Three pixel buffers, of which `rgba` is always present and the other two are
-// higher-precision variants of it that the colour-managed display path prefers
-// when they exist. Keeping the 8-bit buffer unconditionally is what lets the
-// scopes, the filmstrip, the thumbnail tiles and the export writer stay unaware
-// of source bit depth; they all read `rgba` as they always have.
+// Three pixel buffers, of which the 8-bit one is the common denominator and the
+// other two are higher-precision variants of it that the colour-managed display
+// path prefers when they exist. The scopes, the filmstrip, the thumbnail tiles
+// and the export writer stay unaware of source bit depth by reading rgba8().
 //
-// rgba:      width * height * 4 uint8_t, always present. Display-referred, in the
-//            source's own encoding (an sRGB-ish LUT of the linear values for EXR).
+// rgba8():   width * height * 4 uint8_t. Display-referred, in the source's own
+//            encoding (an sRGB-ish LUT of the linear values for EXR). Video and
+//            still sources fill it as they decode; for an EXR sequence, which
+//            carries linearRgb, it is derived from that buffer and is therefore
+//            built ON FIRST USE rather than at decode time. Building it is 16 ms
+//            for a 4K frame and a third again of the frame's memory, and the
+//            colour-managed display path never reads it -- it feeds linearRgb
+//            straight to the GPU transform -- so a playing cache holds neither
+//            the cost nor the bytes. Decoders build it up front anyway while
+//            decodeRgba8() is set, which is what the display path asks for when
+//            colour management is off and every frame really does need it.
 // rgba16:    width * height * 4 uint16_t, populated by VideoSource for streams
-//            deeper than 8 bits. Same encoding as `rgba`, which is derived from it.
+//            deeper than 8 bits. Same encoding as rgba8(), which is derived from it.
 // linearRgb: width * height * 3 Imath::half, scene-linear RGB; populated by
 //            ExrSequenceSource so the display path can apply an OCIO transform
 //            instead of the baked sRGB LUT. Empty for video frames.
@@ -26,18 +36,68 @@
 //            the frame so a consumer holding one knows its shape without the
 //            source; 1 for the square-pixel case, which is everything but an
 //            anamorphic EXR.
+//
+// A frame handed out by the cache is const and shared between threads, so the
+// on-demand build is guarded and rgba8() is safe to call from any of them.
 struct Frame {
     int width = 0;
     int height = 0;
     float pixelAspect = 1.0f;
-    std::vector<uint8_t>     rgba;      // width * height * 4
     std::vector<uint16_t>    rgba16;    // width * height * 4 (sources deeper than 8 bit)
     std::vector<Imath::half> linearRgb; // width * height * 3 (EXR only)
-    size_t bytes() const {
-        return rgba.size() + rgba16.size() * sizeof(uint16_t) +
-               linearRgb.size() * sizeof(Imath::half);
-    }
+
+    Frame() = default;
+    ~Frame() = default;
+    // The guard is not part of the value: a copy carries the buffers, and is
+    // "already built" exactly when the frame it was copied from was.
+    Frame(const Frame& o);
+    Frame& operator=(const Frame& o);
+
+    // The display-referred 8-bit buffer, built from linearRgb if it does not
+    // exist yet. Empty only for a degenerate frame that carries neither.
+    const std::vector<uint8_t>& rgba8() const;
+    // Whether rgba8() would return without building anything. A consumer that
+    // has a higher-precision path available should prefer it over forcing a
+    // build; one that samples a few pixels (a scope, a probe) should read
+    // linearRgb directly rather than materialising 34 MB to look at 200k of it.
+    bool hasRgba8() const;
+
+    // Decoder-side access: fill it in place, hand one over, or take the buffer
+    // back for a pool. All three mark the buffer built.
+    std::vector<uint8_t>& rgba8Mut();
+    void setRgba8(std::vector<uint8_t> px);
+    std::vector<uint8_t> releaseRgba8();
+    // Build it now, filling `recycled` (a retired buffer from the decoder's pool)
+    // rather than a fresh allocation. A no-op if it is already built.
+    void buildRgba8(std::vector<uint8_t> recycled = {});
+
+    // What this frame currently occupies. It grows if rgba8() later builds the
+    // 8-bit buffer, so a cache budgeting by it records the value it saw rather
+    // than re-reading it (see FrameCache::Entry::bytes).
+    size_t bytes() const;
+
+private:
+    void buildLocked_() const; // caller holds rgbaMtx_
+
+    mutable std::vector<uint8_t> rgba_;
+    mutable std::atomic<bool> rgbaReady_{ false };
+    mutable std::mutex rgbaMtx_;
 };
+
+// Whether decoders should build the 8-bit buffer as they decode instead of
+// leaving it to the first rgba8(). Set by the player for the states where every
+// displayed frame needs it anyway -- colour management off -- so that build
+// happens on a decode worker, as it always did, rather than on the UI thread in
+// the middle of playback. Off by default; reading it is cheap enough for a
+// per-frame decode path.
+void setDecodeRgba8(bool on);
+bool decodeRgba8();
+
+// One scene-linear half (by bit pattern) through the same baked sRGB LUT rgba8()
+// is built with. For a consumer that samples a frame rather than reading all of
+// it -- a scope over 200k of 8.8M pixels -- this gives the identical code value
+// per sample without materialising the whole 8-bit buffer to find it.
+uint8_t srgb8FromHalfBits(unsigned short bits);
 
 using FramePtr = std::shared_ptr<const Frame>;
 

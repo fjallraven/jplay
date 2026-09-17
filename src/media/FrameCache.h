@@ -72,6 +72,14 @@ private:
     };
     struct Entry {
         FramePtr frame;
+        // What this frame counted for when it was admitted. Frame::bytes() can grow
+        // after the fact -- an EXR frame builds its 8-bit buffer the first time
+        // something asks for one (Frame::rgba8) -- and subtracting the grown value
+        // from a total the smaller one went into would underflow it. So the total is
+        // only ever moved by this number, and get() refreshes the pair together for
+        // the frames that actually grow: the displayed one a scope or the inspector
+        // just looked at.
+        size_t bytes = 0;
         uint64_t tick = 0;
         uint64_t wantEpoch = 0; // last beginRequests() epoch that re-requested this frame
         int wantPrio = 0;       // its priority in that epoch (lower = nearer the playhead)

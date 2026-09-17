@@ -4327,6 +4327,14 @@ void App::drawFrame(bool isLiveMovingOrResizing) {
         if (cursorDefault_) SDL_SetCursor(cursorDefault_);
     }
 
+    // Whether a decode should build the display-referred 8-bit buffer as it goes,
+    // or leave it to whoever asks (see Frame::rgba8). The colour-managed paths --
+    // the GL OCIO transform and the HDR pipeline -- both read the scene-linear
+    // buffer, so the 8-bit one is dead weight there: 16 ms of a 27 ms 4K decode and
+    // 40% of the frame's cache bytes. With colour management off the player uploads
+    // it for every frame, so it is built on the decode worker as it always was.
+    setDecodeRgba8(!hdrPipeline_ && !(ocio_.isReady() && ocio_.isEnabled()));
+
     if (!isLiveMovingOrResizing) {
         submitCacheRequests();
     }

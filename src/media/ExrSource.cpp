@@ -28,26 +28,6 @@ namespace fs = std::filesystem;
 
 static std::atomic<int> g_exrReads{0};
 
-// half (bit pattern) -> 8-bit sRGB, built once. EXR pixels are scene-linear;
-// review display applies the sRGB transfer curve.
-static const std::array<uint8_t, 65536>& halfToSrgbLut() {
-    static const std::array<uint8_t, 65536> lut = [] {
-        std::array<uint8_t, 65536> t{};
-        for (int i = 0; i < 65536; ++i) {
-            Imath::half h;
-            h.setBits((unsigned short)i);
-            float v = (float)h;
-            if (!(v > 0.0f)) v = 0.0f; // also catches NaN
-            if (v > 1.0f) v = 1.0f;
-            float s = v <= 0.0031308f ? v * 12.92f
-                                      : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
-            t[i] = (uint8_t)std::lround(s * 255.0f);
-        }
-        return t;
-    }();
-    return lut;
-}
-
 // pixelAspectRatio is a required EXR attribute, so it is always present — but
 // writers do emit 0 or a NaN for it, and a bad value would collapse or explode
 // the display rect. Anything not plausible falls back to square pixels.
@@ -356,7 +336,6 @@ FramePtr ExrSequenceSource::readFrame(int64_t index) {
             bufs.linearRgb.resize(npx * 3);
         else
             bufs.linearRgb.assign(npx * 3, Imath::half(0.0f));
-        bufs.rgba.resize(npx * 4);
 
         // The part of the data window that lands on the display window.
         const int y0 = std::max(disp.min.y, data.min.y);
@@ -421,32 +400,27 @@ FramePtr ExrSequenceSource::readFrame(int64_t index) {
             }
         }
 
-        // rgba through the baked sRGB LUT (colour management off, scopes,
-        // thumbnails), from the decoded linearRgb. A pixel outside the data window
-        // is 0 there, which maps to opaque black.
-        const auto& lut = halfToSrgbLut();
-        const Imath::half* lin = bufs.linearRgb.data();
-        uint8_t* out = bufs.rgba.data();
-        for (size_t i = 0; i < npx; ++i, lin += 3, out += 4) {
-            out[0] = lut[lin[0].bits()];
-            out[1] = lut[lin[1].bits()];
-            out[2] = lut[lin[2].bits()];
-            out[3] = 255;
-        }
-
         auto* raw = new Frame();
         raw->width = dispW;
         raw->height = dispH;
         raw->pixelAspect = pixelAspect_;
-        raw->rgba = std::move(bufs.rgba);
         raw->linearRgb = std::move(bufs.linearRgb);
+        // The display-referred 8-bit buffer is derived from linearRgb, and running
+        // its LUT here costs more than the decode it follows -- 16 ms of a 27 ms
+        // 4K read -- for a buffer the colour-managed display path never looks at.
+        // So it is left to Frame::rgba8(), and built here only while the player
+        // says every frame will need it anyway (see decodeRgba8). The retired
+        // buffer goes with it either way: unused it returns to the pool below,
+        // used it saves the build an allocation.
+        if (decodeRgba8())
+            raw->buildRgba8(std::move(bufs.rgba));
 
         std::shared_ptr<BufferPool> pool = pool_;
         return std::shared_ptr<Frame>(raw, [pool](Frame* p) {
             {
                 std::lock_guard<std::mutex> lk(pool->mtx);
                 if (pool->free.size() < 4)
-                    pool->free.push_back({ std::move(p->rgba), std::move(p->linearRgb) });
+                    pool->free.push_back({ p->releaseRgba8(), std::move(p->linearRgb) });
             }
             delete p;
         });

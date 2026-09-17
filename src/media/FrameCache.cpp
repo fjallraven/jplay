@@ -29,6 +29,15 @@ FramePtr FrameCache::get(const CacheKey& key) {
     if (it == map_.end())
         return nullptr;
     it->second.tick = ++tick_;
+    // A frame can grow after admission by building its 8-bit buffer (Frame::rgba8),
+    // and the ones that do are the ones handed out here -- the displayed frame a
+    // scope, the inspector or an uncoloured-managed upload just read. Reconciling
+    // on the way out keeps the budget honest without a walk of its own.
+    const size_t now = it->second.frame ? it->second.frame->bytes() : 0;
+    if (now != it->second.bytes) {
+        totalBytes_ = totalBytes_ - it->second.bytes + now;
+        it->second.bytes = now;
+    }
     return it->second.frame;
 }
 
@@ -50,10 +59,11 @@ void FrameCache::put(const CacheKey& key, FramePtr frame) {
         std::lock_guard<std::mutex> lk(mtx_);
         if (map_.count(key)) // already resident (a worker may have just fetched it)
             return;
-        totalBytes_ += frame->bytes();
+        const size_t admitted = frame->bytes();
+        totalBytes_ += admitted;
         // wantEpoch 0 keeps it out of the current wanted set: evictLocked() treats it
         // as evictable-first so it can't push out frames the playhead actually needs.
-        map_[key] = { std::move(frame), ++tick_, 0, 0 };
+        map_[key] = { std::move(frame), admitted, ++tick_, 0, 0 };
         evictLocked(doomed);
     }
     // doomed is freed here, with the lock released.
@@ -128,6 +138,21 @@ void FrameCache::clear() {
         totalBytes_ = 0;
         ++generation_;
     }
+    // ...and then not freed on this thread either. clear() is called from the UI
+    // thread on a proxy switch, a project load and a colour-management change, and
+    // returning the frames to the allocator is ~5 ms each: a full 12 GiB cache of
+    // 4K EXR frames took 690 ms with nothing else running, and 840 ms while the
+    // decode pool was busy -- a visible freeze at exactly the moment the user just
+    // asked for something. Nothing here needs to have happened before the next
+    // frame is drawn: the map is already detached and unreachable, so a detached
+    // thread can take its time over it.
+    //
+    // Detached rather than pooled because this must not queue behind decode work
+    // (the pool is what the refill runs on) and it must survive a shutdown that
+    // does not join anything (App::run ends in _Exit). One thread per flush, and a
+    // flush is a user action, so they cannot pile up.
+    if (!doomed.empty())
+        std::thread([d = std::move(doomed)]() mutable { d.clear(); }).detach();
 }
 
 uint64_t FrameCache::generation() const {
@@ -174,7 +199,7 @@ void FrameCache::evictLocked(std::vector<FramePtr>& doomed) {
     if (!overBudget())
         return;
     auto drop = [&](decltype(map_.begin()) it) {
-        totalBytes_ -= it->second.frame ? it->second.frame->bytes() : 0;
+        totalBytes_ -= std::min(totalBytes_, it->second.bytes);
         doomed.push_back(std::move(it->second.frame)); // freed by the caller, unlocked
         map_.erase(it);
     };
@@ -269,8 +294,9 @@ void FrameCache::workerLoop() {
         } else {
             failedMedia_.erase(job.key.media);
             if (gen == generation_ && !map_.count(job.key)) {
-                totalBytes_ += frame->bytes();
-                map_[job.key] = { std::move(frame), ++tick_, wantEpoch_, job.priority };
+                const size_t admitted = frame->bytes();
+                totalBytes_ += admitted;
+                map_[job.key] = { std::move(frame), admitted, ++tick_, wantEpoch_, job.priority };
                 std::vector<FramePtr> doomed;
                 evictLocked(doomed);
                 if (!doomed.empty()) {

@@ -839,6 +839,13 @@ bool App::settingsHandleEvent(const SDL_Event& e) {
         // session is what loads one (from the project's own media, as at startup).
         reinitOcioForFirstSource();
         hasTexture_ = false;             // force a re-render through the new path
+        // Switching to sRGB puts the frame's own 8-bit buffer back on the display
+        // path, and the resident frames were decoded without one (see
+        // Frame::rgba8): building those on the UI thread as each is displayed is a
+        // 16 ms stall per 4K frame. Flush instead, so they come back from the
+        // decode workers with it already built.
+        if (!useOcio)
+            cache_->clear();
         // Thumbnails are unaffected: a tile is the frame's own encoding, not a
         // display rendering, so it stands whichever way this is switched.
         // Color management is a per-project setting, not a user pref; no writePrefs.

@@ -12,6 +12,7 @@
 
 add_executable(exrbench
     exrbench.cpp
+    ../src/media/Frame.cpp
     ../src/media/ImageSeq.cpp
     ../src/media/ExrSource.cpp
     ../src/media/StillSource.cpp
@@ -46,6 +47,7 @@ endif()
 
 add_executable(cachebench
     cachebench.cpp
+    ../src/media/Frame.cpp
     ../src/media/FrameCache.cpp
     ../src/media/Media.cpp
     ../src/media/VideoSource.cpp

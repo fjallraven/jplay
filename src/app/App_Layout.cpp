@@ -402,7 +402,7 @@ void App::renderLayoutTiles(bool invalidate) {
                             SDL_UpdateTexture(slot.tex, nullptr, ocioPixels_.data(),
                                               f->width * 4);
                         } else {
-                            SDL_UpdateTexture(slot.tex, nullptr, f->rgba.data(), f->width * 4);
+                            SDL_UpdateTexture(slot.tex, nullptr, f->rgba8().data(), f->width * 4);
                         }
                     }
                     // Grade + tech-check post-pass, in place on the display texture

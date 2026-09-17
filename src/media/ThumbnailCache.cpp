@@ -215,13 +215,13 @@ std::vector<uint8_t> fitOnBlackSquare(const Frame& src, int size) {
 void renderFrameScaled(const Frame& src, int dw, int dh, std::vector<uint8_t>& out) {
     const int sw = src.width, sh = src.height;
     const size_t n = (size_t)sw * sh;
-    if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0 || src.rgba.size() < n * 4) {
+    if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0 || src.rgba8().size() < n * 4) {
         out.clear();
         return; // nothing to scale
     }
 
     out.resize((size_t)dw * dh * 4);
-    boxAverage(src.rgba.data(), sw, sh, out.data(), dw, dh);
+    boxAverage(src.rgba8().data(), sw, sh, out.data(), dw, dh);
     for (size_t i = 3; i < out.size(); i += 4)
         out[i] = 255; // opaque: these images are drawn, never blended
 }

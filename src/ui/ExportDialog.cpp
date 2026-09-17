@@ -648,7 +648,7 @@ const uint8_t* ExportDialog::displayPixels_(const FrameSource& fs, const Frame& 
                                             std::vector<uint8_t>& buf) const {
     auto it = colorXf_.find(fs.path);
     if (it == colorXf_.end() || !it->second.valid())
-        return f.rgba.data();
+        return f.rgba8().data();
     buf.resize((size_t)f.width * f.height * 4);
     it->second.apply(f, buf.data());
     return buf.data();
@@ -894,7 +894,7 @@ void ExportDialog::runImageExport(int64_t startFrame, int64_t endFrame) {
                     xf->applyToWorking(*frame, linBuf.data());
                     writeEXRLinear(outPath, frame->width, frame->height, linBuf.data());
                 } else if (frame)
-                    writeEXR(outPath, frame->width, frame->height, frame->rgba.data());
+                    writeEXR(outPath, frame->width, frame->height, frame->rgba8().data());
                 else {
                     // Black frame.
                     std::vector<uint8_t> black(outW * outH * 4, 0);

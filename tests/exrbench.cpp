@@ -43,8 +43,11 @@ static uint64_t fnv(uint64_t h, const void* data, size_t n) {
 }
 
 static uint64_t frameHash(const Frame& f) {
+    // rgba8() rather than a member: for an EXR the 8-bit buffer is built on first
+    // use now (see Frame::rgba8), and hashing it here is what keeps that build --
+    // the same LUT pass readFrame used to run inline -- inside the checksum.
     uint64_t h = 0xcbf29ce484222325ull;
-    h = fnv(h, f.rgba.data(), f.rgba.size());
+    h = fnv(h, f.rgba8().data(), f.rgba8().size());
     h = fnv(h, f.linearRgb.data(), f.linearRgb.size() * sizeof(Imath::half));
     return h;
 }

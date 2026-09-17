@@ -831,8 +831,8 @@ void widenFrame(const Frame& f, std::vector<float>& dst) {
             d[1] = s[1] * (1.0f / 65535.0f);
             d[2] = s[2] * (1.0f / 65535.0f);
         }
-    } else if (f.rgba.size() >= n * 4) {
-        const uint8_t* s = f.rgba.data();
+    } else if (f.rgba8().size() >= n * 4) {
+        const uint8_t* s = f.rgba8().data();
         for (size_t i = 0; i < n; ++i, s += 4, d += 3) {
             d[0] = s[0] * (1.0f / 255.0f);
             d[1] = s[1] * (1.0f / 255.0f);

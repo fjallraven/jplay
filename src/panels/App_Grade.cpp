@@ -402,18 +402,33 @@ void App::computeGradeHistogram() {
     CacheKey key{ clip->mediaId, clip->sourceOffset + (timeline_.playhead - clip->timelineStart) };
     if (key == gradeHistoKey_) return; // already computed for this frame
     FramePtr frame = cache_->get(key);
-    if (!frame || frame->rgba.empty()) return;
+    if (!frame) return;
+    const size_t n = (size_t)frame->width * frame->height;
+    // Sampled, not read whole -- so take the samples from whichever buffer the
+    // frame already carries. An EXR's 8-bit buffer is built on demand (see
+    // Frame::rgba8), and materialising 34 MB of it per displayed frame to look at
+    // 200k pixels would put the whole build on the UI thread during playback.
+    const bool fromLinear = frame->linearRgb.size() >= n * 3;
+    if (!fromLinear && frame->rgba8().size() < n * 4) return;
 
     gradeHisto_.fill(0.0f);
     gradeHistoR_.fill(0.0f);
     gradeHistoG_.fill(0.0f);
     gradeHistoB_.fill(0.0f);
-    const uint8_t* p = frame->rgba.data();
-    size_t n = (size_t)frame->width * frame->height;
+    const uint8_t* p = fromLinear ? nullptr : frame->rgba8().data();
+    const Imath::half* lin = fromLinear ? frame->linearRgb.data() : nullptr;
     size_t step = std::max<size_t>(1, n / 200000); // cap samples
     for (size_t i = 0; i < n; i += step) {
-        const uint8_t* px = p + i * 4;
-        int r = px[0], gg = px[1], b = px[2];
+        int r, gg, b;
+        if (fromLinear) {
+            const Imath::half* s = lin + i * 3;
+            r  = srgb8FromHalfBits(s[0].bits());
+            gg = srgb8FromHalfBits(s[1].bits());
+            b  = srgb8FromHalfBits(s[2].bits());
+        } else {
+            const uint8_t* px = p + i * 4;
+            r = px[0]; gg = px[1]; b = px[2];
+        }
         int l = (r * 54 + gg * 183 + b * 19) >> 8; // ~Rec709 luma
         gradeHisto_[(l * 63) / 255] += 1.0f;
         gradeHistoR_[(r * 63) / 255] += 1.0f;

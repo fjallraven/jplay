@@ -59,7 +59,7 @@ find_package(Threads REQUIRED)
 find_package(RapidJSON CONFIG REQUIRED)
 
 # vcpkg's shaderc port exports a single config package on every platform.
-find_package(unofficial-shaderc CONFIG REQUIRED)
+    find_package(unofficial-shaderc CONFIG REQUIRED)
 
 
 # NDI
@@ -302,6 +302,7 @@ add_executable(jplay WIN32
     src/media/AudioSource.cpp
     src/media/AudioEngine.cpp
     src/media/WaveformCache.cpp
+    src/media/Frame.cpp
     src/media/ExrSource.cpp
     src/media/StillSource.cpp
     src/media/ImageSeq.cpp
@@ -388,7 +389,7 @@ if(WIN32)
 endif()
 
 # shaderc
-target_link_libraries(jplay PRIVATE unofficial::shaderc::shaderc)
+    target_link_libraries(jplay PRIVATE unofficial::shaderc::shaderc)
 
 
 # NDI

@@ -1,5 +1,7 @@
 #include "OcioGpu.h"
 
+#include "StageCopy.h"
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
 #include <SDL3/SDL_opengl_glext.h>
@@ -613,7 +615,7 @@ int OcioGpu::stagePbo_(const void* pixels, size_t bytes) {
                                    GL_MAP_UNSYNCHRONIZED_BIT);
     if (!dst)
         return -1; // caller restores the binding
-    SDL_memcpy(dst, pixels, bytes);
+    stageCopy().run(dst, pixels, bytes);
     if (p_glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER) == GL_FALSE)
         return -1; // caller restores the binding
 

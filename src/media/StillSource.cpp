@@ -149,7 +149,7 @@ FramePtr StillSequenceSource::readFrame(int64_t index) {
     auto* raw = new Frame();
     raw->width = w;
     raw->height = h;
-    raw->rgba = std::move(rgba);
+    raw->setRgba8(std::move(rgba));
     raw->rgba16 = std::move(rgba16);
 
     std::shared_ptr<BufferPool> pool = pool_;
@@ -157,7 +157,7 @@ FramePtr StillSequenceSource::readFrame(int64_t index) {
         {
             std::lock_guard<std::mutex> lk(pool->mtx);
             if (pool->free.size() < 4)
-                pool->free.push_back(std::move(p->rgba));
+                pool->free.push_back(p->releaseRgba8());
         }
         delete p;
     });

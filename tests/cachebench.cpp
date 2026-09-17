@@ -151,5 +151,36 @@ int main(int argc, char** argv) {
     printf("\n== B. evictLocked(): worker cost per inserted frame\n");
     benchEvict(4096);
 
+    // C. clear(): what a proxy switch / project load / colour-management change
+    // costs the thread that calls it. The frames themselves are gigabytes of
+    // buffers and returning them to the allocator is the whole cost, so clear()
+    // detaches that work; what is timed here is what the UI thread still waits
+    // for. The inline row is the same release done on this thread, which is what
+    // it used to do.
+    printf("\n== C. clear(): flush cost on the calling thread\n");
+    printf("    %10s %14s %18s %16s\n", "frames", "MiB/frame", "clear() (ms)", "inline (ms)");
+    for (size_t mib : { (size_t)8, (size_t)50 }) {
+        const size_t frameBytes = mib * 1024 * 1024;
+        const int N = (int)(4ull * 1024 * 1024 * 1024 / frameBytes); // a 4 GiB cache
+        auto fill = [&](FrameCache& c) {
+            for (int i = 0; i < N; ++i)
+                c.put(CacheKey{ "bench", i }, makeFrame(frameBytes));
+        };
+        FrameCache a((size_t)N * frameBytes * 2, 1);
+        fill(a);
+        auto t0 = Clock::now();
+        a.clear();
+        const double detached = msOf(Clock::now() - t0);
+
+        std::vector<FramePtr> held;
+        held.reserve(N);
+        for (int i = 0; i < N; ++i)
+            held.push_back(makeFrame(frameBytes));
+        t0 = Clock::now();
+        held.clear();
+        const double inlineMs = msOf(Clock::now() - t0);
+        printf("    %10d %14zu %18.2f %16.2f\n", N, mib, detached, inlineMs);
+    }
+
     return 0;
 }

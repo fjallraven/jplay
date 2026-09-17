@@ -150,6 +150,9 @@ private:
     mutable std::vector<float> glyphX_;
     mutable std::string lastLayoutText_;
     mutable float textStartX_ = 0.f;
+    // Horizontal scroll of text wider than the field; adjusted at render time so
+    // the cursor stays visible. textStartX_ already includes it.
+    mutable float scrollX_ = 0.f;
 };
 
 // ── SegToggle ─────────────────────────────────────────────────────────────

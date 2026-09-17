@@ -81,7 +81,13 @@ void conformFrame(const Frame& src, int dstW, int dstH, Frame& out) {
     const size_t n = (size_t)dstW * dstH;
     out.width = dstW;
     out.height = dstH;
-    out.rgba.assign(n * 4, 0);
+    // The 8-bit buffer is copied only when `src` already carries one: for an EXR
+    // it is derived from linearRgb, so conforming that and letting rgba8() build
+    // from it later gives the same pixels without materialising 34 MB here.
+    const bool have8 = src.hasRgba8() &&
+                       src.rgba8().size() >= (size_t)src.width * src.height * 4;
+    if (have8)
+        out.rgba8Mut().assign(n * 4, 0);
     const bool haveLinear = src.linearRgb.size() >= (size_t)src.width * src.height * 3;
     if (haveLinear)
         out.linearRgb.assign(n * 3, Imath::half(0.0f));
@@ -99,9 +105,10 @@ void conformFrame(const Frame& src, int dstW, int dstH, Frame& out) {
     const int copyW = x1 - x0;
     for (int y = y0; y < y1; ++y) {
         const int sy = y - offY;
-        std::memcpy(out.rgba.data() + ((size_t)y * dstW + x0) * 4,
-                    src.rgba.data() + ((size_t)sy * src.width + (x0 - offX)) * 4,
-                    (size_t)copyW * 4);
+        if (have8)
+            std::memcpy(out.rgba8Mut().data() + ((size_t)y * dstW + x0) * 4,
+                        src.rgba8().data() + ((size_t)sy * src.width + (x0 - offX)) * 4,
+                        (size_t)copyW * 4);
         if (haveLinear)
             std::memcpy(out.linearRgb.data() + ((size_t)y * dstW + x0) * 3,
                         src.linearRgb.data() + ((size_t)sy * src.width + (x0 - offX)) * 3,
@@ -114,8 +121,11 @@ void conformFrame(const Frame& src, int dstW, int dstH, Frame& out) {
     // instead of a*(1-w) wherever the incoming frame is smaller. Opaque black is
     // exactly the coverage the blend is meant to model. Runs after the copy loop,
     // which brings the source's own alpha in with the memcpy.
-    for (size_t i = 0; i < n; ++i)
-        out.rgba[i * 4 + 3] = 255;
+    if (have8) {
+        uint8_t* p = out.rgba8Mut().data();
+        for (size_t i = 0; i < n; ++i)
+            p[i * 4 + 3] = 255;
+    }
 }
 
 // Scale a frame toward black in place: the fade a clip performs when there is no
@@ -125,9 +135,11 @@ void conformFrame(const Frame& src, int dstW, int dstH, Frame& out) {
 void fadeFrame(Frame& f, float opacity) {
     const float k = std::clamp(opacity, 0.0f, 1.0f);
     const size_t n = (size_t)f.width * f.height;
-    if (f.rgba.size() >= n * 4) {
+    // Only a buffer that is already there: an unbuilt one is built from the
+    // linearRgb this scales below, so it comes out faded either way.
+    if (f.hasRgba8() && f.rgba8().size() >= n * 4) {
         const SrgbTables& t = srgbTables();
-        uint8_t* p = f.rgba.data();
+        uint8_t* p = f.rgba8Mut().data();
         for (size_t i = 0; i < n; ++i, p += 4)
             for (int c = 0; c < 3; ++c) {
                 float lin = t.toLinear[p[c]] * k;
@@ -157,8 +169,8 @@ void App::frameInput(const Frame& f, const void*& pixels, OcioGpu::InputFormat& 
     } else if (f.rgba16.size() >= n * 4) {
         pixels = f.rgba16.data();
         fmt = OcioGpu::InputFormat::Rgba16;
-    } else if (f.rgba.size() >= n * 4) {
-        pixels = f.rgba.data();
+    } else if (f.hasRgba8() && f.rgba8().size() >= n * 4) {
+        pixels = f.rgba8().data();
         fmt = OcioGpu::InputFormat::Rgba8;
     } else {
         pixels = nullptr;
@@ -191,24 +203,34 @@ bool blendFrames(const Frame& a, const Frame& b, float mix, Frame& out) {
     if (a.width != b.width || a.height != b.height || a.width <= 0 || a.height <= 0)
         return false;
     const size_t n = (size_t)a.width * a.height;
-    if (a.rgba.size() < n * 4 || b.rgba.size() < n * 4)
+    // The 8-bit mix runs only where both sides already carry the buffer. Two EXR
+    // frames do not: they mix in scene-linear below, which is the domain this
+    // wants anyway, and the blend's own rgba8() derives from that result. Forcing
+    // the build here would put two 16 ms LUT passes on the UI thread for every
+    // frame of a dissolve, to produce a buffer the display path then ignores.
+    const bool have8 = a.hasRgba8() && b.hasRgba8() &&
+                       a.rgba8().size() >= n * 4 && b.rgba8().size() >= n * 4;
+    const bool haveLinear = a.linearRgb.size() >= n * 3 && b.linearRgb.size() >= n * 3;
+    if (!have8 && !haveLinear)
         return false;
     const float w = std::clamp(mix, 0.0f, 1.0f);
     out.width = a.width;
     out.height = a.height;
 
-    const SrgbTables& t = srgbTables();
-    out.rgba.resize(n * 4);
-    const uint8_t* pa = a.rgba.data();
-    const uint8_t* pb = b.rgba.data();
-    uint8_t* po = out.rgba.data();
-    for (size_t i = 0; i < n; ++i, pa += 4, pb += 4, po += 4) {
-        for (int k = 0; k < 3; ++k) {
-            float lin = t.toLinear[pa[k]] * (1.0f - w) + t.toLinear[pb[k]] * w;
-            int idx = (int)std::lround(std::clamp(lin, 0.0f, 1.0f) * (kEncSteps - 1));
-            po[k] = t.toSrgb[idx];
+    if (have8) {
+        const SrgbTables& t = srgbTables();
+        out.rgba8Mut().resize(n * 4);
+        const uint8_t* pa = a.rgba8().data();
+        const uint8_t* pb = b.rgba8().data();
+        uint8_t* po = out.rgba8Mut().data();
+        for (size_t i = 0; i < n; ++i, pa += 4, pb += 4, po += 4) {
+            for (int k = 0; k < 3; ++k) {
+                float lin = t.toLinear[pa[k]] * (1.0f - w) + t.toLinear[pb[k]] * w;
+                int idx = (int)std::lround(std::clamp(lin, 0.0f, 1.0f) * (kEncSteps - 1));
+                po[k] = t.toSrgb[idx];
+            }
+            po[3] = (uint8_t)std::lround(pa[3] * (1.0f - w) + pb[3] * w); // opacity, not light
         }
-        po[3] = (uint8_t)std::lround(pa[3] * (1.0f - w) + pb[3] * w); // opacity, not light
     }
 
     // The 16-bit buffer, when both sides carry one. Same intent as the 8-bit mix
@@ -239,7 +261,7 @@ bool blendFrames(const Frame& a, const Frame& b, float mix, Frame& out) {
         out.rgba16.clear();
     }
 
-    if (a.linearRgb.size() >= n * 3 && b.linearRgb.size() >= n * 3) {
+    if (haveLinear) {
         out.linearRgb.resize(n * 3);
         const Imath::half* la = a.linearRgb.data();
         const Imath::half* lb = b.linearRgb.data();
@@ -1259,10 +1281,10 @@ void App::renderPlayer() {
                                              const std::string& cs) {
                             out.width = in.width;
                             out.height = in.height;
-                            out.rgba.resize((size_t)in.width * in.height * 4);
+                            out.rgba8Mut().resize((size_t)in.width * in.height * 4);
                             out.rgba16.clear();
                             out.linearRgb.clear(); // display-referred now
-                            ocio_.cpuTransformFor(cs, grade_.gain).apply(in, out.rgba.data());
+                            ocio_.cpuTransformFor(cs, grade_.gain).apply(in, out.rgba8Mut().data());
                         };
                         toDisplay(*pri, ocioMixFrame_, csA);
                         toDisplay(*sec, ocioMixFrameB_, csB);
@@ -1330,7 +1352,7 @@ void App::renderPlayer() {
                                 d[3] = one;
                             }
                         } else {
-                            const uint8_t* s = fr->rgba.data();
+                            const uint8_t* s = fr->rgba8().data();
                             for (size_t i = 0; i < n; ++i, s += 4, d += 4) {
                                 for (int k = 0; k < 3; ++k) {
                                     float v = s[k] * (1.0f / 255.0f);
@@ -1455,7 +1477,7 @@ void App::renderPlayer() {
                     // Colour management off, or a mixed-space dissolve already
                     // transformed above: the frame's own 8-bit buffer stands.
                     gainHandledUpstream = csMixed;
-                    SDL_UpdateTexture(texture_, nullptr, fr->rgba.data(), fr->width * 4);
+                    SDL_UpdateTexture(texture_, nullptr, fr->rgba8().data(), fr->width * 4);
                 }
                 // Color-grading + tech-check post-pass: grade the freshly-built
                 // display texture in place on the GPU, then apply the tech-check

@@ -268,7 +268,7 @@ FramePtr VideoSource::convert(const AVFrame* f) {
     const size_t packed = n * 4;
     buf.reserve(packed + (size_t)f->width * 4 + 64);
     buf.resize(packed);
-    raw->rgba = std::move(buf);
+    raw->setRgba8(std::move(buf));
 
     if (deep) {
         buf16.resize(packed);
@@ -280,11 +280,11 @@ FramePtr VideoSource::convert(const AVFrame* f) {
         // exact. No dither — this buffer only feeds the scopes and the small
         // downscaled previews, never the display transform.
         const uint16_t* s16 = raw->rgba16.data();
-        uint8_t* s8 = raw->rgba.data();
+        uint8_t* s8 = raw->rgba8Mut().data();
         for (size_t i = 0; i < packed; ++i)
             s8[i] = (uint8_t)(s16[i] >> 8);
     } else {
-        uint8_t* dst[4] = { raw->rgba.data(), nullptr, nullptr, nullptr };
+        uint8_t* dst[4] = { raw->rgba8Mut().data(), nullptr, nullptr, nullptr };
         int dstStride[4] = { f->width * 4, 0, 0, 0 };
         sws_scale(sws_, f->data, f->linesize, 0, f->height, dst, dstStride);
     }
@@ -294,7 +294,7 @@ FramePtr VideoSource::convert(const AVFrame* f) {
         {
             std::lock_guard<std::mutex> lk(pool->mtx);
             if (pool->buffers.size() < 4)
-                pool->buffers.push_back(std::move(p->rgba));
+                pool->buffers.push_back(p->releaseRgba8());
             if (!p->rgba16.empty() && pool->buffers16.size() < 4)
                 pool->buffers16.push_back(std::move(p->rgba16));
         }

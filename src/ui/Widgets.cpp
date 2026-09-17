@@ -350,7 +350,6 @@ void TextInput::render(SDL_Renderer* r, TextFont* font) const {
     const float glyphH = font->lineHeight();
     const float ty = rect_.y + (rect_.h - glyphH) * .5f;
     const float padX = 6.f;
-    textStartX_ = rect_.x + padX;
 
     // Rebuild per-character x offsets when the text changes. Single-char measures
     // keep the font's (non-evicting) texture cache bounded to distinct characters.
@@ -371,6 +370,26 @@ void TextInput::render(SDL_Renderer* r, TextFont* font) const {
         return glyphX_.empty() ? 0.f : glyphX_[i];
     };
 
+    // Scroll text wider than the field so the cursor stays in view, and never
+    // leave empty space past the end of the text while it could be showing text.
+    const float availW = std::max(0.f, rect_.w - 2.f * padX);
+    const float textW  = gx((int)glyphX_.size() - 1);
+    const float curX   = gx(cursor_);
+    if (curX - scrollX_ > availW) scrollX_ = curX - availW;
+    if (curX < scrollX_)          scrollX_ = curX;
+    scrollX_ = std::clamp(scrollX_, 0.f, std::max(0.f, textW - availW));
+    textStartX_ = rect_.x + padX - scrollX_;
+
+    // Clip the contents to the field's interior (intersected with any clip the
+    // host panel already set), so long text doesn't spill past the border.
+    SDL_Rect prevClip{};
+    const bool hadClip = SDL_RenderClipEnabled(r);
+    if (hadClip) SDL_GetRenderClipRect(r, &prevClip);
+    SDL_Rect clip{ (int)SDL_floorf(rect_.x + 1.f), (int)SDL_floorf(rect_.y + 1.f),
+                   std::max(0, (int)SDL_ceilf(rect_.w - 2.f)), std::max(0, (int)SDL_ceilf(rect_.h - 2.f)) };
+    if (hadClip && !SDL_GetRectIntersection(&clip, &prevClip, &clip)) clip.w = clip.h = 0;
+    SDL_SetRenderClipRect(r, &clip);
+
     // Selection highlight, behind the text.
     if (focused_ && hasSel()) {
         float x0 = textStartX_ + gx(selLo());
@@ -388,6 +407,8 @@ void TextInput::render(SDL_Renderer* r, TextFont* font) const {
         setColor(r, kColText);
         jplay::fillRect(r, &cur);
     }
+
+    SDL_SetRenderClipRect(r, hadClip ? &prevClip : nullptr);
 }
 
 // ─── RadioGroup ──────────────────────────────────────────────────────────────
