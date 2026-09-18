@@ -1,5 +1,7 @@
 #pragma once
 
+#include "FrameAlloc.h"
+
 #include <Imath/half.h>
 
 #include <atomic>
@@ -40,11 +42,16 @@
 // A frame handed out by the cache is const and shared between threads, so the
 // on-demand build is guarded and rgba8() is safe to call from any of them.
 struct Frame {
+    // The scene-linear buffer's type: a vector whose allocator default-initialises
+    // (resize() does not zero-fill 50 MB the decoder is about to overwrite) and
+    // recycles freed blocks through a process-wide pool (see FrameAlloc.h).
+    using HalfBuffer = std::vector<Imath::half, FrameAlloc<Imath::half>>;
+
     int width = 0;
     int height = 0;
     float pixelAspect = 1.0f;
-    std::vector<uint16_t>    rgba16;    // width * height * 4 (sources deeper than 8 bit)
-    std::vector<Imath::half> linearRgb; // width * height * 3 (EXR only)
+    std::vector<uint16_t> rgba16;    // width * height * 4 (sources deeper than 8 bit)
+    HalfBuffer            linearRgb; // width * height * 3 (EXR only)
 
     Frame() = default;
     ~Frame() = default;

@@ -1,5 +1,6 @@
 #include "ExrSource.h"
 
+#include "ExrFast.h"
 #include "ImageSeq.h"
 
 #include <OpenEXR/ImfChannelList.h>
@@ -253,6 +254,7 @@ std::shared_ptr<ExrSequenceSource> ExrSequenceSource::open(const std::string& an
         src->rgbDirect_ = pick.found &&
             hasFullResRgb(h.channels(), pick.layer.empty() ? std::string() : pick.layer + ".");
         src->compressed_ = h.compression() != Imf::NO_COMPRESSION;
+        src->fastPath_ = src->rgbDirect_ && !src->compressed_;
 
         if (!pick.found) {
             // Frames will decode black (see findColorPart); dump what the file
@@ -286,116 +288,119 @@ FramePtr ExrSequenceSource::readFrame(int64_t index) {
         ~ReadCount() { --g_exrReads; }
     } reads;
     const int threads = (reads.n == 1 && compressed_) ? Imf::globalThreadCount() : 0;
+    const std::string prefix = layer_.empty() ? std::string() : layer_ + ".";
 
     try {
-        std::optional<Imf::MultiPartInputFile> mp;
-        std::optional<Imf::InputPart> part;
-        std::optional<Imf::RgbaInputFile> rgbaFile;
-        Imath::Box2i disp, data;
-        if (rgbDirect_) {
-            mp.emplace(file.c_str(), threads);
-            part.emplace(*mp, part_);
-            disp = part->header().displayWindow();
-            data = part->header().dataWindow();
-        } else {
-            rgbaFile.emplace(part_, file.c_str(), layer_, threads);
-            disp = rgbaFile->displayWindow();
-            data = rgbaFile->dataWindow();
+        Frame::HalfBuffer linear;
+        int dispW = 0, dispH = 0;
+
+        // Uncompressed half RGB has nothing to decode, so the file is streamed and
+        // interleaved directly (see ExrFast.h). A file the fast reader declines --
+        // this one differs from the first, or is not what it claims -- takes the
+        // OpenEXR path below instead, and the result is the same either way.
+        bool done = false;
+        if (fastPath_ && exrfast::enabled()) {
+            done = exrfast::readRgbHalf(file, part_, prefix, linear, dispW, dispH);
         }
 
-        const int dispW = disp.max.x - disp.min.x + 1;
-        const int dispH = disp.max.y - disp.min.y + 1;
-        const int dataW = data.max.x - data.min.x + 1;
-        const int dataH = data.max.y - data.min.y + 1;
-        if (dispW <= 0 || dispH <= 0 || dataW <= 0 || dataH <= 0)
-            return nullptr;
-
-        // Reuse a retired output buffer pair instead of allocating fresh every read.
-        ExrBuffers bufs;
-        {
-            std::lock_guard<std::mutex> lk(pool_->mtx);
-            if (!pool_->free.empty()) {
-                bufs = std::move(pool_->free.back());
-                pool_->free.pop_back();
-            }
-        }
-
-        // Whether the data window covers the whole display window -- the ordinary
-        // case, and the one every frame of a rendered sequence takes. When it does
-        // the decode below writes every pixel of linearRgb, so clearing it first is
-        // ~50 MB of zero-fill per 4K frame that is overwritten immediately after
-        // (and a buffer back from the pool is already the right size, so the resize
-        // is then free). Only a data window smaller than the display window leaves a
-        // border no pixel is written to, and only that case has to clear -- otherwise
-        // the border would show whatever frame the pooled buffer last held. rgba is
-        // never cleared: the LUT pass at the end writes all of it.
-        const bool covers = data.min.x <= disp.min.x && data.min.y <= disp.min.y &&
-                            data.max.x >= disp.max.x && data.max.y >= disp.max.y;
-        const size_t npx = (size_t)dispW * dispH;
-        if (covers)
-            bufs.linearRgb.resize(npx * 3);
-        else
-            bufs.linearRgb.assign(npx * 3, Imath::half(0.0f));
-
-        // The part of the data window that lands on the display window.
-        const int y0 = std::max(disp.min.y, data.min.y);
-        const int y1 = std::min(disp.max.y, data.max.y);
-        const int x0 = std::max(disp.min.x, data.min.x);
-        const int x1 = std::min(disp.max.x, data.max.x);
-        const size_t pixelBytes = 3 * sizeof(Imath::half);
-        auto linRow = [&](int y) {
-            return bufs.linearRgb.data() + ((size_t)(y - disp.min.y) * dispW + (x0 - disp.min.x)) * 3;
-        };
-
-        // Scratch buffers are per thread: this source is stateless and reads run
-        // fully in parallel across worker threads.
-        if (part && x0 <= x1 && y0 <= y1) {
-            // R/G/B decode straight into linearRgb when every decoded column lands
-            // inside the display window, which a rendered sequence's always do. A
-            // data window wider than the display window would write past the row
-            // ends, so only that case decodes into scratch and copies across.
-            const bool direct = data.min.x >= disp.min.x && data.max.x <= disp.max.x;
-            thread_local std::vector<Imath::half> scratch;
-            char* base;
-            Imath::V2i origin;
-            int64_t w;
-            if (direct) {
-                base = (char*)bufs.linearRgb.data();
-                origin = disp.min;
-                w = dispW;
+        if (!done) {
+            std::optional<Imf::MultiPartInputFile> mp;
+            std::optional<Imf::InputPart> part;
+            std::optional<Imf::RgbaInputFile> rgbaFile;
+            Imath::Box2i disp, data;
+            if (rgbDirect_) {
+                mp.emplace(file.c_str(), threads);
+                part.emplace(*mp, part_);
+                disp = part->header().displayWindow();
+                data = part->header().dataWindow();
             } else {
-                scratch.resize((size_t)dataW * (y1 - y0 + 1) * 3);
-                base = (char*)scratch.data();
-                origin = Imath::V2i(data.min.x, y0);
-                w = dataW;
+                rgbaFile.emplace(part_, file.c_str(), layer_, threads);
+                disp = rgbaFile->displayWindow();
+                data = rgbaFile->dataWindow();
             }
-            const int64_t h = direct ? dispH : (y1 - y0 + 1);
-            const std::string prefix = layer_.empty() ? std::string() : layer_ + ".";
-            Imf::FrameBuffer fb;
-            const char* names[] = { "R", "G", "B" };
-            for (int c = 0; c < 3; ++c)
-                fb.insert(prefix + names[c],
-                          Imf::Slice::Make(Imf::HALF, base + c * sizeof(Imath::half), origin, w, h,
-                                           pixelBytes, pixelBytes * (size_t)w));
-            part->setFrameBuffer(fb);
-            part->readPixels(y0, y1);
-            if (!direct)
-                for (int y = y0; y <= y1; ++y)
-                    std::memcpy(linRow(y),
-                                scratch.data() + ((size_t)(y - y0) * dataW + (x0 - data.min.x)) * 3,
-                                (size_t)(x1 - x0 + 1) * pixelBytes);
-        } else if (rgbaFile) {
-            thread_local std::vector<Imf::Rgba> pixels;
-            pixels.resize((size_t)dataW * dataH);
-            rgbaFile->setFrameBuffer(pixels.data() - data.min.x - (size_t)data.min.y * dataW, 1, (size_t)dataW);
-            rgbaFile->readPixels(data.min.y, data.max.y);
-            for (int y = y0; y <= y1; ++y) {
-                const Imf::Rgba* src = pixels.data() + (size_t)(y - data.min.y) * dataW + (x0 - data.min.x);
-                Imath::half* dst = linRow(y);
-                for (int x = x0; x <= x1; ++x, ++src, dst += 3) {
-                    dst[0] = src->r;
-                    dst[1] = src->g;
-                    dst[2] = src->b;
+
+            dispW = disp.max.x - disp.min.x + 1;
+            dispH = disp.max.y - disp.min.y + 1;
+            const int dataW = data.max.x - data.min.x + 1;
+            const int dataH = data.max.y - data.min.y + 1;
+            if (dispW <= 0 || dispH <= 0 || dataW <= 0 || dataH <= 0)
+                return nullptr;
+
+            // Whether the data window covers the whole display window -- the ordinary
+            // case, and the one every frame of a rendered sequence takes. When it does
+            // the decode below writes every pixel of linearRgb, so nothing needs
+            // clearing first (and resize() on this buffer type does not zero-fill:
+            // see Frame::HalfBuffer). Only a data window smaller than the display
+            // window leaves a border no pixel is written to, and only that case has to
+            // clear -- otherwise the border would show whatever the recycled memory
+            // last held. rgba is never cleared: the LUT pass at the end writes all of it.
+            const bool covers = data.min.x <= disp.min.x && data.min.y <= disp.min.y &&
+                                data.max.x >= disp.max.x && data.max.y >= disp.max.y;
+            const size_t npx = (size_t)dispW * dispH;
+            if (covers)
+                linear.resize(npx * 3);
+            else
+                linear.assign(npx * 3, Imath::half(0.0f));
+
+            // The part of the data window that lands on the display window.
+            const int y0 = std::max(disp.min.y, data.min.y);
+            const int y1 = std::min(disp.max.y, data.max.y);
+            const int x0 = std::max(disp.min.x, data.min.x);
+            const int x1 = std::min(disp.max.x, data.max.x);
+            const size_t pixelBytes = 3 * sizeof(Imath::half);
+            auto linRow = [&](int y) {
+                return linear.data() + ((size_t)(y - disp.min.y) * dispW + (x0 - disp.min.x)) * 3;
+            };
+
+            // Scratch buffers are per thread: this source is stateless and reads run
+            // fully in parallel across worker threads.
+            if (part && x0 <= x1 && y0 <= y1) {
+                // R/G/B decode straight into linearRgb when every decoded column lands
+                // inside the display window, which a rendered sequence's always do. A
+                // data window wider than the display window would write past the row
+                // ends, so only that case decodes into scratch and copies across.
+                const bool direct = data.min.x >= disp.min.x && data.max.x <= disp.max.x;
+                thread_local std::vector<Imath::half> scratch;
+                char* base;
+                Imath::V2i origin;
+                int64_t w;
+                if (direct) {
+                    base = (char*)linear.data();
+                    origin = disp.min;
+                    w = dispW;
+                } else {
+                    scratch.resize((size_t)dataW * (y1 - y0 + 1) * 3);
+                    base = (char*)scratch.data();
+                    origin = Imath::V2i(data.min.x, y0);
+                    w = dataW;
+                }
+                const int64_t h = direct ? dispH : (y1 - y0 + 1);
+                Imf::FrameBuffer fb;
+                const char* names[] = { "R", "G", "B" };
+                for (int c = 0; c < 3; ++c)
+                    fb.insert(prefix + names[c],
+                              Imf::Slice::Make(Imf::HALF, base + c * sizeof(Imath::half), origin, w, h,
+                                               pixelBytes, pixelBytes * (size_t)w));
+                part->setFrameBuffer(fb);
+                part->readPixels(y0, y1);
+                if (!direct)
+                    for (int y = y0; y <= y1; ++y)
+                        std::memcpy(linRow(y),
+                                    scratch.data() + ((size_t)(y - y0) * dataW + (x0 - data.min.x)) * 3,
+                                    (size_t)(x1 - x0 + 1) * pixelBytes);
+            } else if (rgbaFile) {
+                thread_local std::vector<Imf::Rgba> pixels;
+                pixels.resize((size_t)dataW * dataH);
+                rgbaFile->setFrameBuffer(pixels.data() - data.min.x - (size_t)data.min.y * dataW, 1, (size_t)dataW);
+                rgbaFile->readPixels(data.min.y, data.max.y);
+                for (int y = y0; y <= y1; ++y) {
+                    const Imf::Rgba* src = pixels.data() + (size_t)(y - data.min.y) * dataW + (x0 - data.min.x);
+                    Imath::half* dst = linRow(y);
+                    for (int x = x0; x <= x1; ++x, ++src, dst += 3) {
+                        dst[0] = src->r;
+                        dst[1] = src->g;
+                        dst[2] = src->b;
+                    }
                 }
             }
         }
@@ -404,25 +409,34 @@ FramePtr ExrSequenceSource::readFrame(int64_t index) {
         raw->width = dispW;
         raw->height = dispH;
         raw->pixelAspect = pixelAspect_;
-        raw->linearRgb = std::move(bufs.linearRgb);
+        raw->linearRgb = std::move(linear);
         // The display-referred 8-bit buffer is derived from linearRgb, and running
         // its LUT here costs more than the decode it follows -- 16 ms of a 27 ms
         // 4K read -- for a buffer the colour-managed display path never looks at.
         // So it is left to Frame::rgba8(), and built here only while the player
-        // says every frame will need it anyway (see decodeRgba8). The retired
-        // buffer goes with it either way: unused it returns to the pool below,
-        // used it saves the build an allocation.
-        if (decodeRgba8())
-            raw->buildRgba8(std::move(bufs.rgba));
+        // says every frame will need it anyway (see decodeRgba8), into a retired
+        // buffer from the pool when one is there.
+        if (decodeRgba8()) {
+            std::vector<uint8_t> rgba;
+            {
+                std::lock_guard<std::mutex> lk(pool_->mtx);
+                if (!pool_->freeRgba.empty()) {
+                    rgba = std::move(pool_->freeRgba.back());
+                    pool_->freeRgba.pop_back();
+                }
+            }
+            raw->buildRgba8(std::move(rgba));
+        }
 
         std::shared_ptr<BufferPool> pool = pool_;
         return std::shared_ptr<Frame>(raw, [pool](Frame* p) {
-            {
+            std::vector<uint8_t> rgba = p->releaseRgba8();
+            if (!rgba.empty()) {
                 std::lock_guard<std::mutex> lk(pool->mtx);
-                if (pool->free.size() < 4)
-                    pool->free.push_back({ p->releaseRgba8(), std::move(p->linearRgb) });
+                if (pool->freeRgba.size() < 4)
+                    pool->freeRgba.push_back(std::move(rgba));
             }
-            delete p;
+            delete p; // linearRgb goes back to the process-wide FramePool via its allocator
         });
     } catch (const std::exception& e) {
         std::fprintf(stderr, "EXR read failed (%s): %s\n", file.c_str(), e.what());

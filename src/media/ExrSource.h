@@ -61,20 +61,22 @@ private:
     // slower than reading on the calling thread (4K: 27 ms alone vs 33 ms pooled),
     // so readFrame() only uses the pool when this is set.
     bool compressed_ = false;
+    // Whether readFrame() may bypass OpenEXR altogether: an uncompressed scanline
+    // part with half R/G/B has nothing to decode, only rows to interleave (see
+    // ExrFast.h). Set from the first file at open(); every read still checks its
+    // own file and falls back to OpenEXR for one that differs.
+    bool fastPath_ = false;
 
-    // Retired output buffers from released Frames, reused by readFrame() instead
-    // of a fresh allocation every read (frame size is typically constant across a
+    // Retired 8-bit buffers from released Frames, reused by readFrame() instead of
+    // a fresh allocation every read (frame size is typically constant across a
     // sequence). Reads run fully in parallel across threads (see class doc), so
     // this pool is mutex-protected and held via shared_ptr so a Frame's release
-    // deleter can return its buffers here even after this source is destroyed
-    // (the Frame may outlive it, cached elsewhere).
-    struct ExrBuffers {
-        std::vector<uint8_t> rgba;
-        std::vector<Imath::half> linearRgb;
-    };
+    // deleter can return its buffer here even after this source is destroyed (the
+    // Frame may outlive it, cached elsewhere). linearRgb needs no such pool: its
+    // allocator recycles through the process-wide FramePool (see FrameAlloc.h).
     struct BufferPool {
         std::mutex mtx;
-        std::vector<ExrBuffers> free;
+        std::vector<std::vector<uint8_t>> freeRgba;
     };
     std::shared_ptr<BufferPool> pool_ = std::make_shared<BufferPool>();
 };

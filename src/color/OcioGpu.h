@@ -125,18 +125,44 @@ private:
     // in flight, one spare, which at one upload per frame means the fence a slot
     // is reused behind has always long since signalled. Each holds one frame
     // (168 MB at 8192x3432 half), allocated once per frame shape.
+    //
+    // Where the GL offers it (ARB_buffer_storage, core in 4.4) each buffer is
+    // mapped once for its lifetime, coherently. That removes the map/unmap calls
+    // from the frame, and -- the point -- gives render() a destination it can hand
+    // to the copy helpers before it makes its first GL call (see beginStage_).
     static constexpr int kNumPbos = 3;
     struct Pbo {
-        unsigned id = 0;     // GL buffer id
-        size_t   size = 0;   // bytes currently allocated
+        unsigned id = 0;         // GL buffer id
+        size_t   size = 0;       // bytes currently allocated
         void*    sync = nullptr; // GLsync fence for the DMA that last read it
+        void*    map = nullptr;  // persistent mapping, or null (mapped per upload)
     };
     Pbo  pbos_[kNumPbos];
     int  pboNext_ = 0;          // slot the next upload takes
     bool pboEnabled_ = true;    // cleared by JPLAY_NO_PBO=1
+    bool persistentOk_ = false; // glBufferStorage available (and not JPLAY_NO_PERSISTENT_PBO)
+
+    // The staging copy render() starts ahead of its GL work (beginStage_): what it
+    // is copying and into which slot, so stagePbo_ recognises the frame it is
+    // then asked to stage as already on its way and only waits for it.
+    const void* stagingSrc_ = nullptr;
+    size_t      stagingBytes_ = 0;
+    int         stagingSlot_ = -1; // -1: nothing in flight
+
+    static size_t bytesPerPixel_(InputFormat fmt);
+    // Start copying `pixels` into the next ring slot on the helper threads, if
+    // that slot is persistently mapped, the right size, and free (its fence was
+    // waited out by armNextSlot_). No GL calls. Otherwise a no-op, and stagePbo_
+    // copies synchronously as before.
+    void beginStage_(const void* pixels, size_t bytes);
+    // Wait out the fence on the slot the next upload will take, now, while the
+    // driver is responsive -- so the next render() can beginStage_ into it before
+    // its first GL call.
+    void armNextSlot_();
 
     // Stage one frame into the ring, leaving its buffer bound; returns the slot or
-    // -1 to mean "not staged, upload from host memory".
+    // -1 to mean "not staged, upload from host memory". Either finishes the copy
+    // beginStage_ started for these pixels or copies them itself.
     int  stagePbo_(const void* pixels, size_t bytes);
 
     bool ensureNitProgram_();   // compiles nitProg_ on first use; one attempt only

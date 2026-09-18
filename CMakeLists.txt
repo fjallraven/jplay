@@ -304,6 +304,7 @@ add_executable(jplay WIN32
     src/media/WaveformCache.cpp
     src/media/Frame.cpp
     src/media/ExrSource.cpp
+    src/media/ExrFast.cpp
     src/media/StillSource.cpp
     src/media/ImageSeq.cpp
     src/color/OcioManager.cpp

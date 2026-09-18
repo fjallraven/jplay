@@ -7,14 +7,18 @@
 #                       EXR sequence path as argv[1]; without one it still runs
 #                       the synthetic halves and reports that it found no media.
 #   exrbench            EXR decode latency and parallel throughput through
-#                       ExrSequenceSource::readFrame, per OpenEXR thread count.
-#                       Takes an EXR sequence path as argv[1].
+#                       ExrSequenceSource::readFrame, per OpenEXR thread count,
+#                       plus the cache-fill case (every frame held) into fresh
+#                       and pooled memory, and whether the uncompressed fast
+#                       path covers the sequence. Takes an EXR sequence path as
+#                       argv[1]; JPLAY_EXR_NOFAST=1 forces the OpenEXR path.
 
 add_executable(exrbench
     exrbench.cpp
     ../src/media/Frame.cpp
     ../src/media/ImageSeq.cpp
     ../src/media/ExrSource.cpp
+    ../src/media/ExrFast.cpp
     ../src/media/StillSource.cpp
 )
 
@@ -54,6 +58,7 @@ add_executable(cachebench
     ../src/media/AudioSource.cpp
     ../src/media/ImageSeq.cpp
     ../src/media/ExrSource.cpp
+    ../src/media/ExrFast.cpp
     ../src/media/StillSource.cpp
     ../src/media/ProxyMode.cpp
 )

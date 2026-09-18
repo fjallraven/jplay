@@ -53,6 +53,7 @@ GLFN(GLsync, glFenceSync, GLenum, GLbitfield)
 GLFN(GLenum, glClientWaitSync, GLsync, GLbitfield, GLuint64)
 GLFN(void, glDeleteSync, GLsync)
 GLFN(void, glDeleteBuffers, GLsizei, const GLuint*)
+GLFN(void, glBufferStorage, GLenum, GLsizeiptr, const void*, GLbitfield) // GL 4.4; optional
 
 GLFN(void, glGenVertexArrays, GLsizei, GLuint*)
 GLFN(void, glBindVertexArray, GLuint)
@@ -237,6 +238,14 @@ bool OcioGpu::init(SDL_Renderer* renderer) {
     // memory. Also the A/B for measuring what staging buys.
     const char* noPbo = SDL_getenv("JPLAY_NO_PBO");
     pboEnabled_ = !(noPbo && *noPbo && *noPbo != '0');
+
+    // Persistent mapping of the staging ring (see OcioGpu.h). Optional: a GL
+    // without ARB_buffer_storage maps per upload as before.
+    p_glBufferStorage = (PFN_glBufferStorage)SDL_GL_GetProcAddress("glBufferStorage");
+    const char* noPersist = SDL_getenv("JPLAY_NO_PERSISTENT_PBO");
+    persistentOk_ = pboEnabled_ && p_glBufferStorage &&
+                    SDL_GL_ExtensionSupported("GL_ARB_buffer_storage") &&
+                    !(noPersist && *noPersist && *noPersist != '0');
 
     ready_ = true;
     return true;
@@ -503,18 +512,25 @@ int OcioGpu::buildProgram_(int version) {
 //
 // Caller must have GL state saved and pixel-store defaults set; leaves inputTex_
 // bound on texture unit 0, which is where both callers' draws expect it.
+size_t OcioGpu::bytesPerPixel_(InputFormat fmt) {
+    switch (fmt) {
+    case InputFormat::Rgba16:          return 4 * sizeof(uint16_t);
+    case InputFormat::Rgba8:           return 4;
+    case InputFormat::SceneLinearHalf: break;
+    }
+    return 3 * sizeof(Imath::half);
+}
+
 void OcioGpu::uploadInput_(const void* pixels, InputFormat fmt, int width, int height) {
     // The two integer formats are deliberately *not* the GL_SRGB8 variants: OCIO
     // must see the stored code values, not a set GL decided to linearise behind
     // its back.
     GLint  internal = GL_RGB16F;
     GLenum format = GL_RGB, type = GL_HALF_FLOAT;
-    size_t bpp = 3 * sizeof(Imath::half);
+    const size_t bpp = bytesPerPixel_(fmt);
     switch (fmt) {
-    case InputFormat::Rgba16: internal = GL_RGBA16; format = GL_RGBA; type = GL_UNSIGNED_SHORT;
-                              bpp = 4 * sizeof(uint16_t); break;
-    case InputFormat::Rgba8:  internal = GL_RGBA8;  format = GL_RGBA; type = GL_UNSIGNED_BYTE;
-                              bpp = 4; break;
+    case InputFormat::Rgba16: internal = GL_RGBA16; format = GL_RGBA; type = GL_UNSIGNED_SHORT; break;
+    case InputFormat::Rgba8:  internal = GL_RGBA8;  format = GL_RGBA; type = GL_UNSIGNED_BYTE; break;
     case InputFormat::SceneLinearHalf: break;
     }
 
@@ -581,6 +597,25 @@ void OcioGpu::uploadInput_(const void* pixels, InputFormat fmt, int width, int h
 int OcioGpu::stagePbo_(const void* pixels, size_t bytes) {
     const int slot = pboNext_;
     Pbo& b = pbos_[slot];
+
+    // The copy render() started before its GL work (beginStage_) -- for exactly
+    // this frame, into exactly this slot: it has been running under the driver's
+    // wait, and all that is left is to make sure it has landed.
+    const bool started = stagingSlot_ == slot && stagingSrc_ == pixels && stagingBytes_ == bytes;
+    if (stagingSlot_ >= 0 && !started) {
+        // A copy for some other frame (a caller that skipped beginStage_ after one
+        // was started): let it finish before anything writes over its destination.
+        stageCopy().wait();
+        stagingSlot_ = -1;
+    }
+    if (started) {
+        stageCopy().wait();
+        stagingSlot_ = -1;
+        p_glBindBuffer(GL_PIXEL_UNPACK_BUFFER, b.id);
+        pboNext_ = (slot + 1) % kNumPbos;
+        return slot;
+    }
+
     if (!b.id) {
         p_glGenBuffers(1, &b.id);
         if (!b.id) return -1;
@@ -603,24 +638,95 @@ int OcioGpu::stagePbo_(const void* pixels, size_t bytes) {
 
     // Allocated once per frame shape, then reused -- the whole point of the ring.
     if (b.size != bytes) {
-        p_glBufferData(GL_PIXEL_UNPACK_BUFFER, (GLsizeiptr)bytes, nullptr, GL_STREAM_DRAW);
+        if (persistentOk_) {
+            // Immutable storage cannot be resized, so a new shape means a new buffer
+            // object. Mapped once, for good: coherent, so a write is visible to a GL
+            // command issued after it with no flush in between.
+            if (b.map) {
+                p_glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
+                b.map = nullptr;
+            }
+            p_glDeleteBuffers(1, &b.id);
+            p_glGenBuffers(1, &b.id);
+            if (!b.id) {
+                b.size = 0;
+                return -1;
+            }
+            p_glBindBuffer(GL_PIXEL_UNPACK_BUFFER, b.id);
+            const GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+            while (p_glGetError() != GL_NO_ERROR) {}
+            p_glBufferStorage(GL_PIXEL_UNPACK_BUFFER, (GLsizeiptr)bytes, nullptr, flags);
+            if (p_glGetError() == GL_NO_ERROR)
+                b.map = p_glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, (GLsizeiptr)bytes, flags);
+            if (!b.map) {
+                // No persistent mapping on this GL after all: this and every later
+                // slot fall back to per-upload mapping of a mutable buffer.
+                persistentOk_ = false;
+                p_glDeleteBuffers(1, &b.id);
+                p_glGenBuffers(1, &b.id);
+                if (!b.id) {
+                    b.size = 0;
+                    return -1;
+                }
+                p_glBindBuffer(GL_PIXEL_UNPACK_BUFFER, b.id);
+                p_glBufferData(GL_PIXEL_UNPACK_BUFFER, (GLsizeiptr)bytes, nullptr, GL_STREAM_DRAW);
+            }
+        } else {
+            p_glBufferData(GL_PIXEL_UNPACK_BUFFER, (GLsizeiptr)bytes, nullptr, GL_STREAM_DRAW);
+        }
         b.size = bytes;
     }
 
-    // INVALIDATE_RANGE says the previous contents are dead (we overwrite all of it)
-    // without orphaning the allocation; UNSYNCHRONIZED says not to insert a wait,
-    // which is safe because the fence above already established it.
-    void* dst = p_glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, (GLsizeiptr)bytes,
-                                   GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT |
-                                   GL_MAP_UNSYNCHRONIZED_BIT);
-    if (!dst)
-        return -1; // caller restores the binding
-    stageCopy().run(dst, pixels, bytes);
-    if (p_glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER) == GL_FALSE)
-        return -1; // caller restores the binding
+    if (b.map) {
+        // Persistently mapped: the copy is all there is to do.
+        stageCopy().run(b.map, pixels, bytes);
+    } else {
+        // INVALIDATE_RANGE says the previous contents are dead (we overwrite all of
+        // it) without orphaning the allocation; UNSYNCHRONIZED says not to insert a
+        // wait, which is safe because the fence above already established it.
+        void* dst = p_glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, (GLsizeiptr)bytes,
+                                       GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT |
+                                       GL_MAP_UNSYNCHRONIZED_BIT);
+        if (!dst)
+            return -1; // caller restores the binding
+        stageCopy().run(dst, pixels, bytes);
+        if (p_glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER) == GL_FALSE)
+            return -1; // caller restores the binding
+    }
 
     pboNext_ = (slot + 1) % kNumPbos;
     return slot;
+}
+
+void OcioGpu::beginStage_(const void* pixels, size_t bytes) {
+    if (!pboEnabled_ || stagingSlot_ >= 0)
+        return;
+    Pbo& b = pbos_[pboNext_];
+    // Only a slot that needs no GL call to become writable: mapped for good, the
+    // right size, and with its last DMA already waited out (armNextSlot_). Anything
+    // else -- the first frames, a shape change, a GL without persistent mapping --
+    // stagePbo_ handles synchronously.
+    if (!b.map || b.size != bytes || b.sync)
+        return;
+    stageCopy().start(b.map, pixels, bytes);
+    stagingSrc_ = pixels;
+    stagingBytes_ = bytes;
+    stagingSlot_ = pboNext_;
+}
+
+void OcioGpu::armNextSlot_() {
+    Pbo& b = pbos_[pboNext_];
+    if (!b.map || !b.sync)
+        return;
+    // The DMA that last read this slot was issued two uploads ago; on the GPU it
+    // finished long since, and the driver is between frames here rather than
+    // holding this thread for a vblank, so the round trip is cheap.
+    const GLenum r = p_glClientWaitSync((GLsync)b.sync, GL_SYNC_FLUSH_COMMANDS_BIT,
+                                        1000ull * 1000ull * 1000ull); // 1 s
+    p_glDeleteSync((GLsync)b.sync);
+    b.sync = nullptr;
+    if (r != GL_ALREADY_SIGNALED && r != GL_CONDITION_SATISFIED)
+        b.size = 0; // not known to be free: have stagePbo_ replace the buffer object
 }
 
 bool OcioGpu::render(const void* pixels, InputFormat fmt, int width, int height,
@@ -629,6 +735,12 @@ bool OcioGpu::render(const void* pixels, InputFormat fmt, int width, int height,
     if (!ready_ || !prog || !prog->id || !pixels || width <= 0 || height <= 0)
         return false;
 
+    // The staging copy goes first, before anything touches GL. With vsync on, the
+    // first GL call that needs the driver's attention (the state queries below)
+    // is where this thread waits out the previous frame's swap -- most of a
+    // refresh interval on a 60 Hz display -- and the copy helpers can do all of
+    // their work inside that wait rather than after it.
+    beginStage_(pixels, (size_t)width * height * bytesPerPixel_(fmt));
     // Submit SDL's queued GL commands before we change GL state out from under it.
     SDL_FlushRenderer(renderer_);
 
@@ -685,6 +797,7 @@ bool OcioGpu::render(const void* pixels, InputFormat fmt, int width, int height,
     } else {
         std::fprintf(stderr, "OCIO GPU: framebuffer incomplete\n");
     }
+    armNextSlot_();
 
     // Detach to avoid holding a reference to the SDL texture, then restore state.
     p_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,

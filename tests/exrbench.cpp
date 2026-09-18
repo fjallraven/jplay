@@ -14,9 +14,17 @@
 // The checksum line hashes the decoded buffers of two frames; it must not change
 // across decoder rewrites.
 //
+// Before the table: the interleave kernel the uncompressed fast path is built on
+// (checked against a scalar reference and timed), and the cache-fill case -- every
+// frame decoded and *held*, as at launch, once into fresh memory and once into
+// memory the pool got back from the previous fill (see FrameAlloc.h).
+//
 //   exrbench <sequence path> [exr thread counts...]   (default: 0 4 <cores>)
+//   JPLAY_EXR_NOFAST=1 exrbench ...                   OpenEXR path for every read
 
+#include "ExrFast.h"
 #include "ExrSource.h"
+#include "FrameAlloc.h"
 
 #include <OpenEXR/ImfThreading.h>
 
@@ -25,6 +33,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -77,6 +86,71 @@ static double throughputFps(ExrSequenceSource& src, int workers, int64_t total) 
     return total / (msOf(Clock::now() - t0) / 1000.0);
 }
 
+// Decode every frame with `workers` threads and hold all of them: the cache fill
+// on launch, where nothing is recycled until the budget is reached. Returns the
+// wall-clock time; `perFrame` gets each read's own latency.
+static double fillMs(ExrSequenceSource& src, int workers, std::vector<FramePtr>& keep,
+                     std::vector<double>& perFrame) {
+    const int64_t n = src.frameCount();
+    keep.assign((size_t)n, nullptr);
+    perFrame.assign((size_t)n, 0.0);
+    std::atomic<int64_t> next{0};
+    auto t0 = Clock::now();
+    std::vector<std::thread> ts;
+    for (int w = 0; w < workers; ++w)
+        ts.emplace_back([&] {
+            for (int64_t i; (i = next++) < n;) {
+                auto a = Clock::now();
+                keep[(size_t)i] = src.readFrame(i);
+                perFrame[(size_t)i] = msOf(Clock::now() - a);
+            }
+        });
+    for (auto& t : ts)
+        t.join();
+    return msOf(Clock::now() - t0);
+}
+
+static double medianOf(std::vector<double> v) {
+    std::sort(v.begin(), v.end());
+    return v.empty() ? 0.0 : v[v.size() / 2];
+}
+
+// Empty the frame pool so the next allocations commit fresh memory from the OS.
+static void drainPool() {
+    FramePool::instance().setCapacity(0);
+    FramePool::instance().setCapacity((size_t)16 << 30);
+}
+
+static void checkInterleaveKernel() {
+    const size_t n = 4096 * 64; // 64 rows of a 4K frame
+    std::vector<uint16_t> r(n), g(n), b(n), out(n * 3), ref(n * 3);
+    std::mt19937 rng(1);
+    for (size_t i = 0; i < n; ++i) {
+        r[i] = (uint16_t)rng();
+        g[i] = (uint16_t)rng();
+        b[i] = (uint16_t)rng();
+        ref[i * 3] = r[i];
+        ref[i * 3 + 1] = g[i];
+        ref[i * 3 + 2] = b[i];
+    }
+    // Odd lengths exercise the scalar tail as well as the vector body.
+    for (size_t len : { n, n - 1, n - 5, (size_t)7 }) {
+        std::fill(out.begin(), out.end(), 0);
+        exrfast::interleaveRgbHalf(r.data(), g.data(), b.data(), out.data(), len);
+        if (!std::equal(out.begin(), out.begin() + (ptrdiff_t)(len * 3), ref.begin())) {
+            printf("   interleave kernel: MISMATCH at length %zu\n", len);
+            return;
+        }
+    }
+    const int reps = 200;
+    auto t0 = Clock::now();
+    for (int k = 0; k < reps; ++k)
+        exrfast::interleaveRgbHalf(r.data(), g.data(), b.data(), out.data(), n);
+    const double ms = msOf(Clock::now() - t0) / reps;
+    printf("   interleave kernel: ok, %.1f GB/s moved (%zu px in %.3f ms)\n",
+           (double)n * 6 * 2 / (ms * 1e6), n, ms);
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         printf("usage: exrbench <sequence path> [exr thread counts...]\n");
@@ -115,8 +189,54 @@ int main(int argc, char** argv) {
     a.reset();
     b.reset();
 
+    // Whether the uncompressed fast path (ExrFast.h) covers this sequence, tried
+    // directly on the first file: the unprefixed R/G/B of each part in turn.
+    {
+        Frame::HalfBuffer buf;
+        int w = 0, h = 0, handled = -1;
+        for (int part = 0; part < 4 && handled < 0; ++part)
+            if (exrfast::readRgbHalf(src->sequenceFiles().front(), part, "", buf, w, h))
+                handled = part;
+        if (handled >= 0)
+            printf("   fast path: handled (part %d)\n", handled);
+        else
+            printf("   fast path: declined -- OpenEXR reads this sequence\n");
+    }
+
     // The app's auto decode pool (App::init): cores - 2, clamped to 2..8.
     const int autoWorkers = std::clamp(cores - 2, 2, 8);
+
+    checkInterleaveKernel();
+
+    {
+        std::vector<FramePtr> keep;
+        std::vector<double> lat;
+        drainPool();
+        const double freshWall = fillMs(*src, autoWorkers, keep, lat);
+        const double freshLat = medianOf(lat);
+        keep.clear(); // every buffer goes back to the pool...
+        const double pooledWall = fillMs(*src, autoWorkers, keep, lat); // ...and is reused here
+        const double pooledLat = medianOf(lat);
+        keep.clear();
+        printf("   fill @ %d, all %lld frames held:  fresh memory %6.0f ms (%5.1f fps, %5.1f ms/read p50)\n"
+               "   %*s pooled       %6.0f ms (%5.1f fps, %5.1f ms/read p50)\n",
+               autoWorkers, (long long)n, freshWall, n * 1000.0 / freshWall, freshLat,
+               (int)(std::to_string(autoWorkers).size() + std::to_string(n).size() + 32), "",
+               pooledWall, n * 1000.0 / pooledWall, pooledLat);
+
+        // One read alone -- the first frame of a launch, a scrub target -- into
+        // fresh memory and into a pooled buffer.
+        drainPool();
+        auto t0 = Clock::now();
+        FramePtr f = src->readFrame(0);
+        const double freshOne = msOf(Clock::now() - t0);
+        f.reset();
+        t0 = Clock::now();
+        f = src->readFrame(1);
+        const double pooledOne = msOf(Clock::now() - t0);
+        f.reset();
+        printf("   single read:  fresh memory %.1f ms | pooled %.1f ms\n", freshOne, pooledOne);
+    }
     const int64_t latencyFrames = std::min<int64_t>(n, 16);
     const int64_t total = std::max<int64_t>(n, 48);
 

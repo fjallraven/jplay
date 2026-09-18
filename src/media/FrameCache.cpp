@@ -1,4 +1,5 @@
 #include "FrameCache.h"
+#include "FrameAlloc.h"
 
 #include <SDL3/SDL_log.h>
 
@@ -6,6 +7,12 @@
 
 FrameCache::FrameCache(size_t maxBytes, int numThreads)
     : maxBytes_(maxBytes) {
+    // The frame buffers this cache evicts stay resident in the process-wide pool
+    // for the next decode to reuse (see FrameAlloc.h), and the pool may hold at
+    // most what the cache itself may: pooled plus cached never exceeds twice the
+    // budget, and in the steady state of one eviction per insert, the pool holds
+    // about one frame per decode thread.
+    FramePool::instance().setCapacity(maxBytes);
     numThreads = std::max(1, numThreads);
     workers_.reserve((size_t)numThreads);
     for (int i = 0; i < numThreads; ++i)
@@ -172,6 +179,7 @@ void FrameCache::setMaxBytes(size_t maxBytes) {
         maxBytes_ = maxBytes;
         evictLocked(doomed);
     }
+    FramePool::instance().setCapacity(maxBytes); // see the constructor
 }
 
 size_t FrameCache::avgFrameBytes() const {
