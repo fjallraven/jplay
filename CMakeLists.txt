@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(JPlay VERSION 0.1.1 LANGUAGES CXX)
+project(JPlay VERSION 0.1.4 LANGUAGES CXX)
 # Release builds pass the tag in as -DJPLAY_VERSION=1.2.3; a plain local configure
 # falls back to the project version marked -dev, so an unstamped build never
 # claims to be a release in the About panel.
