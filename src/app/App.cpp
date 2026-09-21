@@ -3882,9 +3882,10 @@ void App::computeLayout() {
     }
     // Top-toolbar buttons (icon + label), vertically centered in their row. Sharing
     // one row, the Sequence group is left-aligned and the color group right-aligned;
-    // wrapped, they take a row each and both align left. All of them open a downward popup,
-    // which anchors itself off the button rect — so a second-row button needs no
-    // special handling.
+    // wrapped, only the two "Open …" shortcuts drop to the second row, where they
+    // align left under the view filter. All of them open a downward popup, which
+    // anchors itself off the button rect — so a second-row button needs no special
+    // handling.
     if (noChrome) {
         ocioDisplayBtnRect_ = {}; // no toolbar while the launcher is up, or in cinema mode
         ocioViewBtnRect_ = {};
@@ -3896,61 +3897,49 @@ void App::computeLayout() {
         openProjBtnRect_ = {};
         openSeqBtnRect_ = {};
     } else {
-        // One row per group when the bar wrapped, both groups sharing the single row
-        // when it did not. Row 1 always carries the Sequence group, so the view
-        // filter stays put as the window narrows and only the color controls drop.
+        // Row 1 always carries the Sequence view filter and the whole color group,
+        // so the filter and the pickers stay put as the window narrows; the two
+        // "Open …" shortcuts are what drop to row 2, being the widest of the lot
+        // and the least often reached for.
         SDL_FRect rows = topBarRect_;
         SDL_FRect row1 = cutTop(rows, kTopBarH);
         SDL_FRect row2 = topBarTwoRow ? cutTop(rows, kTopBarH) : row1;
         // Left group, in order: the Sequence view filter, then the two "Open …"
-        // shortcut buttons. Widths come from the measurement pass above; a zero
-        // width is a button that is not on offer, so it consumes nothing here.
-        SDL_FRect left = centerV(row1, tbBtnH);
-        auto nextLeft = [&](float w) -> SDL_FRect {
+        // shortcut buttons — beside the filter while everything fits, flush left on
+        // row 2 under it once it does not. Widths come from the measurement pass
+        // above; a zero width is a button that is not on offer, so it consumes
+        // nothing here.
+        auto nextLeft = [&](SDL_FRect& band, float w) -> SDL_FRect {
             if (w <= 0.0f)
                 return SDL_FRect{};
-            SDL_FRect rect = cutLeft(left, w);
-            gapLeft(left, tbGap);
+            SDL_FRect rect = cutLeft(band, w);
+            gapLeft(band, tbGap);
             return rect;
         };
-        sequenceBtnRect_ = nextLeft(wSeq);
-        openProjBtnRect_ = nextLeft(wOpenProj);
-        openSeqBtnRect_ = nextLeft(wOpenSeq);
+        SDL_FRect left = centerV(row1, tbBtnH);
+        sequenceBtnRect_ = nextLeft(left, wSeq);
+        // Wrapped, the shortcuts start a fresh row instead of carrying on after the
+        // filter; unwrapped, this is just the rest of row 1.
+        SDL_FRect openRow = topBarTwoRow ? centerV(row2, tbBtnH) : left;
+        openProjBtnRect_ = nextLeft(openRow, wOpenProj);
+        openSeqBtnRect_ = nextLeft(openRow, wOpenSeq);
         // Color group, reading left-to-right as Display, View, Look, File
-        // Colorspace, Letterbox. On a shared row it hugs the right edge, so it is
-        // placed from there inward — Letterbox first (rightmost), the OCIO pickers
-        // to its left. On its own wrapped row it is left-aligned instead, under the
-        // Sequence group, so the bar reads as two flush columns rather than one row
-        // pushed to the far edge.
-        SDL_FRect color = centerV(row2, tbBtnH);
-        if (topBarTwoRow) {
-            auto nextColor = [&](float w) -> SDL_FRect {
-                if (w <= 0.0f)
-                    return SDL_FRect{};
-                SDL_FRect rect = cutLeft(color, w);
-                gapLeft(color, tbGap);
-                return rect;
-            };
-            ocioDisplayBtnRect_ = nextColor(wDisp);
-            ocioViewBtnRect_ = nextColor(wView);
-            ocioLookBtnRect_ = nextColor(wLook);
-            ocioInputCsBtnRect_ = nextColor(wInputCs);
-            proxyBtnRect_ = nextColor(wProxy);
-            letterboxBtnRect_ = nextColor(wLetterbox);
-        } else {
-            letterboxBtnRect_ = cutRight(color, wLetterbox);
-            auto nextColor = [&](float w) -> SDL_FRect {
-                if (w <= 0.0f)
-                    return SDL_FRect{};
-                gapRight(color, tbGap);
-                return cutRight(color, w);
-            };
-            proxyBtnRect_ = nextColor(wProxy);
-            ocioInputCsBtnRect_ = nextColor(wInputCs);
-            ocioLookBtnRect_ = nextColor(wLook);
-            ocioViewBtnRect_ = nextColor(wView);
-            ocioDisplayBtnRect_ = nextColor(wDisp);
-        }
+        // Colorspace, Letterbox. It hugs the right edge of row 1 either way, so it
+        // is placed from there inward — Letterbox first (rightmost), the OCIO
+        // pickers to its left.
+        SDL_FRect color = centerV(row1, tbBtnH);
+        letterboxBtnRect_ = cutRight(color, wLetterbox);
+        auto nextColor = [&](float w) -> SDL_FRect {
+            if (w <= 0.0f)
+                return SDL_FRect{};
+            gapRight(color, tbGap);
+            return cutRight(color, w);
+        };
+        proxyBtnRect_ = nextColor(wProxy);
+        ocioInputCsBtnRect_ = nextColor(wInputCs);
+        ocioLookBtnRect_ = nextColor(wLook);
+        ocioViewBtnRect_ = nextColor(wView);
+        ocioDisplayBtnRect_ = nextColor(wDisp);
     }
     // The timeline's fixed bands, stacked below the info bar, with the track rows
     // starting where the last of them ends. Cut off an unbounded band rather than
