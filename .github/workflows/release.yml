@@ -20,7 +20,8 @@ concurrency:
 
 env:
   VCPKG_COMMIT: 32305df7d0b9a308e6ac454dd98ebfe550342c09
-  FFMPEG_TAG: autobuild-2026-09-07-15-39
+  # temporary: since autobuilds are wiped monthly, use latest tag
+  FFMPEG_TAG: latest
   LINUX_GLIBC_MAX: "2.34"
 
 jobs:
@@ -112,14 +113,12 @@ jobs:
             os: windows-2022
             container: ""
             triplet: x64-windows-release
-            ffmpeg_asset: ffmpeg-n8.1.2-51-g7ba069f4f1-win64-gpl-8.1.zip
-            ffmpeg_sha256: 31db3d064365ee28dbef2b773f7cc53078a10aee56d4c905454ed3dd0a666d9c
+            ffmpeg_asset: ffmpeg-n8.1-latest-win64-gpl-8.1.zip
           - name: linux-x64
             os: ubuntu-latest
             container: almalinux:9
             triplet: jplay-x64-linux
-            ffmpeg_asset: ffmpeg-n8.1.2-51-g7ba069f4f1-linux64-gpl-8.1.tar.xz
-            ffmpeg_sha256: 3c1bcdda51f9446a6112a0f1bb9d90f20454eaf06bd2333bb87675fb0e8d3300
+            ffmpeg_asset: ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz
     env:
       VERSION: ${{ needs.version.outputs.version }}
       STAGE: jplay-${{ needs.version.outputs.version }}-${{ matrix.name }}
@@ -228,11 +227,18 @@ jobs:
         shell: bash
         env:
           ASSET: ${{ matrix.ffmpeg_asset }}
-          SHA256: ${{ matrix.ffmpeg_sha256 }}
         run: |
           set -euo pipefail
-          curl -sSL --fail --retry 3 -o "$ASSET"             "https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_TAG/$ASSET"
-          echo "$SHA256  $ASSET" | sha256sum -c -
+          base="https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_TAG"
+          curl -sSL --fail --retry 3 -o "$ASSET" "$base/$ASSET"
+          curl -sSL --fail --retry 3 -o checksums.sha256 "$base/checksums.sha256"
+          # The tag is rolling, so the expected hash travels with the build.
+          # Narrowing the list to our one asset keeps a checksums file that has
+          # grown new entries from turning into a "no such file" failure, and
+          # the awk exits non-zero if the asset is not listed at all.
+          awk -v a="$ASSET" '$2 == a { print; found = 1 } END { exit !found }' checksums.sha256 > expected.sha256
+          sha256sum -c expected.sha256
+          SHA256=$(cut -d' ' -f1 expected.sha256)
           mkdir -p ffmpeg-gpl
           case "$ASSET" in
             *.zip)    7z x -y -offmpeg-gpl "$ASSET" > /dev/null ;;
@@ -247,6 +253,7 @@ jobs:
           chmod +x "dist/$STAGE/$(basename "$exe")"
           cp "$lic" "dist/$STAGE/FFMPEG-LICENSE.txt"
           echo "FFMPEG_EXE=$(basename "$exe")" >> "$GITHUB_ENV"
+          ver=$("dist/$STAGE/$(basename "$exe")" -hide_banner -version | head -n1)
           cat > "dist/$STAGE/FFMPEG-README.txt" <<EOF
           jplay bundles a GPL-licensed ffmpeg, invoked as a separate program to
           encode movie exports. jplay itself links the LGPL FFmpeg libraries and is
@@ -254,8 +261,11 @@ jobs:
 
           Binary: BtbN/FFmpeg-Builds release $FFMPEG_TAG, asset $ASSET
           sha256: $SHA256
+          Version: $ver
           Corresponding source and build scripts:
             https://github.com/BtbN/FFmpeg-Builds/releases/tag/$FFMPEG_TAG
+          The release tag above is rolling and its assets are replaced in place;
+          the sha256 and version identify the exact build shipped here.
           EOF
 
       - name: Verify bundled ffmpeg
