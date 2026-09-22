@@ -499,35 +499,96 @@ void Button::render(SDL_Renderer* r, TextFont* font) const {
 
 // ─── Combobox ────────────────────────────────────────────────────────────────
 
+// One row of the open list, and of the closed box: the boxes are laid out in
+// fixed logical px by every pane that uses them, so the rows are too.
+static constexpr float kComboRowH = 20.f;
+
 void Combobox::setOptions(std::vector<std::string> options, int selected) {
     options_ = std::move(options);
-    selected_ = (int)options_.empty() ? 0 : std::clamp(selected, 0, (int)options_.size() - 1);
+    // -1 passes through as "nothing selected"; anything else is clamped into the
+    // options, and no options at all can only be unselected.
+    selected_ = options_.empty() || selected < 0
+                    ? -1
+                    : std::clamp(selected, 0, (int)options_.size() - 1);
     open_ = false; hoverRow_ = -1;
+    // The old options' scroll means nothing against the new ones, and a box
+    // refilled from a query keeps its offset otherwise.
+    scroll_ = 0.0f;
+    sb_ = {};
 }
 
 const std::string& Combobox::value() const {
     static const std::string empty;
-    return options_.empty() ? empty : options_[selected_];
+    return selected_ < 0 || selected_ >= (int)options_.size() ? empty : options_[selected_];
+}
+
+float Combobox::contentH() const {
+    return kComboRowH * (float)options_.size();
 }
 
 SDL_FRect Combobox::listRect() const {
-    static constexpr float kRowH = 20.f;
-    return { rect_.x, rect_.y + rect_.h,
-             rect_.w, kRowH * (float)options_.size() };
+    const int rows = std::min((int)options_.size(), kMaxRows);
+    return { rect_.x, rect_.y + rect_.h, rect_.w, kComboRowH * (float)rows };
+}
+
+int Combobox::rowAt(float y) const {
+    const SDL_FRect lr = listRect();
+    if (y < lr.y || y >= lr.y + lr.h)
+        return -1;
+    const int row = (int)((y - lr.y + scroll_) / kComboRowH);
+    return (row >= 0 && row < (int)options_.size()) ? row : -1;
+}
+
+// Put the picked row in view, a third of the way down where there is room above
+// it: the rows either side of it are the context for the one the box is on.
+void Combobox::scrollToSelected() {
+    const SDL_FRect lr = listRect();
+    const float max = std::max(0.0f, contentH() - lr.h);
+    if (selected_ < 0 || max <= 0.0f) {
+        scroll_ = 0.0f;
+        return;
+    }
+    scroll_ = std::clamp((float)selected_ * kComboRowH - lr.h / 3.0f, 0.0f, max);
 }
 
 bool Combobox::handleEvent(const SDL_Event& e) {
-    static constexpr float kRowH = 20.f;
+    // The dpiScale the scrollbar helpers take is 1: this widget lays itself out
+    // in fixed logical px throughout, so a bar scaled past that would not match
+    // the list it is drawn down.
+    static constexpr float kNoScale = 1.0f;
+
+    // Only while the list is open, and only over it -- a wheel anywhere else
+    // belongs to the pane behind, which is scrolling its own rows.
+    if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+        if (!open_ || !inR(listRect(), e.wheel.mouse_x, e.wheel.mouse_y))
+            return false;
+        const float max = std::max(0.0f, contentH() - listRect().h);
+        scroll_ = std::clamp(scroll_ - e.wheel.y * kComboRowH * 3.0f, 0.0f, max);
+        return true;
+    }
+    if (e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.button == SDL_BUTTON_LEFT) {
+        // Not consumed: the release that ends a drag is still the release every
+        // other widget is waiting on to clear its own state.
+        sb_.dragging = false;
+        return false;
+    }
     if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT) {
         if (inR(rect_, e.button.x, e.button.y)) {
-            open_ = !open_; hoverRow_ = -1;
+            // Nothing to open with no options: opening would drop a zero-height
+            // list over the row below and swallow the click that did it.
+            open_ = !open_ && !options_.empty();
+            hoverRow_ = -1;
+            if (open_)
+                scrollToSelected();
             return true;
         }
         if (open_) {
-            SDL_FRect lr = listRect();
-            if (inR(lr, e.button.x, e.button.y)) {
-                int row = (int)((e.button.y - lr.y) / kRowH);
-                row = std::clamp(row, 0, (int)options_.size() - 1);
+            // The bar first: it is drawn inside the list, so a press on it would
+            // otherwise read as a press on the row behind it.
+            if (sb_.press(e.button.x, e.button.y, scroll_, kNoScale))
+                return true;
+            const int row = rowAt(e.button.y);
+            if (row >= 0 && inR(listRect(), e.button.x, e.button.y)) {
                 selected_ = row; open_ = false; hoverRow_ = -1;
                 return true;
             }
@@ -538,11 +599,11 @@ bool Combobox::handleEvent(const SDL_Event& e) {
     }
     if (e.type == SDL_EVENT_MOUSE_MOTION) {
         if (open_) {
-            SDL_FRect lr = listRect();
-            if (inR(lr, e.motion.x, e.motion.y))
-                hoverRow_ = (int)((e.motion.y - lr.y) / kRowH);
-            else
-                hoverRow_ = -1;
+            if (sb_.dragging) {
+                sb_.drag(e.motion.y, scroll_, kNoScale);
+                return true;
+            }
+            hoverRow_ = inR(listRect(), e.motion.x, e.motion.y) ? rowAt(e.motion.y) : -1;
         }
         return false;
     }
@@ -558,17 +619,28 @@ void Combobox::render(SDL_Renderer* r, TextFont* font) const {
     setColor(r, open_ ? kColFocus : kColBorder);
     jplay::drawRect(r, &rect_);
 
-    if (font && !options_.empty()) {
-        float glyphH = font->lineHeight();
-        float ty = rect_.y + (rect_.h - glyphH) * .5f;
+    if (!font)
+        return;
+    const float glyphH = font->lineHeight();
+    const float ty = rect_.y + (rect_.h - glyphH) * .5f;
+    // Bounds-checked rather than trusting selected_: a default-constructed box
+    // has selected_ == 0 with no options, so "something is selected" is not the
+    // same question as "there is something to draw".
+    if (selected_ >= 0 && selected_ < (int)options_.size()) {
         font->draw(r, rect_.x + 6.f, ty, kColText, options_[selected_].c_str());
-        font->draw(r, rect_.x + rect_.w - kCaretW + 2.f, ty, kColDim, "v");
+    } else if (!placeholder_.empty()) {
+        // Dim, because it names the state rather than reporting a value.
+        font->draw(r, rect_.x + 6.f, ty, kColDim, placeholder_.c_str());
     }
+    // The caret is the affordance, so it appears exactly when there is a list
+    // behind it — an empty box with one would invite a click that does nothing.
+    if (!options_.empty())
+        font->draw(r, rect_.x + rect_.w - kCaretW + 2.f, ty, kColDim, "v");
 }
 
-void Combobox::renderDropdown(SDL_Renderer* r, TextFont* font) const {
+void Combobox::renderDropdown(SDL_Renderer* r, TextFont* font) {
     if (!open_) return;
-    static constexpr float kRowH = 20.f;
+    static constexpr float kNoScale = 1.0f; // see handleEvent
 
     SDL_FRect lr = listRect();
     setColor(r, kColDropBg);
@@ -576,18 +648,48 @@ void Combobox::renderDropdown(SDL_Renderer* r, TextFont* font) const {
     setColor(r, kColBorder);
     jplay::drawRect(r, &lr);
 
-    if (!font) return;
-    float glyphH = font->lineHeight();
-    for (int i = 0; i < (int)options_.size(); ++i) {
-        float ry = lr.y + i * kRowH;
-        if (i == hoverRow_) {
-            jplay::drawRowHover(r, SDL_FRect{ lr.x + 1.f, ry, lr.w - 2.f, kRowH });
-        } else if (i == selected_) {
-            SDL_FRect hr{ lr.x + 1.f, ry, lr.w - 2.f, kRowH };
-            SDL_SetRenderDrawColor(r, 50, 70, 120, 255);
-            jplay::fillRect(r, &hr);
+    const float content = contentH();
+    scroll_ = std::clamp(scroll_, 0.0f, std::max(0.0f, content - lr.h));
+
+    if (font) {
+        // Clipped to the list, so the rows either end of the scroll are cut at
+        // its edge rather than drawn over the pane above and below it.
+        const SDL_FRect inner = jplay::inset(lr, 1.f, 1.f);
+        const SDL_Rect clip = { (int)inner.x, (int)inner.y, (int)inner.w, (int)inner.h };
+        SDL_Rect wasClip{};
+        const bool hadClip = SDL_RenderClipEnabled(r);
+        if (hadClip)
+            SDL_GetRenderClipRect(r, &wasClip);
+        SDL_SetRenderClipRect(r, &clip);
+
+        const float glyphH = font->lineHeight();
+        for (int i = 0; i < (int)options_.size(); ++i) {
+            const float ry = lr.y - scroll_ + i * kComboRowH;
+            // Off the top or bottom of the list: skipped outright rather than
+            // drawn under the clip, which is what keeps a menu of every show on
+            // an instance from costing a draw per row nobody can see.
+            if (ry + kComboRowH < lr.y || ry > lr.y + lr.h)
+                continue;
+            if (i == hoverRow_) {
+                jplay::drawRowHover(r, SDL_FRect{ lr.x + 1.f, ry, lr.w - 2.f, kComboRowH });
+            } else if (i == selected_) {
+                SDL_FRect hr{ lr.x + 1.f, ry, lr.w - 2.f, kComboRowH };
+                SDL_SetRenderDrawColor(r, 50, 70, 120, 255);
+                jplay::fillRect(r, &hr);
+            }
+            font->draw(r, lr.x + 6.f, ry + (kComboRowH - glyphH) * .5f,
+                       kColText, options_[i].c_str());
         }
-        font->draw(r, lr.x + 6.f, ry + (kRowH - glyphH) * .5f,
-                   kColText, options_[i].c_str());
+
+        // Restored rather than cleared: an open list can be drawn inside a dialog
+        // that is itself clipped, and clearing would let these rows out of it.
+        if (hadClip)
+            SDL_SetRenderClipRect(r, &wasClip);
+        else
+            SDL_SetRenderClipRect(r, nullptr);
     }
+
+    // Last, so it sits over the rows it scrolls, and recorded for the next press.
+    // Draws nothing while the options fit, which is most boxes.
+    drawScrollbar(r, jplay::inset(lr, 1.f, 1.f), content, scroll_, kNoScale, true, sb_);
 }

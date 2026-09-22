@@ -245,6 +245,7 @@ void App::saveProject() {
         recordCurrentProject();
         savedSignature_ = projectSignature(); // disk and memory now agree
         projectFromShared_ = false; // it has a .jpproj of its own now: prompt as normal
+        jplayClearPathCaches();
     } else {
         setStatus("SAVE FAILED: " + err, 5000);
     }
@@ -254,6 +255,7 @@ void App::saveProject() {
 void App::newProject() {
     work_.reset(); // shut down background jobs from the previous project
     joinRefresh();
+    resetPathValueRequests();
     timeline_ = Timeline{};
     undoStack_.clear();
     nextClipId_ = 1;
@@ -945,9 +947,9 @@ void App::showInSequence() {
                 return;
             }
             // The grafted media came out of the project document knowing nothing of
-            // the naming config, exactly as an OTIO import's do. Tag before the
-            // probe, for the reason finishLoad gives.
-            tagMediaPathValues();
+            // the naming config, exactly as an OTIO import's do. They are tagged as
+            // they are drawn (see requestPathValues), so the sequence this scopes to
+            // resolves its own and nothing pays for the rest of the project.
             refreshMediaMetadata(); // probe the grafted (unopened) media in the background
             scopeToSequence(newIdx);
             // A clip's shot name (linked Shot name, else the media's cached shot).
@@ -1214,8 +1216,14 @@ std::string App::shotNameOfClip(const Clip& clip) const {
         for (const Shot& shot : timeline_.shots)
             if (shot.id == clip.shotId)
                 return shot.name;
-    if (auto media = timeline_.findMediaById(clip.mediaId))
+    if (auto media = timeline_.findMediaById(clip.mediaId)) {
+        // A clip linked to no Shot falls back to its media's tagged shot, which a
+        // media nothing has drawn yet doesn't carry. Ask for it, so a second call
+        // answers; the callers that need it there and then parse the path themselves
+        // (captureViewAnchor, showInSequence).
+        requestPathValues(media.get());
         return media->metaValue("shot");
+    }
     return {};
 }
 
@@ -1411,10 +1419,8 @@ void App::openResolvedProject(const std::string& projPath, const std::string& pr
                 setStatus("NO SEQUENCES IN \"" + projectName + "\"", 5000);
                 return;
             }
-            if (grafted) {
-                tagMediaPathValues();   // grafted media arrive untagged (see showInSequence)
+            if (grafted)
                 refreshMediaMetadata(); // probe the grafted (unopened) media in the background
-            }
             setProjectView(projId, std::move(seqIds));
             restoreViewPlayhead(curShot, curPath, curSrcFrame);
             if (grafted)
@@ -1679,11 +1685,12 @@ void App::finishLoad() {
     // JPLY magic, so it does not collide with a real project in practice.
     savedSignature_ = (loadOrigin_ == LoadOrigin::Project) ? projectSignature() : 0;
     reinitOcioForFirstSource(); // a loaded project may supply the first source path
-    // Tag before the probe, not after: tagMediaPathValues reads each media's
-    // resolvedPath(), which takes the same lock refreshMediaMetadata's workers hold
-    // for the whole of a decoder open. Spawning the probe first put this loop behind
-    // one network open per media — the entire probe pass, on the main thread.
-    tagMediaPathValues(); // untagged media (an OTIO import's) get their picker values
+    // Reset before the probe: a request reads the media's resolvedPath(), which
+    // takes the same lock refreshMediaMetadata's workers hold for the whole of a
+    // decoder open — and the requests this project raises are served from the run
+    // loop, so they must not be queued against the outgoing project's media.
+    jplayClearPathCaches();    // re-read the disk once per load, not once per path
+    resetPathValueRequests();  // this project's media are tagged as they are needed
     if (loadOrigin_ != LoadOrigin::Project)
         refreshMediaMetadata();
     if (gridView()) startClipThumbnails(); // restart thumbnail generation for the loaded clip set
@@ -2845,43 +2852,82 @@ void App::refreshMediaMetadata() {
 // the main thread, the only thread that writes Media's metadata map. Python is
 // started from run(), after init() has already loaded a command-line .otio, so
 // with the interpreter not yet up the pass defers itself to the run loop instead.
-void App::tagMediaPathValues() {
-    pendingPathValueTag_ = false;
-    std::vector<std::string> ids, paths;
-    for (const auto& kv : timeline_.media) {
-        if (!kv.second || !kv.second->meta().empty())
-            continue;
-        ids.push_back(kv.first);
+void App::requestPathValues(const Media* media) const {
+    if (!media || !media->meta().empty())
+        return;
+    // Asked once per project, whatever the answer: a path the convention reports
+    // nothing for leaves meta() empty, and without this the media would be re-queued
+    // by every frame that draws it.
+    if (!pathValueAsked_.insert(media->id()).second)
+        return;
+    pathValueQueue_.push_back(media->id());
+}
+
+void App::flushPathValueRequests() {
+    // Nothing asked for, or nothing to run the query on yet: the requests stay queued
+    // and the run loop comes back to them once the interpreter is up.
+    if (pathValueQueue_.empty() || !jplayPythonReady())
+        return;
+    auto pass = std::make_shared<PathTagPass>();
+    for (const std::string& id : pathValueQueue_) {
+        auto media = timeline_.findMediaById(id);
+        if (!media || !media->meta().empty())
+            continue; // gone, or answered by another route (showInSequence caches back)
+        pass->ids.push_back(id);
         // The naming convention wants a real frame number, not a "####" placeholder.
         // An .otio whose media wasn't verified on disk keeps its frame-pattern path and
         // supplies a hint instead — a plausible frame for parsing only, which costs no
         // open (see Media::namingPathHint). Everything else names a concrete frame
         // already, bar a "####" command-line argument, where an opened sequence
         // contributes its first frame via resolvedPath().
-        const std::string& hint = kv.second->namingPathHint();
-        paths.push_back(hint.empty() ? kv.second->resolvedPath() : hint);
+        const std::string& hint = media->namingPathHint();
+        pass->paths.push_back(hint.empty() ? media->resolvedPath() : hint);
     }
-    if (paths.empty())
+    pathValueQueue_.clear();
+    if (pass->paths.empty())
         return;
-    if (!jplayPythonReady()) {
-        pendingPathValueTag_ = true;
-        return;
-    }
+    submitPathValueChunk(pass, pathTagGen_);
+}
+
+void App::resetPathValueRequests() {
+    pathValueQueue_.clear();
+    pathValueAsked_.clear();
+    ++pathTagGen_; // batches still resolving belong to the outgoing media set
+}
+
+// How many paths one chunk resolves. Small enough that an interactive describe
+// queued behind it waits a few hundred milliseconds rather than the whole pass,
+// large enough that the per-chunk GIL acquisition is noise beside the work.
+static constexpr size_t kPathTagChunk = 250;
+
+void App::submitPathValueChunk(const std::shared_ptr<PathTagPass>& pass, uint64_t gen) {
+    const size_t begin = pass->next;
+    const size_t end = std::min(begin + kPathTagChunk, pass->paths.size());
+    if (begin >= end)
+        return; // pass complete
+    pass->next = end;
+
+    auto chunk = std::make_shared<std::vector<std::string>>(pass->paths.begin() + begin,
+                                                            pass->paths.begin() + end);
     auto values = std::make_shared<std::vector<std::map<std::string, std::string>>>();
     // pickerWork_ rather than work_: work_ is held while media plays, and pressing
     // play right after an import would otherwise leave the clips unlabelled for as
-    // long as playback lasts. This is one short task, so it neither delays nor is
-    // delayed by the picker clicks that queue there.
+    // long as playback lasts — and the OCIO context variables come from these values
+    // (see OcioManager::setContextForMedia), so they are wanted most while playing.
     pickerWork_.submit(
-        [paths, values](const std::atomic<bool>&) { jplayGetPathValues(paths, *values); },
-        [this, ids, values] {
-            for (size_t i = 0; i < ids.size() && i < values->size(); ++i) {
-                auto media = timeline_.findMediaById(ids[i]);
+        [chunk, values](const std::atomic<bool>&) { jplayGetPathValues(*chunk, *values); },
+        [this, pass, gen, begin, values] {
+            if (gen != pathTagGen_)
+                return; // another project's pass took over while this chunk ran
+            // Applied on the main thread: Media's metadata map is written there only.
+            for (size_t i = 0; i < values->size() && begin + i < pass->ids.size(); ++i) {
+                auto media = timeline_.findMediaById(pass->ids[begin + i]);
                 if (!media)
                     continue; // media dropped while the query was in flight
                 for (auto& kv : (*values)[i])
                     media->setMetaValue(kv.first, std::move(kv.second));
             }
+            submitPathValueChunk(pass, gen);
         });
 }
 

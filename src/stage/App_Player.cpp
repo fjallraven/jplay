@@ -1040,6 +1040,10 @@ void App::warmOcioAhead() {
     auto media = timeline_.findMediaById(next->mediaId);
     if (!media || media->openFailed())
         return;
+    // The next clip's context variables are part of what is being warmed, so ask for
+    // its naming-convention values here too — far enough ahead of the cut that they
+    // land before the transform they select is needed.
+    requestPathValues(media.get());
     // Copies: the job outlives this frame and must not hold Media pointers.
     std::function<void()> job = ocio_.warmJobForMedia(media->path(), media->meta());
     if (!job)
@@ -1177,6 +1181,11 @@ void App::renderPlayer() {
             // per-shot LUTs resolves them for the source being shown.
             if (ocio_.isReady() && ocio_.isEnabled()) {
                 const bool cfgChanged = ocio_.setActiveConfigForPath(playerMedia->path());
+                // Untagged (freshly imported, never drawn): ask, and resolve the
+                // context from what it carries now. setContextForMedia compares the
+                // resolved variables, so the frame re-renders on its own when the
+                // values land rather than needing anything to notice here.
+                requestPathValues(playerMedia.get());
                 const bool ctxChanged = ocio_.setContextForMedia(playerMedia->meta());
                 if (cfgChanged || ctxChanged)
                     hasTexture_ = false; // different transform: this frame must re-render

@@ -1802,6 +1802,8 @@ void App::renderTimeline() {
                 std::filesystem::path(pm ? pm->path() : std::string()).stem().string(),
                 pm && pm->type() == ClipType::ImageSequence);
             // Audio clips carry the file name alone; the metadata row is video-only.
+            if (pm && !c.audio)
+                requestPathValues(pm);
             std::string metaRow = (pm && !c.audio) ? expandClipMetadata(clipMetadataTemplate(), *pm)
                                                    : std::string();
             // A missing source shows its filename over a "click to relocate" prompt
@@ -4579,17 +4581,38 @@ void App::onDropText(const std::string& text, float x, float y) {
     // What the media would be decoded as, so the callback can hand back the
     // representation already on screen instead of one we would swap on arrival.
     const std::string mode = proxyEnabled_ ? timeline_.proxyMode : std::string();
+    // Read here, on the main thread: the pre-warm below needs it to turn an audio
+    // duration into a frame count, and the worker touches no App state.
+    const double fps = timeline_.fps;
 
     struct DropQuery {
         DropResolution res;
+        std::vector<std::shared_ptr<Media>> warmed;
+        bool deferredPathValues = false;
         bool claimed = false;
         bool cancelled = false;
     };
     auto q = std::make_shared<DropQuery>();
 
-    beginProgress("Resolving drop", [text, mode, q](ProgressReporter& pr) {
+    beginProgress("Resolving drop", [text, mode, fps, q](ProgressReporter& pr) {
         pr.update(-1.f, "Looking up dropped item");
         q->claimed = jplayResolveDropText(text, mode, q->res, &pr);
+        for (size_t i = 0; i < q->res.paths.size() && !pr.cancelled(); ++i) {
+            pr.update(float(i) / float(q->res.paths.size()),
+                      "Opening source " + std::to_string(i + 1) + " of " +
+                          std::to_string(q->res.paths.size()));
+            std::string err;
+            auto media = openMediaForPath(q->res.paths[i], mediaTypeForPath(q->res.paths[i]),
+                                          fps, err, &q->deferredPathValues);
+            if (media)
+                q->warmed.push_back(std::move(media));
+            else
+                // The add loop calls ensureMedia for this path like any other,
+                // fails the same way and posts the status message from the main
+                // thread; nothing to report from here.
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "[drop] could not open %s: %s",
+                            q->res.paths[i].c_str(), err.c_str());
+        }
         // The callback reports progress per batch of versions and stops at the
         // first one it starts after Cancel, so what came back is a partial answer
         // to a question the user withdrew -- not media to add.
@@ -4610,6 +4633,9 @@ void App::onDropText(const std::string& text, float x, float y) {
         // A named answer is a cut in its own right, so it
         // gets a fresh sequence and starts at frame 0 on an auto-picked track
         // rather than landing wherever the cursor happened to be.
+        // Before anything asks for them: every ensureMedia below is a pool hit, so
+        // the loop is timeline bookkeeping and nothing else.
+        adoptMedia(q->warmed, q->deferredPathValues);
         const bool asSequence = !q->res.sequence.empty();
         if (asSequence) {
             addSequence(); // creates it, makes it active and scopes the view to it
@@ -4889,27 +4915,22 @@ ClipType App::mediaTypeForPath(const std::string& path) {
          : ImageSeq::isSequencePath(path) ? ClipType::ImageSequence : ClipType::Video;
 }
 
-std::shared_ptr<Media> App::ensureMedia(const std::string& path, ClipType type) {
-    if (auto existing = timeline_.findMediaByPath(type, path))
-        return existing;
-
+std::shared_ptr<Media> App::openMediaForPath(const std::string& path, ClipType type,
+                                             double audioFps, std::string& err,
+                                             bool* deferredPathValues) {
     auto media = std::make_shared<Media>(type, path);
-    std::string err;
     if (type == ClipType::Audio) {
         // No frame decoder: probe the audio stream directly for its duration
         // and turn it into a frame count at the project fps.
         auto asrc = AudioSource::open(path, err);
-        if (!asrc) {
-            setStatus("FAILED TO OPEN " + fileLabel(path) + ": " + err, 5000);
+        if (!asrc)
             return nullptr;
-        }
-        double fps = timeline_.fps > 0.0 ? timeline_.fps : 24.0;
+        double fps = audioFps > 0.0 ? audioFps : 24.0;
         MediaInfo ai;
         ai.frameCount = std::max<int64_t>((int64_t)std::llround(asrc->durationSeconds() * fps), 1);
         ai.freshHash = Media::computeFreshHash(type, path);
         media->setInfo(ai);
     } else if (!media->ensureOpen(err)) {
-        setStatus("FAILED TO OPEN " + fileLabel(path) + ": " + err, 5000);
         return nullptr;
     } else {
         media->refreshMetadata();
@@ -4919,14 +4940,46 @@ std::shared_ptr<Media> App::ensureMedia(const std::string& path, ClipType type) 
         // so naming-convention parsing sees a real frame number.
         std::map<std::string, std::string> vals;
         // A command-line source is added from init(), before the interpreter is up,
-        // so the query has nothing to run on: defer it to the deferred pass in run()
-        // rather than leave the clip's metadata label empty for the session.
-        if (!jplayGetPathValues(media->resolvedPath(), vals) && !jplayPythonReady())
-            pendingPathValueTag_ = true;
+        // so the query has nothing to run on: the caller defers it to the deferred
+        // pass in run() rather than leave the clip's metadata label empty for the
+        // session.
+        if (!jplayGetPathValues(media->resolvedPath(), vals) && !jplayPythonReady() &&
+            deferredPathValues)
+            *deferredPathValues = true;
         for (auto& kv : vals)
             media->setMetaValue(kv.first, std::move(kv.second));
     }
+    return media;
+}
+
+void App::adoptMedia(const std::vector<std::shared_ptr<Media>>& warmed,
+                     bool deferredPathValues) {
+    for (const auto& media : warmed)
+        if (media && !timeline_.media.count(media->id()))
+            timeline_.media[media->id()] = media;
+    // Added before the interpreter was up, so openMediaForPath could not resolve the
+    // naming-convention values inline: queue them instead. The requests sit until
+    // Python answers (see flushPathValueRequests), which is what makes a
+    // command-line source carry its values by the time anything draws it.
+    if (deferredPathValues)
+        for (const auto& media : warmed)
+            requestPathValues(media.get());
+}
+
+std::shared_ptr<Media> App::ensureMedia(const std::string& path, ClipType type) {
+    if (auto existing = timeline_.findMediaByPath(type, path))
+        return existing;
+
+    std::string err;
+    bool deferred = false;
+    auto media = openMediaForPath(path, type, timeline_.fps, err, &deferred);
+    if (!media) {
+        setStatus("FAILED TO OPEN " + fileLabel(path) + ": " + err, 5000);
+        return nullptr;
+    }
     timeline_.media[media->id()] = media;
+    if (deferred)
+        requestPathValues(media.get()); // interpreter wasn't up; resolve when it is
     return media;
 }
 

@@ -2474,6 +2474,11 @@ private:
     // SOURCES bin dimmed (sourceInTimeline() is false) and can be dragged onto the
     // timeline later. That is what the control channel's "bin" mode produces.
     std::shared_ptr<Media> ensureMedia(const std::string& path, ClipType type);
+    static std::shared_ptr<Media> openMediaForPath(const std::string& path, ClipType type,
+                                                   double audioFps, std::string& err,
+                                                   bool* deferredPathValues = nullptr);
+    void adoptMedia(const std::vector<std::shared_ptr<Media>>& warmed,
+                    bool deferredPathValues = false);
     // Add one media file as a clip on `track`. A negative `track` auto-picks a
     // suitable row (first matching-type or empty track). An explicit `track` whose
     // existing type conflicts with the file's kind is rejected (empty tracks accept
@@ -3451,14 +3456,32 @@ private:
     std::vector<std::thread> refreshThreads_;
     std::atomic<bool> refreshStop_{ false };
 
-    // Background naming-convention tagging: fill in the picker metadata of media
-    // that carry none (an OTIO import builds Media from the file's paths alone).
-    // Set when the pass had to be skipped because Python was not up yet, and
-    // re-run from the run loop once it is.
-    void tagMediaPathValues();
+    void requestPathValues(const Media* media) const;
+    void flushPathValueRequests();   // per frame: hand what was asked for to Python
+    void resetPathValueRequests();   // new project: forget what was asked and in flight
+    // One pass's worklist, walked a chunk at a time by submitPathValueChunk.
+    struct PathTagPass {
+        std::vector<std::string> ids, paths; // parallel: media id and the path to parse
+        size_t next = 0;                     // first entry not yet queued
+    };
+    // Queue the next chunk of `pass` on pickerWork_, applying the previous one's
+    // values and queueing the one after from its completion. Chunked because that
+    // queue is single-threaded and also serves the Component Picker: one frame can
+    // ask for hundreds of media (a zoomed-out timeline, a grid of tiles), and as a
+    // single job they would all be resolved before the panel's describe was even
+    // started. Each chunk's completion runs on the main thread, so anything the user
+    // asked for while it ran is already ahead of the next chunk in the queue.
+    void submitPathValueChunk(const std::shared_ptr<PathTagPass>& pass, uint64_t gen);
+    // Bumped when the media set is replaced wholesale (project load / new project);
+    // chunks of an older project's batches drop their results rather than write them
+    // to whatever now holds their ids.
+    uint64_t pathTagGen_ = 0;
+    mutable std::vector<std::string> pathValueQueue_; // media ids asked for, not yet sent
+    // Every id ever asked for in this project, so a media the convention has nothing
+    // to say about isn't re-queued on every frame that draws it.
+    mutable std::unordered_set<std::string> pathValueAsked_;
     // Load the OCIO transform the upcoming clip needs before the playhead gets there.
     void warmOcioAhead();
-    bool pendingPathValueTag_ = false;
 
     // Python startup: scans sys.path for jplay_init.py after the UI opens.
     std::thread pythonThread_;

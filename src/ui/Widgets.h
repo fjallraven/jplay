@@ -231,9 +231,16 @@ class Combobox {
 public:
     void setRect(const SDL_FRect& r) { rect_ = r; }
     const SDL_FRect& rect() const { return rect_; }
+    // `selected` of -1 leaves the box unselected; otherwise it is clamped into
+    // the options. Empty options are always unselected, whatever is asked for.
     void setOptions(std::vector<std::string> options, int selected = 0);
-    int selected() const { return selected_; }
-    const std::string& value() const;
+    // What the box draws while nothing is selected, in the dim text color: the
+    // caller's word for the state it is in ("Click to Select" once the options
+    // are in, "Loading..." while they are on their way).
+    void setPlaceholder(std::string text) { placeholder_ = std::move(text); }
+    int selected() const { return selected_; }   // -1 when nothing is selected
+    const std::string& value() const;            // empty string when nothing is
+    const std::string& placeholder() const { return placeholder_; }
     bool isOpen() const { return open_; }
     bool empty() const { return options_.empty(); }
 
@@ -242,14 +249,25 @@ public:
     // Draw the closed-box portion only (no list).
     void render(SDL_Renderer* r, TextFont* font) const;
     // Draw the open dropdown list (no-op if closed). Call after all render()s.
-    void renderDropdown(SDL_Renderer* r, TextFont* font) const;
+    void renderDropdown(SDL_Renderer* r, TextFont* font);
 
 private:
+    // What the open list shows before it scrolls. Twelve rows is 240px, which
+    // clears the pickers near the foot of a left pane without the list being so
+    // short that a menu of five is worth scrolling.
+    static constexpr int kMaxRows = 12;
+
     SDL_FRect rect_{};
     std::vector<std::string> options_;
+    std::string placeholder_;
     int selected_ = 0;
     bool open_ = false;
     int hoverRow_ = -1;
+    float scroll_ = 0.0f;
+    ScrollbarDrag sb_;
 
     SDL_FRect listRect() const;
+    float contentH() const;
+    void scrollToSelected();
+    int rowAt(float y) const;
 };

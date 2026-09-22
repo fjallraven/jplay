@@ -203,6 +203,23 @@ bool jplayListPickers(std::vector<PickerDef>& out) {
     }
 }
 
+void jplayClearPathCaches() {
+    if (!jplayPythonReady())
+        return;
+    try {
+        py::gil_scoped_acquire gil;
+        const auto& registry = callbackRegistry();
+        auto it = registry.find("clear_path_caches");
+        if (it == registry.end())
+            return;
+        it->second();
+    } catch (const py::error_already_set& e) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[jplay] clear_path_caches failed: %s", e.what());
+    } catch (const std::exception& e) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[jplay] clear_path_caches failed: %s", e.what());
+    }
+}
+
 bool jplayListProxyModes(std::vector<ProxyModeOption>& out) {
     if (!jplayPythonReady())
         return false;

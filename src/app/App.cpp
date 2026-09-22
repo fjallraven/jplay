@@ -4388,10 +4388,12 @@ void App::run() {
             if (attachAudioToSeq_)
                 findAndAttachAudioAll(&ids);
         }
-        // Same deal for a command-line .otio: its media were imported untagged
-        // because the naming-convention query had no interpreter to run on yet.
-        if (pendingPathValueTag_ && jplayPythonReady())
-            tagMediaPathValues();
+        // Hand this frame's naming-convention requests to Python: whatever the
+        // render and player paths found untagged while drawing (see
+        // requestPathValues), as one batch rather than a call per media. Also
+        // covers a command-line .otio, whose media are drawn before the
+        // interpreter is up — the requests simply wait here until it is.
+        flushPathValueRequests();
         // And for the proxy mode a project with no selection of its own should have
         // opened in: list_proxy_modes needs the same interpreter (App_ProxyMenu.cpp).
         if (pendingProxyDefault_ && jplayPythonReady())

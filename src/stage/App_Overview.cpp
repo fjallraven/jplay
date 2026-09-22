@@ -662,6 +662,7 @@ void App::renderGridView(const Clip* liveClip) {
         if (const Shot* sh = timeline_.findShotById(clip->shotId); sh && !sh->name.empty())
             rows.push_back("Shot: " + sh->name);
         if (auto pm = timeline_.findMediaById(clip->mediaId)) {
+            requestPathValues(pm.get()); // hovering one tile is worth naming its source
             const std::string& dept = pm->metaValue("department");
             if (!dept.empty())
                 rows.push_back("Department: " + dept);

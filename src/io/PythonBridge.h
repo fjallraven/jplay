@@ -58,6 +58,7 @@ struct PickerState {
 // set does not depend on any path. Returns true on success; false if Python is
 // not ready, the callback is not registered, or it raised.
 bool jplayListPickers(std::vector<PickerDef>& out);
+void jplayClearPathCaches();
 
 // Resolve every picker against `path` (calls describe_pickers({"path": path})),
 // filling `out` with only those that apply and have options. Returns true on a

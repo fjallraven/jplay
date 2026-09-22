@@ -155,7 +155,11 @@ void App::updateClipSourceData() {
     const Clip* clip = ids.empty() ? nullptr : timeline_.findClipById(ids.front());
     auto media = (clip && !clip->mediaId.empty()) ? timeline_.findMediaById(clip->mediaId) : nullptr;
     const std::string mediaId = media ? media->id() : std::string();
-
+    // pickerDivergenceIndex compares the target's cached values against the previous
+    // target's, so an untagged media would diverge from everything and re-describe
+    // every section each time the panel changed clip.
+    if (media)
+        requestPathValues(media.get());
     // No target clip (nothing selected, nothing under the playhead): clear once,
     // then stay idle.
     if (!media) {
