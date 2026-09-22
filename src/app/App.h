@@ -328,6 +328,16 @@ private:
     // them. Covers both, since one gesture sets both.
     bool expBypassed_ = false;
     float expBypassGain_ = 0.0f, expBypassGamma_ = 1.0f;
+    // HDR reference white "virtual slider", the same gesture one key over: hold N
+    // and left-drag over the frame to scrub nitRef_, the scale the Luminance
+    // heatmap is read against. Tapping N with no drag toggles that heatmap
+    // instead, told apart from a scrub by nitScrubbed_ exactly as E is. See the
+    // nitRef* members in App_TechCheck.cpp.
+    bool nitHeld_ = false;        // N is down
+    bool nitDragging_ = false;    // left button down in a scrub
+    bool nitScrubbed_ = false;    // a scrub happened during this hold: the release is not a tap
+    float nitScrubDx_ = 0.0f;     // travel since the press
+    float nitScrubRef0_ = 100.0f; // nitRef_ when the scrub began
     bool tlHoverActive_ = false; // cursor over the scrub zone (ruler): show playhead preview
     float tlHoverX_ = 0.0f;      // cursor x while tlHoverActive_
     // ── Ruler hover frame-preview thumbnail (Settings-gated, pause only) ──────
@@ -2712,6 +2722,7 @@ private:
     bool techNitHandleEvent(const SDL_Event& e);   // HDR nit-reference editable field events
     void renderTechOverlay();             // luminance / clipping legend on the stage
     void setTechMode(TechMode m);         // toggle/switch the active mode, force re-render
+    void nitRefScrub(float dx);           // N-held virtual slider: travel since the press -> nitRef_
     // Clip Source panel. Defined in App_ClipSource.cpp.
     void renderClipSourcePanel();    // panel background + the stacked picker sections
     bool clipSourceHandleEvent(const SDL_Event& e); // option-row hit-test; true if consumed

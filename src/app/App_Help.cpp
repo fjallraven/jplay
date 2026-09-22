@@ -50,6 +50,8 @@ void App::renderHelpPanel() {
         { ", / .",         "Exposure -/+ 1/3 stop (Shift: 1 stop)" },
         { "E + drag",       "Scrub exposure / gamma over the frame" },
         { "E",             "Bypass exposure / gamma (A/B)" },
+        { "N",             "Toggle luminance heatmap (nits)" },
+        { "N + drag",       "Scrub HDR ref white over the frame" },
         { "P",             "Toggle pixel inspector" },
         { "F",             "Fit frame or timeline" },
         { "Alt + F",         "Fit sequence under playhead" },

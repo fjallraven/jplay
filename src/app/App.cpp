@@ -1732,8 +1732,18 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
     case SDLK_N:
         // Ctrl-qualified: unmodified N used to clear the whole timeline on a
         // stray keypress, with no confirmation and no undo.
-        if (ctrl)
+        if (ctrl) {
             requestNewProject();
+            break;
+        }
+        // Bare N mirrors E one key over: held it turns a left-drag over the frame
+        // into the HDR ref-white virtual slider, and released without one it
+        // toggles the Luminance heatmap (see onKeyUp). Repeats are the key still
+        // being held.
+        if (alt || k.repeat)
+            break;
+        nitHeld_ = true;
+        nitScrubbed_ = false;
         break;
     case SDLK_W:
         if (ctrl)
@@ -1870,18 +1880,32 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
     }
 }
 
-// Only E is watched on release: it is the one key whose meaning depends on what
-// happened while it was down. A hold that drove a scrub has already had its
-// effect, so the tap case — press and release with no drag — is the bypass toggle.
+// Only E and N are watched on release: they are the keys whose meaning depends on
+// what happened while they were down. A hold that drove a scrub has already had
+// its effect, so the tap case — press and release with no drag — is the toggle:
+// the exposure bypass for E, the Luminance heatmap for N.
 void App::onKeyUp(const SDL_KeyboardEvent& k) {
-    if (k.key != SDLK_E)
+    if (k.key == SDLK_E) {
+        const bool wasHeld = expHeld_;
+        expHeld_ = false;
+        expDragging_ = false;
+        if (wasHeld && !expScrubbed_)
+            exposureToggleBypass();
+        expScrubbed_ = false;
         return;
-    const bool wasHeld = expHeld_;
-    expHeld_ = false;
-    expDragging_ = false;
-    if (wasHeld && !expScrubbed_)
-        exposureToggleBypass();
-    expScrubbed_ = false;
+    }
+    if (k.key == SDLK_N) {
+        const bool wasHeld = nitHeld_;
+        nitHeld_ = false;
+        nitDragging_ = false;
+        if (wasHeld && !nitScrubbed_) {
+            setTechMode(TechMode::Luminance);
+            setStatus(techMode_ == TechMode::Luminance ? "LUMINANCE (NITS)" : "RGB");
+        } else if (wasHeld) {
+            writePrefs(); // a scrubbed ref white outlives the session, as the field does
+        }
+        nitScrubbed_ = false;
+    }
 }
 
 // Longest gap between the two presses of a title-bar double-click, and the floor
@@ -2055,9 +2079,11 @@ void App::handleEvent(SDL_Event& e) {
         break;
     case SDL_EVENT_WINDOW_FOCUS_LOST:
         // A key released while another window has focus never reaches us, so let go
-        // of the exposure hold here rather than leaving E latched down.
-        if (e.window.windowID == SDL_GetWindowID(window_))
+        // of the held-key gestures here rather than leaving E or N latched down.
+        if (e.window.windowID == SDL_GetWindowID(window_)) {
             expHeld_ = false;
+            nitHeld_ = false;
+        }
         break;
     case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
         // The main window moved to another display. Match the swapchain composition to
@@ -2351,6 +2377,17 @@ void App::handleEvent(SDL_Event& e) {
             expScrubDx_ = expScrubDy_ = 0.0f;
             expScrubGain0_ = grade_.gain;
             expScrubGamma0_ = grade_.gamma;
+            break;
+        }
+        // N held: the same virtual slider for the HDR reference white, the scale
+        // the Luminance heatmap is read against. Checked after E so a hand resting
+        // on both keys still scrubs exposure, the more-used of the two.
+        if (e.button.button == SDL_BUTTON_LEFT && nitHeld_ && !gridView()
+            && !launcherVisible() && inPlayerView(mx, my)) {
+            nitDragging_ = true;
+            nitScrubbed_ = true; // this hold is a scrub, so its release is not a tap
+            nitScrubDx_ = 0.0f;
+            nitScrubRef0_ = nitRef_;
             break;
         }
         // Pencil mode: left-press over the frame starts a freehand stroke.
@@ -2761,6 +2798,7 @@ void App::handleEvent(SDL_Event& e) {
         }
         if (e.button.button == SDL_BUTTON_LEFT) {
             expDragging_ = false; // E may still be held: a second drag starts fresh
+            nitDragging_ = false;  // ditto N
             gridSb_.dragging = false;
             peSourceSb_.dragging = false;
             peSeqSb_.dragging = false;
@@ -2934,6 +2972,9 @@ void App::handleEvent(SDL_Event& e) {
             expScrubDx_ += e.motion.xrel;
             expScrubDy_ += e.motion.yrel;
             exposureScrub(expScrubDx_, expScrubDy_);
+        } else if (nitDragging_) {
+            nitScrubDx_ += e.motion.xrel;
+            nitRefScrub(nitScrubDx_);
         } else if (playerClickArmed_) {
             // Fixed pixels-per-frame in logical units, so the jog feels the same
             // whatever the zoom or the clip length. One frame's travel is also

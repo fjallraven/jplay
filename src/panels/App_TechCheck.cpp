@@ -5,7 +5,8 @@
 // (see OcioGpu::renderNitHeatmap, EXR-only). Modes persist when the panel is
 // closed; Luminance and Clipping draw a legend on the stage. The R / G / B keys
 // (App.cpp) reach the same slot with the three channel-isolation modes, which have
-// no pill of their own.
+// no pill of their own, and N toggles Luminance — held, it turns a left-drag over
+// the frame into the HDR ref-white slider below (nitRefScrub).
 // App members, split out of App.cpp.
 //
 // Pill icons (named here so the font subsetter includes their glyphs):
@@ -67,6 +68,18 @@ inline float nitToT(float nits) {
 void App::setTechMode(TechMode m) {
     techMode_ = (techMode_ == m) ? TechMode::None : m;
     markGradeDirty(); // force the player texture to rebuild + re-run the pass
+}
+
+// N held + left-drag over the frame
+void App::nitRefScrub(float dx) {
+    float v = std::clamp(nitScrubRef0_ * std::exp2(dx / 150.0f), 1.0f, 10000.0f);
+    // Snapped to what the panel field can show without a fraction, once past the
+    // point where a fraction of a nit means anything.
+    nitRef_ = v < 10.0f ? std::round(v * 10.0f) / 10.0f : std::round(v);
+    markGradeDirty(); // the heatmap is baked into the tech pass, so it must re-run
+    char buf[64];
+    SDL_snprintf(buf, sizeof(buf), "HDR REF WHITE  1.0 = %g nits", nitRef_);
+    setStatus(buf, 1500);
 }
 
 // ─── Panel ───────────────────────────────────────────────────────────────────
