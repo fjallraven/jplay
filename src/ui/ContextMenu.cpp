@@ -6,6 +6,7 @@
 #include "Widgets.h"
 
 #include <algorithm>
+#include <cmath>
 
 // ---- palette (mirrors DropdownBar so the popup reads as the same widget family)
 namespace {
@@ -426,6 +427,19 @@ bool ContextMenu::handleEvent(const SDL_Event& e) {
         switch (e.type) {
         case SDL_EVENT_MOUSE_MOTION: {
             float x = e.motion.x, y = e.motion.y;
+            // An armed dragOut row that has travelled far enough is the host's
+            // gesture now, not a click. It closes the menu when it takes over;
+            // when it declines (nothing to carry) the arm just goes, leaving the
+            // menu up so the row can still be clicked.
+            if (dragCol_ >= 0 &&
+                (std::abs(x - dragPressX_) > kDragThreshold ||
+                 std::abs(y - dragPressY_) > kDragThreshold)) {
+                DragOut d = columns_[dragCol_].items[dragItem_].dragOut;
+                dragCol_ = dragItem_ = -1;
+                if (d && d())
+                    close();
+                return true;
+            }
             // While loading the columns are hidden, so don't track hover.
             if (!loading_) {
                 int col, item;
@@ -461,8 +475,20 @@ bool ContextMenu::handleEvent(const SDL_Event& e) {
                 // host swaps in the result (or closes) when it completes. Ignore
                 // clicks while a query is already in flight.
                 if (item >= 0 && !loading_) {
-                    Action a = columns_[col].items[item].action;
-                    if (a) a();
+                    // A row that can be dragged out doesn't act on the press:
+                    // that would run the click before the gesture is known. Arm
+                    // it and wait for the release (a click) or for the threshold
+                    // (a drag) — see the motion and button-up cases.
+                    if (columns_[col].items[item].dragOut &&
+                        e.button.button == SDL_BUTTON_LEFT) {
+                        dragCol_ = col;
+                        dragItem_ = item;
+                        dragPressX_ = e.button.x;
+                        dragPressY_ = e.button.y;
+                    } else {
+                        Action a = columns_[col].items[item].action;
+                        if (a) a();
+                    }
                 }
                 return true; // clicks inside the table (incl. header) stay captured
             }
@@ -470,6 +496,20 @@ bool ContextMenu::handleEvent(const SDL_Event& e) {
             // through so the host can reopen the menu elsewhere.
             close();
             return e.button.button != SDL_BUTTON_RIGHT;
+        }
+        case SDL_EVENT_MOUSE_BUTTON_UP: {
+            // Released without travelling: the armed press was a plain click
+            // after all, so run what the row has always done on press. Released
+            // anywhere — the row is what was grabbed, not the pixel under the
+            // cursor, which is how the Clip Source panel reads the same gesture.
+            if (dragCol_ < 0)
+                return false;
+            Action a = columns_[dragCol_].items[dragItem_].action;
+            dragCol_ = dragItem_ = -1;
+            if (a && !loading_) a();
+            // Not consumed: a release has always fallen through to the host,
+            // which resets its own press state on every one of them.
+            return false;
         }
         case SDL_EVENT_KEY_DOWN:
             if (e.key.key == SDLK_ESCAPE) { close(); return true; }

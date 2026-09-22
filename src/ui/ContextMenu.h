@@ -17,6 +17,8 @@
 class ContextMenu {
 public:
     using Action = std::function<void()>;
+    // A table option that can be carried out of the menu: see Item::dragOut.
+    using DragOut = std::function<bool()>;
 
     struct Item {
         // A group divider: a thin rule instead of a row. Takes no hover, no click
@@ -33,6 +35,13 @@ public:
         // the menu bar gives its shortcuts. Widens the popup to fit. List mode only.
         std::string shortcut;
         Action action;                // leaf: run on click. Ignored when children set.
+        // Set => the row can be dragged out of the menu, so its press is armed
+        // rather than acted on: a release in place runs `action` as a click
+        // always has, while moving past the drag threshold calls this instead.
+        // Return true if the host took the gesture over, which closes the menu;
+        // false leaves the menu up and the row un-acted (the drag had nothing to
+        // carry). Table mode only.
+        DragOut dragOut;
         std::vector<Item> children;   // non-empty => submenu parent
         // Row fill for color-picker style lists: packed 0xRRGGBB, 0 = the normal
         // popup fill. The row is painted in the color instead of the selected /
@@ -130,7 +139,8 @@ public:
     bool relabelTable(const std::vector<std::vector<Label>>& columns);
 
     void close() { open_ = false; openParent_ = -1; hoverRoot_ = -1; hoverChild_ = -1;
-                   hoverCol_ = -1; hoverItem_ = -1; hoverCell_ = -1; loading_ = false; }
+                   hoverCol_ = -1; hoverItem_ = -1; hoverCell_ = -1; loading_ = false;
+                   dragCol_ = -1; dragItem_ = -1; }
     bool isOpen() const { return open_; }
 
     // Table "busy" state: while set, the panel stays open but option clicks are
@@ -183,6 +193,7 @@ private:
     static constexpr float kArrowW = 16.0f; // right column reserved for the submenu arrow
     static constexpr float kShortcutGapX = 24.0f; // min gap between a label and its key hint
     static constexpr float kMinW   = 120.0f;
+    static constexpr float kDragThreshold = 4.0f; // travel that turns an armed press into a drag
     static constexpr float kCell   = 18.0f; // grid mode: swatch cell pitch
     static constexpr float kGridPad = 3.0f; // grid mode: inset from the box edge
 
@@ -221,6 +232,10 @@ private:
     int hoverCol_ = -1;               // hovered column, -1 = none
     int hoverItem_ = -1;              // hovered option index within hoverCol_, -1 = none/header
     bool loading_ = false;            // a click's background query is in flight (see setLoading)
+    // Armed press on a dragOut row: acted on at release, or handed to the host
+    // once it moves past kDragThreshold. -1 = nothing armed.
+    int dragCol_ = -1, dragItem_ = -1;
+    float dragPressX_ = 0, dragPressY_ = 0;
 
     // ---- grid mode
     int gridCols_ = 0;

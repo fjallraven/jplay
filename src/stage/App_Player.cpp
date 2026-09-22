@@ -713,7 +713,7 @@ void App::renderPlayerDropBoxes() {
                        : "Add Clip to Track",
         "Create Sequence", "Create Layout", "Create Stack" };
 
-    const float textScale = 1.5f; // the header font, stretched: these boxes are large
+    const float textScale = 1.0f;
     for (int i = 0; i < n; ++i) {
         const int act  = actions[i];
         const bool on  = playerDropBoxEnabled(act);

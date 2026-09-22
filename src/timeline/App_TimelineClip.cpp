@@ -1068,6 +1068,19 @@ void App::rebuildClipPickerMenu(const std::vector<PickerState>& states, bool nav
                         clipMenu_.close();
                     });
                 };
+                // A commit row can also be carried out onto the tracks instead of
+                // replacing the clip's source, exactly as the Clip Source panel's
+                // version rows can. Only over a single clip: with several in the
+                // cascade the column lists what the selection is on, which names no
+                // one source to drag (the same reason the panel drops the gesture
+                // in its multi-clip mode). Setting dragOut is what arms the press;
+                // an in-place release still runs the action above.
+                if (menuCascade_.clipIds.size() == 1) {
+                    const std::string label = p.options[oi].label;
+                    it.dragOut = [this, key, value, label] {
+                        return beginClipMenuDrag(key, value, label);
+                    };
+                }
             } else {
                 const int myIdx = pickerDisplayIndex(key);
                 it.action = [this, key, value, myIdx] {
@@ -1106,6 +1119,16 @@ void App::rebuildClipPickerMenu(const std::vector<PickerState>& states, bool nav
     }
 
     clipMenu_.openTable(pickerMenuX_, pickerMenuY_, winW_, winH_, std::move(columns), navigating);
+}
+
+// An armed commit row of the open menu moved past the drag threshold: carry that
+// version out as a media-bin drag. The menu is the one clip's, so it is also what
+// an aligned drop lines up under — dropping the version into the free row right
+// below the clip puts it alongside, frame for frame.
+bool App::beginClipMenuDrag(const std::string& key, const std::string& value,
+                            const std::string& label) {
+    const int alignId = menuCascade_.clipIds.size() == 1 ? menuCascade_.clipIds.front() : -1;
+    return beginPickerDrag(menuCascade_, key, { value }, label, alignId);
 }
 
 // A decoration instalment landed for the open menu. Taken into the live table

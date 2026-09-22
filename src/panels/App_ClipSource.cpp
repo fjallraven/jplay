@@ -5,6 +5,10 @@
 // menu — see buildPickerColumns / startPickerNavigate / startPickerCommit in
 // App_TimelineClip.cpp. This unit is the view plus its refresh policy.
 //
+// Carrying a pick out onto the tracks is shared the same way, the other
+// direction: beginPickerDrag and the aligned-drop helpers below it serve this
+// panel and the clip menu alike.
+//
 // Driven by the selected clip — or, with nothing selected, the clip under the
 // frame indicator — rather than by a click, so the describe_pickers query runs
 // only when the panel opens, when a different clip/source becomes the target, or
@@ -641,10 +645,48 @@ void App::markClipSourceOption(const PickerColumn& p, int opt, bool ctrl, bool s
     clipSourceMarkAnchor_ = value;
 }
 
-// The armed commit row moved past the threshold: hand it to the media-bin drag,
+// A picked option left its view and became a drag: hand it to the media-bin drag,
 // which already owns the ghost card, the frame's three-box drop chooser and the
-// drop onto the tracks. The pick is resolved to a real media path here, so from
+// drop onto the tracks. The picks are resolved to real media paths here, so from
 // this point on the drag is indistinguishable from dragging a SOURCES row.
+// Shared by the Clip Source panel and the clip right-click picker menu — each
+// only has to say which cascade, which values and what to align under.
+// `alignClipId` is the clip the drag came off (-1 = none), which enables the
+// aligned drop into the free row beneath it; see pickerAlignDropClip.
+bool App::beginPickerDrag(const PickerCascade& c, const std::string& key,
+                          const std::vector<std::string>& values,
+                          const std::string& label, int alignClipId) {
+    std::vector<std::string> paths;
+    std::string missing;
+    for (const std::string& value : values) {
+        std::string path;
+        bool missed = false;
+        // `missed` means the row's own value didn't resolve and the resolve handed back
+        // the path it had reached instead. A commit lives with that (the asset's latest
+        // stands in for a version some clip in the selection lacks), but a drag would
+        // carry a source the card doesn't name, so drop it and say why.
+        if (resolvePickerPick(c, key, value, path, &missed) && !missed) {
+            paths.push_back(path);
+            continue;
+        }
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Picker drag: %s=%s has no media (from %s)",
+                    key.c_str(), value.c_str(), c.repPath.c_str());
+        missing += (missing.empty() ? "" : ", ") + value;
+    }
+    if (!missing.empty())
+        setStatusWarn("NO MEDIA FOR " + missing);
+    if (paths.empty())
+        return false;
+    binDragRow_ = -1; // not a bin row: nothing to re-select on release
+    binDragPaths_ = std::move(paths);
+    binDragLabel_ = label; // the card names the item as drawn, not the file
+    binDragPickerClipId_ = alignClipId;
+    binDragging_ = true;
+    return true;
+}
+
+// The armed commit row moved past the threshold.
 bool App::beginClipSourceDrag() {
     clipSourceDragArmed_ = false; // one shot: it becomes a drag or nothing
     // Pressing inside the marks drags the whole set, in the order the rows are
@@ -659,42 +701,14 @@ bool App::beginClipSourceDrag() {
     if (values.empty())
         values = { clipSourceDragValue_ };
 
-    std::vector<std::string> paths;
-    std::string missing;
-    for (const std::string& value : values) {
-        std::string path;
-        bool missed = false;
-        // `missed` means the row's own value didn't resolve and the resolve handed back
-        // the path it had reached instead. A commit lives with that (the asset's latest
-        // stands in for a version some clip in the selection lacks), but a drag would
-        // carry a source the card doesn't name, so drop it and say why.
-        if (resolvePickerPick(panelCascade_, clipSourceDragKey_, value, path, &missed)
-            && !missed) {
-            paths.push_back(path);
-            continue;
-        }
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "Picker drag: %s=%s has no media (from %s)",
-                    clipSourceDragKey_.c_str(), value.c_str(),
-                    panelCascade_.repPath.c_str());
-        missing += (missing.empty() ? "" : ", ") + value;
-    }
-    if (!missing.empty())
-        setStatusWarn("NO MEDIA FOR " + missing);
-    if (paths.empty())
-        return false;
-    binDragRow_ = -1; // not a bin row: nothing to re-select on release
-    binDragPaths_ = std::move(paths);
-    binDragLabel_ = clipSourceDragLabel_; // the card names the item as drawn, not the file
     const Clip* target = clipSourceTarget();
-    binDragPickerClipId_ = target ? target->id : -1; // enables the aligned drop below it
-    binDragging_ = true;
-    return true;
+    return beginPickerDrag(panelCascade_, clipSourceDragKey_, values,
+                           clipSourceDragLabel_, target ? target->id : -1);
 }
 
-// Dragging a picker item into the free video row directly under its own clip means
-// "put this version alongside that one", so the drop lands in the clip's exact
-// slot instead of at the cursor. Anywhere else on the tracks — a different row, or
+// Dragging a picker item into the free video row directly under the clip it came
+// off means "put this version alongside that one", so the drop lands in the clip's
+// exact slot instead of at the cursor. Anywhere else on the tracks — a different row, or
 // past the clip's ends where other shots live — the ordinary drop applies.
 const Clip* App::pickerAlignDropClip(float x, float y) const {
     if (binDragPickerClipId_ < 0 || !overTrackArea(x, y))

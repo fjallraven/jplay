@@ -1421,9 +1421,10 @@ private:
     // file); a Clip Source drag sets it to the picked item's own label, since
     // that — not the resolved filename — is what the user grabbed.
     std::string binDragLabel_;
-    // Clip Source drag: the clip whose picker the dragged item came from
-    // (-1 = a plain bin drag). Hovering the free video row directly under that
-    // clip is a special drop — see pickerAlignDropClip.
+    // Picker drag (the Clip Source panel or the clip menu's commit column): the
+    // clip whose picker the dragged item came from (-1 = a plain bin drag).
+    // Hovering the free video row directly under that clip is a special drop —
+    // see pickerAlignDropClip.
     int binDragPickerClipId_ = -1;
 
     // Drop-action chooser over the video frame: while media is dragged onto the
@@ -2718,6 +2719,17 @@ private:
     // frame's drop chooser, drop onto the tracks), carrying the pick's resolved
     // media. False — and the arm dropped — when the pick resolves to nothing.
     bool beginClipSourceDrag();
+    // The same for the clip right-click menu's commit column, which arms its
+    // rows for exactly this reason. Defined in App_TimelineClip.cpp.
+    bool beginClipMenuDrag(const std::string& key, const std::string& value,
+                           const std::string& label);
+    // What both of the above hand the pick to: resolve `values` through cascade
+    // `c` and start the media-bin drag carrying them, captioned `label` and
+    // aligned under clip `alignClipId` (-1 = no aligned drop). False when nothing
+    // resolved, leaving no drag running.
+    bool beginPickerDrag(const PickerCascade& c, const std::string& key,
+                         const std::vector<std::string>& values,
+                         const std::string& label, int alignClipId);
     // Ctrl/Shift on a commit row: mark it for the next drag instead of replacing.
     void markClipSourceOption(const PickerColumn& p, int opt, bool ctrl, bool shift);
     // The armed press turned out to be a plain click: perform the media swap.
@@ -2725,8 +2737,8 @@ private:
     // Arrow-key move through the commit (version) section: picks the option `dir`
     // places from the current one and swaps to it, exactly as clicking that row does.
     void stepClipSourceVersion(int dir);
-    // Aligned drop: a Clip Source drag hovering the free video row directly
-    // under its own clip, within that clip's span. Reports the clip above (the
+    // Aligned drop: a picker drag hovering the free video row directly under
+    // the clip it came off, within that clip's span. Reports the clip above (the
     // one to line up with), else nullptr for the ordinary cursor-following drop.
     const Clip* pickerAlignDropClip(float x, float y) const;
     // Source range that puts `dst` frame-for-frame under `ref`, matched on absolute
