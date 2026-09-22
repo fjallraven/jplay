@@ -368,6 +368,17 @@ def _only_project_doc_path_in(directory):
     return None
 
 
+_PROJECT_PATH_CACHE = {}
+
+
+def clear_path_caches():
+    """Forget what the disk looked like. The host calls this on project load: a
+    newly written .jpproj sits in a directory the walk may already have recorded as
+    publishing nothing, and that answer decides where every [dir:*] template floors
+    itself."""
+    _PROJECT_PATH_CACHE.clear()
+
+
 def _nearest_project_doc_path(directory):
     """_norm'd path of the project document governing `directory`: the nearest
     ancestor (itself included) publishing one, or None when no ancestor publishes
@@ -392,22 +403,40 @@ def _nearest_project_doc_path(directory):
                                                               (its only document)
         "/nowhere/at/all"           -> None
     """
+    if directory in _PROJECT_PATH_CACHE:
+        return _PROJECT_PATH_CACHE[directory]
+
     walked = directory
+    seen = []           # levels still waiting on an answer, nearest first
+    found = None
     while walked:
+        if walked in _PROJECT_PATH_CACHE:
+            found = _PROJECT_PATH_CACHE[walked]   # an earlier walk already settled this level
+            break
+        seen.append(walked)
         name = os.path.basename(walked)
         if name:
             for ext in (".jpproj", ".otio"):
                 candidate = f"{walked}/{name}{ext}"
                 if os.path.isfile(candidate):
-                    return candidate
+                    found = candidate
+                    break
+            if found:
+                break
             unnamed = _only_project_doc_path_in(walked)
             if unnamed:
-                return unnamed
+                found = unnamed
+                break
         parent = walked.rpartition("/")[0]
         if parent == walked:
             break
         walked = parent
-    return None
+
+    # Every level walked shares the answer: a document found above governs them all,
+    # and finding none above means none of them has one either.
+    for level in seen:
+        _PROJECT_PATH_CACHE[level] = found
+    return found
 
 
 def _project_root(directory):
@@ -1290,6 +1319,7 @@ def register_defaults():
     jplay_init.py calls this BEFORE importing jplay_naming_convention, so the
     site-owned file can replace any of these by registering the same name. The
     names are that override surface: keep them stable."""
+    jplay.register_callback("clear_path_caches", clear_path_caches)
     jplay.register_callback("list_pickers", list_pickers)
     jplay.register_callback("describe_pickers", describe_pickers)
     jplay.register_callback("get_path_values", get_path_values)
