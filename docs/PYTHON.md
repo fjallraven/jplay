@@ -105,7 +105,7 @@ status, whose version it is — give the option as a dict instead of a string:
 
 - `value` is the identity the naming convention resolves paths with, and the
   only part sent back to the host.
-- `label` is what the **Clip Source** panel and the clip right-click menu draw.
+- `label` is what the **Clip** panel and the clip right-click menu draw.
 - `color` (`"#RRGGBB"` or an `(r, g, b)` tuple) tints that label.
 - `badge` is a short word drawn as a filled chip right-aligned in the row, on
   `badge_color` as its background. The chip's text flips between black and white

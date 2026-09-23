@@ -1572,7 +1572,7 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
             cycleStack(dir);
         else if (panelOpen(kPanelProjectExplorer) && peActiveTab_ == PeTabSources)
             stepBinSelection(dir);
-        else if (panelOpen(kPanelClipSource) && !k.repeat)
+        else if (panelOpen(kPanelClipSource) && clipSourceTab_ == ClipSrcTabSource && !k.repeat)
             // No repeat: each step is a real media swap behind a Python query, and
             // a held key would queue one per tick.
             stepClipSourceVersion(dir);

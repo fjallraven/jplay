@@ -134,6 +134,21 @@ struct InfoField {
     std::string value;
 };
 
+// Which of a multi-channel source's channels feed the displayed R, G and B: an
+// EXR's AOV layers, views and single channels. `part` < 0 is the source's own
+// pick (the beauty layer it chose at open), which every source starts on.
+// Otherwise `rgb` holds full channel names within that part; one name in all
+// three slots shows that channel as grayscale, and "" leaves a slot black.
+struct ChannelSelection {
+    int part = -1;
+    std::string rgb[3];
+    bool isDefault() const { return part < 0; }
+    bool operator==(const ChannelSelection& o) const {
+        return part == o.part && rgb[0] == o.rgb[0] && rgb[1] == o.rgb[1] && rgb[2] == o.rgb[2];
+    }
+    bool operator!=(const ChannelSelection& o) const { return !(*this == o); }
+};
+
 // A source of frames (video file or EXR sequence). readFrame() must be safe to
 // call from multiple threads (implementations serialize internally as needed).
 class MediaSource {
@@ -167,6 +182,13 @@ public:
     // bit depth/channels/layers/views for EXR). Captured at open time; empty by
     // default. Common fields (resolution, frame count, fps) are added by callers.
     virtual std::vector<InfoField> describe() const { return {}; }
+
+    // Switch which channels readFrame() decodes (see ChannelSelection). Frames
+    // already read keep what they were read with, so the caller drops them from
+    // any cache. Safe against concurrent readFrame() calls: each read uses the
+    // selection it started with. Returns false, changing nothing, for a source
+    // with no such choice or a selection naming channels it does not have.
+    virtual bool setChannelSelection(const ChannelSelection&) { return false; }
 
     // For an image sequence, its files as scanned at open(), sorted by frame
     // number; lets freshness hashing reuse that set instead of re-scanning the

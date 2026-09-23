@@ -22,14 +22,15 @@ namespace exrfast {
 // Whether the fast path is on (not disabled by JPLAY_EXR_NOFAST).
 bool enabled();
 
-// Read `path`'s part `part`, channels `layerPrefix`+"R"/"G"/"B", into `out` as
+// Read `path`'s part `part`, channels rgb[0], rgb[1], rgb[2], into `out` as
 // width*height*3 halves in display-window space (pixels the data window does not
-// cover are black), the layout Frame::linearRgb has. On success sets dispW/dispH
+// cover are black), the layout Frame::linearRgb has. A name may repeat (one
+// channel shown as grayscale); every one must exist. On success sets dispW/dispH
 // and returns true. Returns false, with `out` in an unspecified state, for any
 // file the fast path does not cover: compressed, tiled, deep, float or subsampled
 // channels, a data window wider than the display window, a chunk layout that is
 // not one contiguous run, or a header this parser cannot follow.
-bool readRgbHalf(const std::string& path, int part, const std::string& layerPrefix,
+bool readRgbHalf(const std::string& path, int part, const std::string (&rgb)[3],
                  Frame::HalfBuffer& out, int& dispW, int& dispH);
 
 // The interleave kernel on its own (planar R, G, B halves -> packed RGB), for the

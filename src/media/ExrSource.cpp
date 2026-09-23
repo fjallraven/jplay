@@ -11,6 +11,7 @@
 #include <OpenEXR/ImfRgbaFile.h>
 #include <OpenEXR/ImfStandardAttributes.h>
 #include <OpenEXR/ImfThreading.h>
+#include <OpenEXR/ImfMultiView.h>
 #include <Imath/ImathBox.h>
 #include <Imath/half.h>
 
@@ -136,6 +137,64 @@ static ExrColorPart findColorPart(const Imf::MultiPartInputFile& mp) {
 // Translate the EXR header into overlay lines: which part/layer is being read
 // (multi-part or layer-prefixed files only), bit depth (per-channel pixel type),
 // channel list, layers, views (multi-view files), and compression.
+static const char* pixelTypeName(Imf::PixelType t) {
+    switch (t) {
+    case Imf::HALF:  return "half";
+    case Imf::FLOAT: return "float";
+    case Imf::UINT:  return "uint";
+    default:         return "unknown";
+    }
+}
+
+// Every part's channels, for the CHANNELS tab (see ExrLayout).
+static ExrLayout buildExrLayout(const Imf::MultiPartInputFile& mp) {
+    ExrLayout l;
+    if (mp.parts() > 0 && Imf::hasMultiView(mp.header(0)))
+        l.views = Imf::multiView(mp.header(0));
+    for (int i = 0; i < mp.parts(); ++i) {
+        const Imf::Header& h = mp.header(i);
+        ExrLayout::Part p;
+        if (h.hasName())
+            p.name = h.name();
+        if (h.hasView())
+            p.view = h.view();
+        p.deep = isDeepPart(h);
+        p.compressed = h.compression() != Imf::NO_COMPRESSION;
+        for (auto it = h.channels().begin(); it != h.channels().end(); ++it) {
+            ExrLayout::Channel ch;
+            ch.name = it.name();
+            ch.type = pixelTypeName(it.channel().type);
+            ch.half = it.channel().type == Imf::HALF;
+            ch.subsampled = it.channel().xSampling != 1 || it.channel().ySampling != 1;
+            // A multi-part stereo file names each part's view; a single-part one
+            // puts the view in the channel name, next to last ("diffuse.right.R"),
+            // with the default view's channels left without one.
+            std::vector<std::string> comps;
+            for (size_t a = 0, b; a <= ch.name.size(); a = b + 1) {
+                b = ch.name.find('.', a);
+                if (b == std::string::npos)
+                    b = ch.name.size();
+                comps.push_back(ch.name.substr(a, b - a));
+            }
+            // OpenEXR answers "" for a layered channel with no view in its name
+            // ("diffuse.R"); like an unprefixed one, that is the default view's.
+            ch.view = !p.view.empty() ? p.view
+                    : !l.views.empty() ? Imf::viewFromChannelName(ch.name, l.views)
+                                       : std::string();
+            if (ch.view.empty() && !l.views.empty())
+                ch.view = l.views.front();
+            if (p.view.empty() && !ch.view.empty() && comps.size() >= 2 && comps[comps.size() - 2] == ch.view)
+                comps.erase(comps.end() - 2);
+            ch.base = comps.back();
+            for (size_t k = 0; k + 1 < comps.size(); ++k)
+                ch.layer += (k ? "." : "") + comps[k];
+            p.channels.push_back(std::move(ch));
+        }
+        l.parts.push_back(std::move(p));
+    }
+    return l;
+}
+
 static std::vector<InfoField> buildExrDetails(const Imf::Header& h, int parts, const ExrColorPart& pick) {
     std::vector<InfoField> f;
     const Imf::ChannelList& chans = h.channels();
@@ -239,11 +298,21 @@ std::shared_ptr<ExrSequenceSource> ExrSequenceSource::open(const std::string& an
     // no pixel data), so callers can query resolution without a full decode, and
     // settle which part/layer the frame reads come from. The sequence is assumed
     // homogeneous, as it already is for the dimensions.
+    // Until the headers say otherwise: part 0 through Imf::RgbaInputFile, which is
+    // also what a file whose headers fail to read is left with.
+    auto plan = std::make_shared<ReadPlan>();
+    plan->rgb[0] = "R";
+    plan->rgb[1] = "G";
+    plan->rgb[2] = "B";
     try {
         Imf::MultiPartInputFile mp(src->firstFile_.c_str());
         const ExrColorPart pick = findColorPart(mp);
-        src->part_ = pick.part;
-        src->layer_ = pick.layer;
+        src->layout_ = buildExrLayout(mp);
+        const std::string prefix = pick.layer.empty() ? std::string() : pick.layer + ".";
+        plan->part = pick.part;
+        plan->rgbaLayer = pick.layer;
+        for (int c = 0; c < 3; ++c)
+            plan->rgb[c] = prefix + "RGB"[c];
 
         const Imf::Header& h = mp.header(pick.part);
         const Imath::Box2i disp = h.displayWindow();
@@ -251,10 +320,13 @@ std::shared_ptr<ExrSequenceSource> ExrSequenceSource::open(const std::string& an
         src->height_ = disp.max.y - disp.min.y + 1;
         src->pixelAspect_ = sanePixelAspect(h.pixelAspectRatio());
         src->details_ = buildExrDetails(h, mp.parts(), pick);
-        src->rgbDirect_ = pick.found &&
-            hasFullResRgb(h.channels(), pick.layer.empty() ? std::string() : pick.layer + ".");
-        src->compressed_ = h.compression() != Imf::NO_COMPRESSION;
-        src->fastPath_ = src->rgbDirect_ && !src->compressed_;
+        plan->direct = pick.found && hasFullResRgb(h.channels(), prefix);
+        plan->compressed = h.compression() != Imf::NO_COMPRESSION;
+        plan->fast = plan->direct && !plan->compressed;
+        // A luminance picture (Y, or Y/RY/BY) goes through RgbaInputFile; named
+        // here as its Y channel in gray, which is how the CHANNELS tab shows it.
+        if (!plan->direct && h.channels().findChannel(prefix + "Y"))
+            plan->rgb[0] = plan->rgb[1] = plan->rgb[2] = prefix + "Y";
 
         if (!pick.found) {
             // Frames will decode black (see findColorPart); dump what the file
@@ -273,7 +345,54 @@ std::shared_ptr<ExrSequenceSource> ExrSequenceSource::open(const std::string& an
     } catch (const std::exception&) {
         // Leave dimensions at 0; readFrame reports per-frame errors.
     }
+    src->defaultPlan_ = plan;
+    src->plan_ = std::move(plan);
     return src;
+}
+
+ChannelSelection ExrSequenceSource::defaultSelection() const {
+    ChannelSelection sel;
+    sel.part = defaultPlan_->part;
+    for (int c = 0; c < 3; ++c)
+        sel.rgb[c] = defaultPlan_->rgb[c];
+    return sel;
+}
+
+bool ExrSequenceSource::setChannelSelection(const ChannelSelection& sel) {
+    // The source's own pick, and anything that spells it out, is the default plan
+    // itself: that keeps the RgbaInputFile route a luminance file needs.
+    if (sel.isDefault() || sel == defaultSelection()) {
+        std::atomic_store(&plan_, defaultPlan_);
+        return true;
+    }
+    if (sel.part >= (int)layout_.parts.size() || layout_.parts[(size_t)sel.part].deep)
+        return false;
+    const ExrLayout::Part& p = layout_.parts[(size_t)sel.part];
+    auto plan = std::make_shared<ReadPlan>();
+    plan->part = sel.part;
+    plan->direct = true;
+    plan->compressed = p.compressed;
+    plan->fast = !p.compressed;
+    bool any = false;
+    for (int c = 0; c < 3; ++c) {
+        plan->rgb[c] = sel.rgb[c];
+        if (sel.rgb[c].empty()) {
+            plan->fast = false; // the fast reader has no black slot
+            continue;
+        }
+        auto it = std::find_if(p.channels.begin(), p.channels.end(),
+                               [&](const ExrLayout::Channel& ch) { return ch.name == sel.rgb[c]; });
+        // Subsampled channels (luma/chroma) are only readable through the default
+        // plan's RgbaInputFile route; the direct slices below need full resolution.
+        if (it == p.channels.end() || it->subsampled)
+            return false;
+        plan->fast = plan->fast && it->half;
+        any = true;
+    }
+    if (!any)
+        return false;
+    std::atomic_store(&plan_, std::shared_ptr<const ReadPlan>(std::move(plan)));
+    return true;
 }
 
 FramePtr ExrSequenceSource::readFrame(int64_t index) {
@@ -287,8 +406,10 @@ FramePtr ExrSequenceSource::readFrame(int64_t index) {
         const int n = ++g_exrReads;
         ~ReadCount() { --g_exrReads; }
     } reads;
-    const int threads = (reads.n == 1 && compressed_) ? Imf::globalThreadCount() : 0;
-    const std::string prefix = layer_.empty() ? std::string() : layer_ + ".";
+    // One snapshot for the whole read: setChannelSelection() may swap the plan
+    // while this runs, and a frame must not mix two of them.
+    const std::shared_ptr<const ReadPlan> plan = std::atomic_load(&plan_);
+    const int threads = (reads.n == 1 && plan->compressed) ? Imf::globalThreadCount() : 0;
 
     try {
         Frame::HalfBuffer linear;
@@ -299,8 +420,8 @@ FramePtr ExrSequenceSource::readFrame(int64_t index) {
         // this one differs from the first, or is not what it claims -- takes the
         // OpenEXR path below instead, and the result is the same either way.
         bool done = false;
-        if (fastPath_ && exrfast::enabled()) {
-            done = exrfast::readRgbHalf(file, part_, prefix, linear, dispW, dispH);
+        if (plan->fast && exrfast::enabled()) {
+            done = exrfast::readRgbHalf(file, plan->part, plan->rgb, linear, dispW, dispH);
         }
 
         if (!done) {
@@ -308,13 +429,13 @@ FramePtr ExrSequenceSource::readFrame(int64_t index) {
             std::optional<Imf::InputPart> part;
             std::optional<Imf::RgbaInputFile> rgbaFile;
             Imath::Box2i disp, data;
-            if (rgbDirect_) {
+            if (plan->direct) {
                 mp.emplace(file.c_str(), threads);
-                part.emplace(*mp, part_);
+                part.emplace(*mp, plan->part);
                 disp = part->header().displayWindow();
                 data = part->header().dataWindow();
             } else {
-                rgbaFile.emplace(part_, file.c_str(), layer_, threads);
+                rgbaFile.emplace(plan->part, file.c_str(), plan->rgbaLayer, threads);
                 disp = rgbaFile->displayWindow();
                 data = rgbaFile->dataWindow();
             }
@@ -375,12 +496,26 @@ FramePtr ExrSequenceSource::readFrame(int64_t index) {
                     w = dataW;
                 }
                 const int64_t h = direct ? dispH : (y1 - y0 + 1);
+                // A channel named in more than one slot (a grayscale view) is
+                // decoded once, into its first slot, and copied across after: a
+                // frame buffer holds one slice per name. An empty slot names a
+                // channel no file has, which OpenEXR fills with 0.
+                int from[3] = { 0, 1, 2 };
+                bool copies = false;
+                for (int c = 1; c < 3; ++c)
+                    for (int q = 0; q < c; ++q)
+                        if (!plan->rgb[c].empty() && plan->rgb[c] == plan->rgb[q]) {
+                            from[c] = q;
+                            copies = true;
+                            break;
+                        }
                 Imf::FrameBuffer fb;
-                const char* names[] = { "R", "G", "B" };
                 for (int c = 0; c < 3; ++c)
-                    fb.insert(prefix + names[c],
-                              Imf::Slice::Make(Imf::HALF, base + c * sizeof(Imath::half), origin, w, h,
-                                               pixelBytes, pixelBytes * (size_t)w));
+                    if (from[c] == c)
+                        fb.insert(plan->rgb[c].empty() ? std::string("\x01jplay.black") + char('0' + c)
+                                                       : plan->rgb[c],
+                                  Imf::Slice::Make(Imf::HALF, base + c * sizeof(Imath::half), origin, w, h,
+                                                   pixelBytes, pixelBytes * (size_t)w));
                 part->setFrameBuffer(fb);
                 part->readPixels(y0, y1);
                 if (!direct)
@@ -388,6 +523,14 @@ FramePtr ExrSequenceSource::readFrame(int64_t index) {
                         std::memcpy(linRow(y),
                                     scratch.data() + ((size_t)(y - y0) * dataW + (x0 - data.min.x)) * 3,
                                     (size_t)(x1 - x0 + 1) * pixelBytes);
+                if (copies)
+                    for (int y = y0; y <= y1; ++y) {
+                        Imath::half* px = linRow(y);
+                        for (int x = x0; x <= x1; ++x, px += 3) {
+                            px[1] = px[from[1]];
+                            px[2] = px[from[2]];
+                        }
+                    }
             } else if (rgbaFile) {
                 thread_local std::vector<Imf::Rgba> pixels;
                 pixels.resize((size_t)dataW * dataH);

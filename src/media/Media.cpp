@@ -156,12 +156,27 @@ std::shared_ptr<MediaSource> Media::ensureOpen(std::string& err) {
                      ? ImageSeq::open(openPath, err)  // EXR or 8-bit still, by extension
                      : VideoSource::open(openPath, err);
         openFailed_ = !newSrc;
+        if (newSrc && !channelSel_.isDefault())
+            newSrc->setChannelSelection(channelSel_);
         outgoing = std::atomic_load(&source_);
         std::atomic_store(&source_, newSrc);
         openedGeneration_.store(gen, std::memory_order_relaxed);
         opened_.store(true, std::memory_order_release);
     } // openMtx_ released; `outgoing` (if any) is freed below, unlocked.
     return newSrc;
+}
+
+ChannelSelection Media::channelSelection() const {
+    std::lock_guard<std::mutex> lk(openMtx_);
+    return channelSel_;
+}
+
+bool Media::setChannelSelection(const ChannelSelection& sel) {
+    std::lock_guard<std::mutex> lk(openMtx_);
+    if (source_ && !source_->setChannelSelection(sel))
+        return false;
+    channelSel_ = sel;
+    return true;
 }
 
 bool Media::isOpen() const {

@@ -194,8 +194,9 @@ int main(int argc, char** argv) {
     {
         Frame::HalfBuffer buf;
         int w = 0, h = 0, handled = -1;
+        const std::string rgb[3] = { "R", "G", "B" };
         for (int part = 0; part < 4 && handled < 0; ++part)
-            if (exrfast::readRgbHalf(src->sequenceFiles().front(), part, "", buf, w, h))
+            if (exrfast::readRgbHalf(src->sequenceFiles().front(), part, rgb, buf, w, h))
                 handled = part;
         if (handled >= 0)
             printf("   fast path: handled (part %d)\n", handled);

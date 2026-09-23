@@ -27,16 +27,24 @@
 // picker (a different version of the same asset) is answered from the result already
 // in hand with no query at all. See updateClipSourceData.
 //
+// Two more tabs sit beside the pickers, on the same target clip's source: CHANNELS
+// lists the EXR's views, layers and channels and switches what the frame shows
+// (session only, per source — every clip on it follows; see
+// Media::setChannelSelection), and INFO repeats the SOURCES tab's Properties
+// (drawSourceInfoRows, shared with it).
+//
 // Panel icon (named here so the font subsetter includes its glyph):
 //   ICON_MDI_LAYERS_TRIPLE
 
 #include "App.h"
 #include "AppInternal.h"
+#include "ExrSource.h"
 #include "Layout.h"
 #include "PythonBridge.h"
 #include "PythonStartup.h"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <memory>
 #include <utility>
@@ -52,6 +60,7 @@ constexpr SDL_Color kDim      = { 130, 134, 142, 255 }; // hints, cleared sectio
 constexpr SDL_Color kNeutral  = { 205, 209, 217, 255 }; // option text
 constexpr SDL_Color kSelected = { 150, 190, 255, 255 }; // the current value
 constexpr SDL_Color kCapBg    = {  34,  36,  41, 255 }; // band behind a section caption
+constexpr SDL_Color kTabText  = { 150, 154, 164, 255 }; // idle tab label (as the explorer's)
 
 inline void setCol(SDL_Renderer* r, SDL_Color c) {
     SDL_SetRenderDrawColor(r, c.r, c.g, c.b, c.a);
@@ -59,6 +68,137 @@ inline void setCol(SDL_Renderer* r, SDL_Color c) {
 
 inline bool holds(const std::vector<std::string>& v, const std::string& s) {
     return std::find(v.begin(), v.end(), s) != v.end();
+}
+
+// ─── CHANNELS tab model ──────────────────────────────────────────────────────
+// One layer of one view of one part: the rows of the LAYERS section, and the
+// channels the CHANNELS section lists once it is the current one.
+struct ExrLayerEntry {
+    int part = 0;
+    std::string view;
+    std::string layer;  // "" = the part's unprefixed base layer
+    std::string label;
+    std::vector<const ExrLayout::Channel*> chans;
+    ChannelSelection sel; // what a click on the row displays
+    bool displayable = false;
+};
+
+bool iequals(const std::string& a, const char* b) {
+    size_t i = 0;
+    for (; i < a.size() && b[i]; ++i)
+        if (std::tolower((unsigned char)a[i]) != std::tolower((unsigned char)b[i]))
+            return false;
+    return i == a.size() && !b[i];
+}
+
+bool isGray(const ChannelSelection& s) {
+    return !s.rgb[0].empty() && s.rgb[0] == s.rgb[1] && s.rgb[0] == s.rgb[2];
+}
+
+ChannelSelection graySel(int part, const std::string& name) {
+    ChannelSelection s;
+    s.part = part;
+    s.rgb[0] = s.rgb[1] = s.rgb[2] = name;
+    return s;
+}
+
+// What showing a whole layer means: its R/G/B, else X/Y/Z (normals, position,
+// motion), else U/V, else its first channels in order — one as grayscale, two
+// into red and green. Alpha only when there is nothing else. Subsampled channels
+// (luma/chroma) are left out: only the source's own default reads those.
+void mapLayer(ExrLayerEntry& e) {
+    auto find = [&](const char* a, const char* b = nullptr) -> const ExrLayout::Channel* {
+        for (const ExrLayout::Channel* c : e.chans)
+            if (!c->subsampled && (iequals(c->base, a) || (b && iequals(c->base, b))))
+                return c;
+        return nullptr;
+    };
+    const ExrLayout::Channel* trio[3] = { find("R", "red"), find("G", "green"), find("B", "blue") };
+    if (!(trio[0] && trio[1] && trio[2])) {
+        trio[0] = find("X"); trio[1] = find("Y"); trio[2] = find("Z");
+    }
+    if (!(trio[0] && trio[1] && trio[2])) {
+        trio[0] = find("U"); trio[1] = find("V"); trio[2] = nullptr;
+        if (!(trio[0] && trio[1]))
+            trio[0] = trio[1] = nullptr;
+    }
+    if (!trio[0]) {
+        std::vector<const ExrLayout::Channel*> rest, alpha;
+        for (const ExrLayout::Channel* c : e.chans)
+            if (!c->subsampled)
+                (iequals(c->base, "A") || iequals(c->base, "alpha") ? alpha : rest).push_back(c);
+        if (rest.empty())
+            rest = alpha;
+        if (rest.size() == 1)
+            trio[0] = trio[1] = trio[2] = rest[0];
+        else
+            for (size_t k = 0; k < rest.size() && k < 3; ++k)
+                trio[k] = rest[k];
+    }
+    e.sel = ChannelSelection{};
+    e.sel.part = e.part;
+    for (int k = 0; k < 3; ++k)
+        if (trio[k])
+            e.sel.rgb[k] = trio[k]->name;
+    e.displayable = trio[0] != nullptr;
+}
+
+// Every layer of every view of every readable part, base layer first within each
+// part. Deep parts are skipped: nothing here reads them.
+std::vector<ExrLayerEntry> exrLayers(const ExrLayout& l) {
+    std::vector<ExrLayerEntry> out;
+    for (int pi = 0; pi < (int)l.parts.size(); ++pi) {
+        const ExrLayout::Part& p = l.parts[(size_t)pi];
+        if (p.deep)
+            continue;
+        const size_t first = out.size();
+        for (const ExrLayout::Channel& c : p.channels) {
+            auto it = std::find_if(out.begin() + (ptrdiff_t)first, out.end(), [&](const ExrLayerEntry& e) {
+                return e.view == c.view && e.layer == c.layer;
+            });
+            if (it == out.end()) {
+                ExrLayerEntry e;
+                e.part = pi;
+                e.view = c.view;
+                e.layer = c.layer;
+                out.push_back(std::move(e));
+                it = out.end() - 1;
+            }
+            it->chans.push_back(&c);
+        }
+        std::stable_sort(out.begin() + (ptrdiff_t)first, out.end(),
+                         [](const ExrLayerEntry& a, const ExrLayerEntry& b) {
+                             if (a.layer.empty() != b.layer.empty())
+                                 return a.layer.empty();
+                             return a.layer < b.layer;
+                         });
+        // Colour first, in display order, then vectors, then the rest as named:
+        // the file itself lists them alphabetically (B G R).
+        auto rank = [](const ExrLayout::Channel* c) {
+            static const char* const kOrder[] = { "R", "G", "B", "A", "X", "Y", "Z" };
+            for (int k = 0; k < 7; ++k)
+                if (iequals(c->base, kOrder[k]))
+                    return k;
+            return 7;
+        };
+        for (size_t i = first; i < out.size(); ++i)
+            std::stable_sort(out[i].chans.begin(), out[i].chans.end(),
+                             [&](const ExrLayout::Channel* a, const ExrLayout::Channel* b) {
+                                 return rank(a) < rank(b);
+                             });
+        // A multi-part file names its parts after what they hold, so the part
+        // name leads wherever it adds something.
+        const bool named = l.parts.size() > 1 && !p.name.empty();
+        for (size_t i = first; i < out.size(); ++i) {
+            ExrLayerEntry& e = out[i];
+            if (e.layer.empty())
+                e.label = named ? p.name : "rgba";
+            else
+                e.label = named && p.name != e.layer ? p.name + " / " + e.layer : e.layer;
+            mapLayer(e);
+        }
+    }
+    return out;
 }
 
 } // namespace
@@ -80,6 +220,9 @@ void App::closeClipSource() {
     clipSourceMarked_.clear();
     clipSourceMarkAnchor_.clear();
     clipSourceDirty_ = true;
+    clipSourceExrRows_.clear();
+    clipSourceViewMediaId_.clear();
+    clipSourceFacts_ = SourceInfoFacts{};
 }
 
 // A selected clip pins the panel to it, so the user can inspect and swap a clip's
@@ -143,6 +286,10 @@ int App::pickerDivergenceIndex(const Media& a, const Media& b) const {
 // frame from render(); does real work only when a refresh is due.
 void App::updateClipSourceData() {
     if (!panelOpen(kPanelClipSource))
+        return;
+    // The other tabs don't show the pickers. Coming back, the target is diffed
+    // against the one the states belong to, like any other target change.
+    if (clipSourceTab_ != ClipSrcTabSource)
         return;
     // A query is already resolving — its completion drives the next state.
     if (panelCascade_.loading)
@@ -333,19 +480,26 @@ void App::renderClipSourcePanel() {
     gapTop(body, 8.0f);
 
     SDL_FRect header = cutTop(body, lineH);
-    drawText(header.x, header.y, kHeader, "CLIP SOURCE");
+    drawText(header.x, header.y, kHeader, "CLIP");
     gapTop(body, 8.0f);
-    setCol(renderer_, SDL_Color{ 50, 53, 60, 255 });
-    jplay::drawLine(renderer_, body.x, body.y, body.x + body.w, body.y);
-    gapTop(body, 8.0f);
+    renderClipSourceTabs(body);
+
+    clipSourceRows_.clear();
+    clipSourceExrRows_.clear();
+    if (clipSourceTab_ == ClipSrcTabExr) {
+        renderClipSourceExr(panel, body);
+        return;
+    }
+    if (clipSourceTab_ == ClipSrcTabInfo) {
+        renderClipSourceInfo(panel, body);
+        return;
+    }
 
     // One line of the panel's full width.
     auto line = [&](SDL_Color col, const std::string& s) {
         SDL_FRect rect = cutTop(body, lineH);
         drawText(rect.x, rect.y, col, s);
     };
-
-    clipSourceRows_.clear();
 
     // Nothing to pick: say why rather than showing an empty pane. With several clips
     // in the cascade the representative it describes stands in for the target: the
@@ -548,10 +702,308 @@ void App::renderClipSourcePanel() {
                   clipSourceScroll_, dpiScale, true);
 }
 
+// The SOURCE / CHANNELS / INFO tab bar, in the Project Explorer's art.
+void App::renderClipSourceTabs(SDL_FRect& body) {
+    static const char* const kLabels[3] = { "SOURCE", "CHANNELS", "INFO" };
+    float mx = 0.0f, my = 0.0f;
+    uiHoverMouse(mx, my);
+    SDL_FRect tabs = cutTop(body, 22.0f * dpiScale);
+    gapTop(body, 8.0f);
+    const float tabW = tabs.w / 3.0f;
+    for (int i = 0; i < 3; ++i) {
+        SDL_FRect tr = cutLeft(tabs, tabW);
+        if (i < 2)
+            gapRight(tr, 2.0f); // separation between the tabs
+        clipSourceTabRects_[i] = tr;
+        const bool act = clipSourceTab_ == i;
+        const bool hov = inRect(tr, mx, my);
+        drawButton(renderer_, &textFont_, tr, kLabels[i],
+                   act ? (hov ? colors().uibtnOnHover : colors().uibtnOnBg)
+                       : (hov ? kUiBtnBgHover : kUiBtnBg),
+                   act ? colors().uibtnOnBorder
+                       : (hov ? kUiBtnBorderHover : kUiBtnBorder),
+                   act ? colors().uibtnOnText
+                       : (hov ? SDL_Color{ 235, 238, 245, 255 } : kTabText));
+    }
+}
+
+// The target clip's media for the CHANNELS and INFO tabs. Like the pickers, held
+// while playback is what moves the target, so neither re-reads at every clip
+// boundary crossed; a selection pins the target and is always followed.
+std::shared_ptr<Media> App::clipSourceViewMedia() {
+    if (!(playing_ && selectedClipId_ < 0) || clipSourceViewMediaId_.empty()) {
+        const Clip* c = clipSourceTarget();
+        clipSourceViewMediaId_ = (c && !c->mediaId.empty()) ? c->mediaId : std::string();
+    }
+    return clipSourceViewMediaId_.empty() ? nullptr : timeline_.findMediaById(clipSourceViewMediaId_);
+}
+
+void App::applyChannelSelection(Media& m, const ChannelSelection& sel) {
+    if (m.channelSelection() == sel)
+        return;
+    if (!m.setChannelSelection(sel)) {
+        setStatusWarn("CANNOT DISPLAY THOSE CHANNELS");
+        return;
+    }
+    // Every frame of this media held anywhere was read with the old channels.
+    // Only its own go; the wanted set is resubmitted at once rather than at the
+    // next prefetch refresh, and the frame on screen is re-uploaded when its
+    // replacement lands (until then it holds, as for any frame still decoding).
+    cache_->dropMedia(m.id());
+    cacheReqSig_ = 0;
+    displayedKey_ = CacheKey{};
+}
+
+// CHANNELS: VIEWS (multi-view files only), then the current view's LAYERS, then
+// the current layer's CHANNELS. A layer row shows the whole layer (mapLayer), a
+// channel row that channel alone in gray, a view row the same layer — or channel
+// — in that view. The rows reading as current are what the frame shows.
+void App::renderClipSourceExr(const SDL_FRect& panel, SDL_FRect& body) {
+    const float lineH = textFont_.lineHeight();
+    auto line = [&](SDL_Color col, const std::string& s) {
+        SDL_FRect rect = cutTop(body, lineH);
+        drawText(rect.x, rect.y, col, fitText(s, rect.w));
+    };
+
+    std::shared_ptr<Media> media = clipSourceViewMedia();
+    if (!media) {
+        line(kDim, "No clip under the frame indicator.");
+        return;
+    }
+    line(kNeutral, fs::u8path(media->path()).filename().u8string());
+    gapTop(body, 10.0f);
+
+    std::string err;
+    auto src = std::dynamic_pointer_cast<ExrSequenceSource>(media->ensureOpen(err));
+    if (!src) {
+        line(kDim, media->openFailed() ? "Source unavailable." : "Not an EXR source.");
+        return;
+    }
+    const ExrLayout& layout = src->layout();
+    const std::vector<ExrLayerEntry> layers = exrLayers(layout);
+    if (layers.empty()) {
+        line(kDim, "No readable channels.");
+        return;
+    }
+
+    // What the frame shows, spelled out, and the layer and view that holds it.
+    const ChannelSelection def = src->defaultSelection();
+    ChannelSelection cur = media->channelSelection();
+    if (cur.isDefault())
+        cur = def;
+    const ExrLayout::Channel* curCh = nullptr;
+    if (cur.part >= 0 && cur.part < (int)layout.parts.size())
+        for (int k = 0; k < 3 && !curCh; ++k)
+            for (const ExrLayout::Channel& c : layout.parts[(size_t)cur.part].channels)
+                if (!cur.rgb[k].empty() && c.name == cur.rgb[k]) { curCh = &c; break; }
+    const ExrLayerEntry* curLayer = nullptr;
+    for (const ExrLayerEntry& e : layers)
+        if (curCh && e.part == cur.part && e.view == curCh->view && e.layer == curCh->layer)
+            curLayer = &e;
+    if (!curLayer)
+        curLayer = &layers.front();
+    const std::string& curView = curLayer->view;
+    const bool gray = isGray(cur);
+
+    // The views, from the multiView attribute or else the parts' own.
+    std::vector<std::string> views = layout.views;
+    if (views.empty())
+        for (const ExrLayout::Part& p : layout.parts)
+            if (!p.view.empty() && !holds(views, p.view))
+                views.push_back(p.view);
+
+    // Which slot of the display a channel feeds, for the channel rows.
+    auto feeds = [&](const std::string& name) {
+        std::string f;
+        if (gray)
+            return std::string(cur.rgb[0] == name ? "gray" : "");
+        for (int k = 0; k < 3; ++k)
+            if (cur.rgb[k] == name)
+                f += "RGB"[k];
+        return f;
+    };
+
+    {
+        std::string showing;
+        if (gray)
+            showing = cur.rgb[0] + " (gray)";
+        else if (curCh && cur == curLayer->sel)
+            showing = curLayer->label;
+        else
+            for (int k = 0; k < 3; ++k)
+                showing += std::string(k ? "  " : "") + "RGB"[k] + ":" +
+                           (cur.rgb[k].empty() ? std::string("0") : cur.rgb[k]);
+        if (views.size() > 1 && !curView.empty())
+            showing += " (" + curView + ")";
+        SDL_FRect rect = cutTop(body, lineH);
+        const float kw = textFont_.measure(renderer_, "Showing ");
+        drawText(rect.x, rect.y, kDim, "Showing");
+        drawText(rect.x + kw, rect.y, kSelected, fitText(showing, rect.w - kw));
+        gapTop(body, 10.0f);
+    }
+
+    SDL_FRect view = body;
+    gapBottom(view, 6.0f);
+    SDL_Rect clipRect = { (int)panel.x, (int)view.y, (int)panel.w, (int)view.h };
+    SDL_SetRenderClipRect(renderer_, &clipRect);
+    const float rowH = 18.0f * dpiScale;
+    const float contentTop = view.y - clipSourceExrScroll_;
+    SDL_FRect content = { view.x, contentTop, view.w, kUnbounded };
+    float mouseX = 0.0f, mouseY = 0.0f;
+    uiHoverMouse(mouseX, mouseY);
+
+    auto caption = [&](const std::string& label) {
+        SDL_FRect capRow = cutTop(content, lineH);
+        gapTop(content, 4.0f);
+        SDL_FRect cap = { capRow.x - 4.0f * dpiScale, capRow.y - 2.0f * dpiScale,
+                          capRow.w + 8.0f * dpiScale, capRow.h + 4.0f * dpiScale };
+        setCol(renderer_, kCapBg);
+        jplay::fillRect(renderer_, &cap);
+        drawText(capRow.x, capRow.y, kHeader, label);
+    };
+    // One row: `sel` is what a click applies (none when !enabled); `note` is dim
+    // text right-aligned, `tag` dim text straight after the label.
+    auto row = [&](const std::string& label, bool current, bool enabled, const ChannelSelection& sel,
+                   const std::string& note, const std::string& tag = {}) {
+        SDL_FRect r = cutTop(content, rowH);
+        if (enabled && visibleIn(r, view))
+            clipSourceExrRows_.push_back({ r, sel });
+        if (enabled && inRect(r, mouseX, mouseY) && inRect(view, mouseX, mouseY)) {
+            setCol(renderer_, SDL_Color{ 40, 43, 52, 255 });
+            jplay::fillRect(renderer_, &r);
+        }
+        if (current) {
+            SDL_FRect bar = { r.x, r.y, 2.0f * dpiScale, r.h };
+            setCol(renderer_, kSelected);
+            jplay::fillRect(renderer_, &bar);
+        }
+        SDL_FRect text = r;
+        gapLeft(text, 8.0f * dpiScale);
+        gapRight(text, 4.0f * dpiScale);
+        const SDL_FRect lbl = centerV(text, lineH);
+        float noteW = 0.0f;
+        if (!note.empty()) {
+            noteW = std::min(textFont_.measure(renderer_, note.c_str()), text.w * 0.5f);
+            const std::string n = fitText(note, noteW);
+            drawText(lbl.x + lbl.w - textFont_.measure(renderer_, n.c_str()), lbl.y, kDim, n);
+            noteW += 8.0f * dpiScale;
+        }
+        const std::string l = fitText(label, lbl.w - noteW);
+        drawText(lbl.x, lbl.y, !enabled ? kDim : current ? kSelected : kNeutral, l);
+        if (!tag.empty()) {
+            const float lw = textFont_.measure(renderer_, l.c_str()) + 6.0f * dpiScale;
+            if (lw < lbl.w - noteW)
+                drawText(lbl.x + lw, lbl.y, kDim, fitText(tag, lbl.w - noteW - lw));
+        }
+    };
+
+    if (views.size() > 1) {
+        caption("VIEWS");
+        for (const std::string& v : views) {
+            // The same layer in that view, else its first; a single channel stays
+            // a single channel where the layer has one of that name.
+            const ExrLayerEntry* target = nullptr;
+            for (const ExrLayerEntry& e : layers)
+                if (e.view == v && e.layer == curLayer->layer) { target = &e; break; }
+            if (!target)
+                for (const ExrLayerEntry& e : layers)
+                    if (e.view == v) { target = &e; break; }
+            ChannelSelection sel;
+            bool ok = target && target->displayable;
+            if (ok) {
+                sel = target->sel;
+                if (gray && curCh)
+                    for (const ExrLayout::Channel* c : target->chans)
+                        if (c->base == curCh->base && !c->subsampled) { sel = graySel(target->part, c->name); break; }
+            }
+            row(v, v == curView, ok, sel, v == views.front() && !layout.views.empty() ? "default" : "");
+        }
+        gapTop(content, 10.0f);
+    }
+
+    caption("LAYERS");
+    for (const ExrLayerEntry& e : layers) {
+        if (!views.empty() && e.view != curView)
+            continue;
+        std::string chans;
+        for (const ExrLayout::Channel* c : e.chans)
+            chans += (chans.empty() ? "" : " ") + c->base;
+        const bool isDefault = e.part == def.part && def == e.sel;
+        row(e.label, &e == curLayer, e.displayable, e.sel, chans, isDefault ? "(default)" : "");
+    }
+    gapTop(content, 10.0f);
+
+    caption("CHANNELS");
+    for (const ExrLayout::Channel* c : curLayer->chans) {
+        const std::string f = feeds(c->name);
+        row(c->base, gray && cur.rgb[0] == c->name, !c->subsampled, graySel(curLayer->part, c->name),
+            c->subsampled ? "subsampled" : c->type, f.empty() ? "" : "\xe2\x86\x92 " + f);
+    }
+    gapTop(content, 10.0f);
+
+    SDL_SetRenderClipRect(renderer_, nullptr);
+    const float used = content.y - contentTop;
+    const float maxScroll = std::max(0.0f, used - view.h);
+    clipSourceExrScroll_ = std::clamp(clipSourceExrScroll_, 0.0f, maxScroll);
+    drawScrollbar(renderer_, { panel.x, view.y, panel.w, view.h }, used,
+                  clipSourceExrScroll_, dpiScale, true);
+}
+
+// INFO: the target clip's source, listed exactly as the SOURCES tab's Properties
+// sub-panel lists it (drawSourceInfoRows).
+void App::renderClipSourceInfo(const SDL_FRect& panel, SDL_FRect& body) {
+    std::shared_ptr<Media> media = clipSourceViewMedia();
+    if (!media) {
+        SDL_FRect rect = cutTop(body, textFont_.lineHeight());
+        drawText(rect.x, rect.y, kDim, "No clip under the frame indicator.");
+        return;
+    }
+    refreshSourceInfoFacts(clipSourceFacts_, media.get(), media->path());
+
+    SDL_FRect view = body;
+    gapBottom(view, 6.0f);
+    SDL_Rect clipRect = { (int)panel.x, (int)view.y, (int)panel.w, (int)view.h };
+    SDL_SetRenderClipRect(renderer_, &clipRect);
+    // Clamped against last frame's height before drawing, as the sub-panel does.
+    clipSourceInfoScroll_ = std::clamp(clipSourceInfoScroll_, 0.0f,
+                                       std::max(0.0f, clipSourceInfoContentH_ - view.h));
+    const float keyColW = textFont_.measure(renderer_, "Pixel format") + 8.0f;
+    const float y = drawSourceInfoRows(view.x, view.y - clipSourceInfoScroll_, keyColW, media.get(),
+                                       media->path(), clipSourceFacts_);
+    SDL_SetRenderClipRect(renderer_, nullptr);
+    clipSourceInfoContentH_ = y + clipSourceInfoScroll_ - view.y;
+    drawScrollbar(renderer_, { panel.x, view.y, panel.w, view.h }, clipSourceInfoContentH_,
+                  clipSourceInfoScroll_, dpiScale, true);
+}
+
 // ─── Event handling ──────────────────────────────────────────────────────────
 bool App::clipSourceHandleEvent(const SDL_Event& e) {
     if (e.type != SDL_EVENT_MOUSE_BUTTON_DOWN || e.button.button != SDL_BUTTON_LEFT)
         return false;
+    for (int i = 0; i < 3; ++i)
+        if (inRect(clipSourceTabRects_[i], e.button.x, e.button.y)) {
+            clipSourceTab_ = i;
+            return true;
+        }
+    if (clipSourceTab_ == ClipSrcTabExr) {
+        for (const ClipSourceExrRow& r : clipSourceExrRows_)
+            if (inRect(r.rect, e.button.x, e.button.y)) {
+                if (auto media = clipSourceViewMedia()) {
+                    // The source's own pick is stored as "default", not spelled out,
+                    // so it keeps the read route that pick needs (a luma file's).
+                    ChannelSelection sel = r.sel;
+                    std::string err;
+                    if (auto src = std::dynamic_pointer_cast<ExrSequenceSource>(media->ensureOpen(err)))
+                        if (sel == src->defaultSelection())
+                            sel = ChannelSelection{};
+                    applyChannelSelection(*media, sel);
+                }
+                break;
+            }
+        return true;
+    }
+    if (clipSourceTab_ != ClipSrcTabSource)
+        return true; // INFO has nothing to click; swallow like any press in the panel
     if (panelCascade_.loading)
         return true; // a query is resolving; swallow the click rather than queue another
 
