@@ -2388,6 +2388,9 @@ void App::handleEvent(SDL_Event& e) {
             nitScrubbed_ = true; // this hold is a scrub, so its release is not a tap
             nitScrubDx_ = 0.0f;
             nitScrubRef0_ = nitRef_;
+            // enable the heatmap if it isn't already
+            if (techMode_ != TechMode::Luminance)
+                setTechMode(TechMode::Luminance);
             break;
         }
         // Pencil mode: left-press over the frame starts a freehand stroke.
