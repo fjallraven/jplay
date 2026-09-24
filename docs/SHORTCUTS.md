@@ -34,6 +34,8 @@ overlay. Any click dismisses it.
 | `,` / `.` | Exposure −/+ ⅓ stop (`Shift`: 1 stop) |
 | `E` + drag | Scrub exposure / gamma over the frame |
 | `E` | Bypass exposure / gamma (A/B) |
+| `N` | Toggle luminance heatmap (nits) |
+| `N` + drag | Scrub HDR ref white over the frame |
 | `P` | Toggle the pixel inspector |
 | `F` | Fit frame or timeline |
 | `Alt + F` | Fit the sequence under the playhead |
