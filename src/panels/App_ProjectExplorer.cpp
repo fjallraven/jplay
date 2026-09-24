@@ -1601,16 +1601,29 @@ void App::commitBinDrag(float x, float y) {
             // stage opens comparing the two instead of showing the new one alone.
             // Skipped when it's already what's being dragged (stepping to the
             // clip's own version is a no-op drag, not a comparison).
-            if ((box == 4 || box == 5) && binDragPickerClipId_ >= 0) {
+            //
+            // The stage also opens on the source frame that was on screen, with the
+            // versions lined up on absolute frame numbers so every tile shows that
+            // frame, rather than on the first frame of whatever was added. Taken
+            // before the drop, which stands up a new scope and may drop the view
+            // the clip lives in. -1 (the playhead is off the clip: it was selected
+            // elsewhere in the cut) opens on the first frame, as before.
+            const bool pickerCompare = (box == 4 || box == 5) && binDragPickerClipId_ >= 0;
+            int64_t shownAbs = -1;
+            if (pickerCompare) {
                 const Clip* ref = timeline_.findClipById(binDragPickerClipId_);
                 auto refMedia = ref ? timeline_.findMediaById(ref->mediaId) : nullptr;
                 const std::string cur = refMedia ? refMedia->resolvedPath() : std::string();
                 if (!cur.empty() &&
                     std::find(binDragPaths_.begin(), binDragPaths_.end(), cur) == binDragPaths_.end())
                     binDragPaths_.insert(binDragPaths_.begin(), cur);
+                if (ref && timeline_.playhead >= ref->timelineStart && timeline_.playhead < ref->end())
+                    shownAbs = absSourceFrame(*ref, timeline_.playhead);
             }
             for (size_t i = 0; i < binDragPaths_.size(); ++i)
                 applyPlayerDrop(box, binDragPaths_[i], /*first=*/i == 0);
+            if (pickerCompare)
+                alignScratchOnSource(shownAbs);
             return;
         }
         // Only the first replaces the sequence's contents; the rest append after it.

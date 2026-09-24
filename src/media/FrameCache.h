@@ -131,6 +131,9 @@ private:
         auto it = mediaEpoch_.find(mediaId);
         return it == mediaEpoch_.end() ? 0 : it->second;
     }
+    // holding first frame
+    bool firstFrameHold_ = true;
+    int holdReads_ = 0; // on-screen reads in flight while the hold is up
     size_t totalBytes_ = 0;
     size_t maxBytes_;
     uint64_t tick_ = 0;

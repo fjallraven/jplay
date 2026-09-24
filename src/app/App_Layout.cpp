@@ -42,11 +42,8 @@ constexpr float kTilePad = 6.0f;
 constexpr SDL_Color kTileBorder{ 70, 74, 82, 255 };
 constexpr SDL_Color kTileLabel{ 232, 235, 242, 255 };
 
-// Stack stage: how long the basename overlay stays up after a cycle, and how much
-// of that is spent fading out rather than holding — a hard cut to nothing reads as
-// a glitch at the end of a spin through the stack.
-constexpr Uint64 kStackOverlayMs = 1000;
-constexpr Uint64 kStackFadeMs    = 250;
+// Stack stage: how long the basename overlay stays up after a cycle.
+constexpr Uint64 kStackOverlayMs = 500;
 // The three lines it draws: the program's name, then the two under it in the
 // rotation, each fainter. Alpha, not colour: they are the same white.
 constexpr int   kStackOverlayLines = 3;
@@ -114,27 +111,14 @@ bool App::openLayoutView() {
         return a.track != b.track ? a.track < b.track : a.timelineStart < b.timelineStart;
     });
 
-    // Absolute source frame each clip starts on, and the earliest of them, which
-    // becomes the sequence's frame 0.
-    std::vector<int64_t> absIn(picked.size(), 0);
-    int64_t minAbs = INT64_MAX;
-    for (size_t i = 0; i < picked.size(); ++i) {
-        int64_t base = 0;
-        if (auto media = timeline_.findMediaById(picked[i].mediaId))
-            base = firstFrameOf(*media);
-        absIn[i] = base + picked[i].sourceOffset;
-        minAbs = std::min(minAbs, absIn[i]);
-    }
-
-    // The frame on screen right now, in the same absolute terms, so the playhead
+    // The frame on screen right now, in absolute source terms, so the playhead
     // can be put back on it once the sequence is up. -1 when the playhead is not
     // over any of the picked clips (a selection made elsewhere in the cut), in
     // which case the layout opens on its own first frame.
     int64_t shownAbs = -1;
-    for (size_t i = 0; i < picked.size(); ++i) {
-        const Clip& clip = picked[i];
+    for (const Clip& clip : picked) {
         if (timeline_.playhead >= clip.timelineStart && timeline_.playhead < clip.end()) {
-            shownAbs = absIn[i] + (timeline_.playhead - clip.timelineStart);
+            shownAbs = absSourceFrame(clip, timeline_.playhead);
             break;
         }
     }
@@ -143,14 +127,12 @@ bool App::openLayoutView() {
     // shows; the other stage borrows the sequence and renames it (setPlayerStage).
     const int idx = beginScratchSequence(stackView() ? "STACK" : "LAYOUT",
                                          ScratchKind::Layout);
-    const int64_t base = timeline_.seqRegions()[idx].start;
     Sequence& seq = timeline_.sequences[idx];
     seq.clips.reserve(picked.size());
     for (size_t i = 0; i < picked.size(); ++i) {
         Clip clip = std::move(picked[i]);
         clip.id = nextClipId_++;
         clip.track = (int)i;          // one per row, top first: the tile order
-        clip.timelineStart = base + (absIn[i] - minAbs);
         clip.shotId = -1;             // the shots belong to the cut, not to this view
         clip.linkedTo = 0;            // its audio parent stayed behind
         clip.linkOffset = 0;
@@ -158,18 +140,48 @@ bool App::openLayoutView() {
         seq.clips.push_back(std::move(clip));
     }
     scratchTrackCount_ = (int)seq.clips.size();
+
+    clearClipSelection(); // the originals are out of scope; the copies are not them
+    alignScratchOnSource(shownAbs);
+    return true;
+}
+
+int64_t App::absSourceFrame(const Clip& clip, int64_t frame) {
+    int64_t base = 0;
+    if (auto media = timeline_.findMediaById(clip.mediaId))
+        base = firstFrameOf(*media);
+    return base + clip.sourceOffset + (frame - clip.timelineStart);
+}
+
+void App::alignScratchOnSource(int64_t shownAbs) {
+    if (!layoutSeqActive() || timeline_.sequences.empty())
+        return;
+    const int idx = (int)timeline_.sequences.size() - 1; // the scratch is last
+    Sequence& seq = timeline_.sequences[idx];
+    if (seq.clips.empty())
+        return;
+    const int64_t base = timeline_.seqRegions()[idx].start;
+
+    // Absolute source frame each clip starts on, and the earliest of them, which
+    // becomes the sequence's frame 0.
+    std::vector<int64_t> absIn(seq.clips.size(), 0);
+    int64_t minAbs = INT64_MAX;
+    for (size_t i = 0; i < seq.clips.size(); ++i) {
+        absIn[i] = absSourceFrame(seq.clips[i], seq.clips[i].timelineStart);
+        minAbs = std::min(minAbs, absIn[i]);
+    }
+    for (size_t i = 0; i < seq.clips.size(); ++i)
+        seq.clips[i].timelineStart = base + (absIn[i] - minAbs);
     timeline_.repackSequences();
 
     // Fit and park. scopeToSequence ran while the sequence was still empty, so the
     // zoom it chose has nothing to do with what is in it now.
-    clearClipSelection(); // the originals are out of scope; the copies are not them
     fitToFilteredSequence();
     int64_t a = 0, b = 0;
     const int64_t start = shownAbs >= 0 ? base + (shownAbs - minAbs) : base;
     setPlayhead(timeline_.sequenceSpan(timeline_.sequences[idx], a, b)
                     ? std::clamp(start, a, std::max(a, b - 1))
                     : start);
-    return true;
 }
 
 void App::freeLayoutSlots() {
@@ -557,8 +569,7 @@ void App::cycleStack(int dir) {
 
 // The overlay a cycle arms: the program's basename in white, centred, with the two
 // under it in the rotation below it and fainter, so a spin reads as a list moving
-// past rather than as a name replacing a name. Fades out at the end of its second
-// instead of cutting.
+// past rather than as a name replacing a name.
 void App::renderStackOverlay() {
     if (!stackView() || launcherVisible())
         return;
@@ -569,10 +580,6 @@ void App::renderStackOverlay() {
     stackRowClips(rows);
     if (rows.size() < 2)
         return;
-
-    // Whole-overlay fade over the last stretch of its life.
-    const Uint64 left = stackOverlayUntil_ - now;
-    const float fade = left >= kStackFadeMs ? 1.0f : (float)left / (float)kStackFadeMs;
 
     // The names, top of the stack first. A row whose clip has no media left is
     // still a step in the rotation, so it keeps its line rather than pulling the
@@ -611,11 +618,11 @@ void App::renderStackOverlay() {
         const float scale = i == 0 ? topScale : restScale;
         const float tw = headerFont_.measure(renderer_, names[i].c_str()) * scale;
         const float th = lineH * scale;
-        const Uint8 a = (Uint8)std::lround(kStackLineAlpha[i] * fade);
+        const Uint8 a = kStackLineAlpha[i];
         // A plate behind each line, so the names stay readable over a bright frame.
         SDL_FRect plate = { playerRect_.x + (playerRect_.w - tw) * 0.5f - 8.0f * dpiScale,
                             y, tw + 16.0f * dpiScale, th };
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, (Uint8)std::lround(140 * fade * a / 255.0f));
+        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, (Uint8)std::lround(140 * a / 255.0f));
         jplay::fillRect(renderer_, &plate);
         headerFont_.draw(renderer_, playerRect_.x + (playerRect_.w - tw) * 0.5f, y,
                          SDL_Color{ 255, 255, 255, a }, names[i].c_str(), scale);

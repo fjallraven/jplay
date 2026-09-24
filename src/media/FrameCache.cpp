@@ -285,6 +285,12 @@ void FrameCache::workerLoop() {
                 if (best == SIZE_MAX || pending_[i].priority < pending_[best].priority)
                     best = i;
             }
+            // Lowest value wins, so the pick is a prefetch read only once no
+            // on-screen frame is left pending; the hold then waits out the ones
+            // still being read (see firstFrameHold_).
+            if (best != SIZE_MAX && firstFrameHold_ && holdReads_ > 0 &&
+                pending_[best].priority > 0)
+                best = SIZE_MAX;
             return best != SIZE_MAX;
         });
         if (stop_)
@@ -300,6 +306,9 @@ void FrameCache::workerLoop() {
             busyVideos_.insert(job.key.media);
         uint64_t gen = generation_;
         const uint64_t mediaEpoch = mediaEpochLocked(job.key.media);
+        const bool held = firstFrameHold_ && job.priority <= 0;
+        if (held)
+            ++holdReads_;
 
         lk.unlock();
         std::string err;
@@ -321,6 +330,16 @@ void FrameCache::workerLoop() {
         if (isVideo) {
             busyVideos_.erase(job.key.media);
             cv_.notify_all(); // wake workers blocked on this video's queued frames
+        }
+        if (held) {
+            --holdReads_;
+            // A doomed read (flushed by a project load) settles nothing: the
+            // batch that replaced it has its own on-screen frame to wait for.
+            if (live && holdReads_ == 0 &&
+                std::none_of(pending_.begin(), pending_.end(),
+                             [](const Pending& p) { return p.priority <= 0; }))
+                firstFrameHold_ = false;
+            cv_.notify_all(); // wake the workers holding off their prefetch
         }
         if (!frame) {
             // Log once per media, not once per requested frame: a broken sequence is
