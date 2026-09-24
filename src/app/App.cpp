@@ -4192,6 +4192,7 @@ void App::render() {
         renderTopBarTooltips();       // top-toolbar hover labels; over the frame below the bar
         renderFramePreview();         // hovered-frame thumbnail above the ruler; on top of panels
     }
+    updateWindowTitle();              // follows the playhead through a sequence's frames
     if (!cinemaMode_) {
         titleBar_.render(renderer_);  // bar background + title + window controls
         drawAppIcon();                // app icon in the title bar, left of the menu
@@ -4457,6 +4458,7 @@ void App::run() {
         work_.setPaused(playing_);   // hold background tasks while media plays
         work_.drainCompletions();    // run finished tasks' callbacks on this thread
         pickerWork_.drainCompletions(); // apply finished picker queries on this thread
+        openTargetWork_.drainCompletions(); // cache finished "Open Project" lookups
         pollPickerDecorations();     // apply whatever the labels/colors pass has merged so far
         drainSync();                 // apply host events / emit changes (sync review)
         drainControl();              // apply commands from the local control channel

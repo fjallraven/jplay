@@ -288,6 +288,9 @@ void App::newProject() {
     hasTexture_ = false;
     displayedKey_ = CacheKey{};
     recentDirty_ = true;   // the empty player will show the recent list again
+    // kick off shared projects check again
+    if (sharedScanInFlight_)
+        sharedDirty_ = true;
     hideLauncher_ = false; // ...unless the caller re-hides it (New Project does)
     fitView();
     if (gridView()) startClipThumbnails(); // restart thumbnail generation for the new clip set
@@ -1055,10 +1058,10 @@ bool App::loadedProjectDocForMedia(const std::string& mediaPath, std::string& ou
 // neither is offered unless one was found.
 //
 // The convention's half is an interpreter call that stats a network path, so it is
-// done once per media path and remembered in openTargetCache_. With allowResolve
-// false (playback) a path that isn't cached yet skips it rather than paying for it
-// mid-play, and offers whatever the open projects alone can answer; the rest
-// resolves as soon as playback stops.
+// done once per media path, on openTargetWork_, and remembered in openTargetCache_.
+// Until its answer lands the buttons offer whatever the open projects alone can
+// answer, exactly as with allowResolve false (playback), where a path that isn't
+// cached yet is not even submitted; it resolves as soon as playback stops.
 void App::resolveOpenTargets(bool allowResolve) {
     openSeqName_.clear();
     openProjName_.clear();
@@ -1078,33 +1081,56 @@ void App::resolveOpenTargets(bool allowResolve) {
     auto it = openTargetCache_.find(path);
     if (it != openTargetCache_.end()) {
         cached = &it->second;
-    } else if (allowResolve && jplayPythonReady()) { // else: retried once it is ready
-        OpenTarget target;
-        // The project document, as "{project_root}/{project_name}" with a .jpproj
-        // or .otio extension. The naming convention derives it from the media path
-        // and returns only what it found on disk, so nothing resolved here can fail
-        // the load for being unpublished. fs::u8path, not fs::path: MSVC reads a
-        // narrow std::string in the ANSI codepage, and these paths are UTF-8.
-        std::string projPath;
-        if (jplayProjectPathFromMedia(path, projPath)) {
-            target.projPath = projPath;
-            target.projName = fs::u8path(projPath).stem().u8string();
-            // Cached on the media when it was added with Python ready; parsed from
-            // the path now otherwise (and cached back), as showInSequence does.
-            target.seqName = media->metaValue("scene");
-            if (target.seqName.empty()) {
-                std::string ctxScene, ctxShot, ctxDept;
-                if (jplayGetPathContext(path, ctxScene, ctxShot, ctxDept) && !ctxScene.empty()) {
-                    target.seqName = ctxScene;
-                    media->setMetaValue("scene", ctxScene);
+    } else if (allowResolve && jplayPythonReady() // else: retried once it is ready
+               && openTargetPending_.insert(path).second) {
+        // Resolved off the UI thread (see openTargetWork_): the walk behind it can
+        // stall on network storage, and on a command-line launch this runs on the
+        // tick that would otherwise put the first picture up.
+        struct Lookup {
+            OpenTarget target;
+            bool sceneFromPath = false; // seqName parsed from the path, to cache on the media
+        };
+        auto res = std::make_shared<Lookup>();
+        // Cached on the media when it was added with Python ready; parsed from the
+        // path otherwise (and cached back on completion), as showInSequence does.
+        // Read here: the media is main-thread state.
+        const std::string knownScene = media->metaValue("scene");
+        std::weak_ptr<Media> weakMedia = media;
+        openTargetWork_.submit(
+            [res, path, knownScene](const std::atomic<bool>&) {
+                // The project document, as "{project_root}/{project_name}" with a
+                // .jpproj or .otio extension. The naming convention derives it from
+                // the media path and returns only what it found on disk, so nothing
+                // resolved here can fail the load for being unpublished. fs::u8path,
+                // not fs::path: MSVC reads a narrow std::string in the ANSI codepage,
+                // and these paths are UTF-8.
+                std::string projPath;
+                if (!jplayProjectPathFromMedia(path, projPath)) {
+                    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+                                 "[jplay] No project document for \"%s\"; nothing to open from it",
+                                 path.c_str());
+                    return;
                 }
-            }
-        } else {
-            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-                         "[jplay] No project document for \"%s\"; nothing to open from it",
-                         path.c_str());
-        }
-        cached = &openTargetCache_.emplace(path, std::move(target)).first->second;
+                OpenTarget& t = res->target;
+                t.projPath = projPath;
+                t.projName = fs::u8path(projPath).stem().u8string();
+                t.seqName = knownScene;
+                if (t.seqName.empty()) {
+                    std::string ctxScene, ctxShot, ctxDept;
+                    if (jplayGetPathContext(path, ctxScene, ctxShot, ctxDept) && !ctxScene.empty()) {
+                        t.seqName = ctxScene;
+                        res->sceneFromPath = true;
+                    }
+                }
+            },
+            [this, res, path, weakMedia] {
+                openTargetPending_.erase(path);
+                if (res->sceneFromPath) {
+                    if (auto m = weakMedia.lock())
+                        m->setMetaValue("scene", res->target.seqName);
+                }
+                openTargetCache_.emplace(path, std::move(res->target));
+            });
     }
 
     // What to open, the convention first and the loaded projects after it. The
@@ -2319,6 +2345,7 @@ void App::submitRecentRefresh() {
 // pending/in-flight probes cleanly.
 void App::submitSharedRefresh() {
     sharedProjects_.clear(); // fresh scan: shows drop back in as they confirm
+    sharedScanInFlight_ = true;
     auto entries = std::make_shared<std::vector<SharedProjects::Entry>>();
     work_.submit(
         [entries](const std::atomic<bool>&) {
@@ -2332,6 +2359,10 @@ void App::submitSharedRefresh() {
             // The probes run independently, but the column is filled in a single
             // swap once the last of them reports: appending show by show would
             // grow the column (and move its rows under the pointer) N times.
+            if (entries->empty()) {
+                sharedScanInFlight_ = false; // nothing configured / nothing listed
+                return;
+            }
             auto pending = std::make_shared<std::vector<SharedProject>>();
             auto outstanding = std::make_shared<int>((int)entries->size());
             for (auto& entry : *entries)
@@ -2357,8 +2388,10 @@ void App::submitSharedProbe(SharedProjects::Entry entry,
             if (*present)
                 pending->push_back(
                     SharedProject{ sharedEntry->code, sharedEntry->name, sharedEntry->path });
-            if (--*outstanding == 0)
+            if (--*outstanding == 0) {
                 sharedProjects_ = std::move(*pending);
+                sharedScanInFlight_ = false;
+            }
         });
 }
 
@@ -2940,15 +2973,88 @@ void App::joinRefresh() {
     refreshStop_ = false;
 }
 
+std::string App::clipFrameName(const Clip& clip, int64_t frame) {
+    auto media = timeline_.findMediaById(clip.mediaId);
+    if (!media)
+        return {};
+    const fs::path p = fs::u8path(media->path());
+    if (media->type() != ClipType::ImageSequence)
+        return p.filename().u8string();
+    const std::string hashed =
+        hashSeqStem(p.stem().u8string(), true) + p.extension().u8string();
+    // The numbering is the open decoder's to know; opening here would stall the
+    // UI thread on network storage, so an unopened sequence keeps its "####".
+    if (frame < clip.timelineStart || frame >= clip.timelineStart + clip.duration ||
+        !media->isOpen())
+        return hashed;
+    std::string err;
+    auto src = media->ensureOpen(err); // already open: the lock-free fast path
+    if (!src)
+        return hashed;
+    // Same number the clip-frame readout shows (see fmtClipAt).
+    const int64_t number = src->firstFrameNumber() + clip.sourceOffset + (frame - clip.timelineStart);
+
+    // A frame-pattern path ("shot.####.exr") takes the number in its pattern's
+    // width; a concrete frame's path swaps its trailing digit run for it, padded
+    // to that run's width.
+    const std::string sub = ImageSeq::substituteFrame(media->path(), number);
+    if (sub != media->path())
+        return fs::u8path(sub).filename().u8string();
+    const std::string stem = p.stem().u8string();
+    size_t digitStart = stem.size();
+    while (digitStart > 0 && std::isdigit((unsigned char)stem[digitStart - 1]))
+        --digitStart;
+    if (digitStart == stem.size())
+        return p.filename().u8string();
+    std::string digits = std::to_string(number);
+    if (digits.size() < stem.size() - digitStart)
+        digits.insert(0, stem.size() - digitStart - digits.size(), '0');
+    return stem.substr(0, digitStart) + digits + p.extension().u8string();
+}
+
+std::string App::windowTitleText() {
+    // Layout tiles several images at once: no one name stands for them.
+    if (launcherVisible() || layoutView())
+        return {};
+    const int64_t frame = timeline_.playhead;
+
+    // Stack: whichever clip is on top at the playhead — the image being shown.
+    if (stackView()) {
+        const Clip* c = getTopMostClipAtFrame(frame);
+        return c ? clipFrameName(*c, frame) : std::string();
+    }
+
+    // A single clip names the window after its frame: always so in a source view,
+    // and in a sequence holding that one video clip (audio beside it is not a
+    // second source). The Overview goes by the same scope rules as the frame.
+    const int fsi = filteredSeqIdx();
+    if (fsi >= 0) {
+        const Sequence& seq = timeline_.sequences[fsi];
+        const Clip* only = nullptr;
+        int count = 0;
+        for (const Clip& c : seq.clips) {
+            if (c.audio && !sourceViewActive())
+                continue;
+            only = &c;
+            ++count;
+        }
+        if (count == 1)
+            return clipFrameName(*only, frame);
+        return seq.name;
+    }
+    if (const auto* proj = timeline_.findProjectById(viewProjId_))
+        return proj->name;
+    return {}; // All
+}
+
 void App::updateWindowTitle() {
-    // Only a project actually on disk names the window; an unsaved session's
-    // projectPath_ is just a placeholder for the next save dialog, not a file.
-    // Just the filename: a full path is wide enough to run under the menu bar.
-    std::string title = "";
-    if (projectHasPath_)
-        title = fs::u8path(projectPath_).filename().u8string();
-    SDL_SetWindowTitle(window_, title.c_str()); // taskbar / OS text
-    titleBar_.setTitle(title);                  // custom chrome
+    std::string title = windowTitleText();
+    if (windowTitleSet_ && title == windowTitle_)
+        return;
+    windowTitleSet_ = true;
+    windowTitle_ = std::move(title);
+    SDL_SetWindowTitle(window_, windowTitle_.c_str()); // taskbar / OS text
+    titleBar_.setTitle(windowTitle_);                  // custom chrome
 }
 
 // ---------------------------------------------------------------- sequence view

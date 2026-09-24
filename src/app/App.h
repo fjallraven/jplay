@@ -174,6 +174,8 @@ private:
     SDL_FRect sharedListRect_{};  // viewport of the shared list, for wheel hit-testing
     ScrollbarDrag sharedSb_;      // its scrollbar, grabbable
     bool sharedDirty_ = true;     // kick the background scan once on next launcher render
+    bool sharedScanInFlight_ = false; // scan submitted, final swap not yet run; a
+                                      // work_.reset() leaves it set (see newProject)
 
     // The launcher's left column is tabbed: RECENT PROJECTS, SHARED PROJECTS and
     // SYNC. All three tabs are always in the strip, so it never changes width;
@@ -559,7 +561,8 @@ private:
     bool hoveredOpenProj_ = false;
     bool hoveredOpenSeq_ = false;
     // Resolving those names is an embedded-interpreter call plus a stat on a network
-    // path, so each media path is resolved once and remembered here. This holds only
+    // path, so each media path is resolved once, on openTargetWork_, and remembered
+    // here. This holds only
     // what the naming convention and the disk say; whether a target is still worth
     // offering (sequence already grafted, project already opened whole) is timeline
     // state and is re-checked every frame instead. A path that resolved to nothing
@@ -571,6 +574,7 @@ private:
         std::string seqName;   // the naming convention's sequence for that media
     };
     std::unordered_map<std::string, OpenTarget> openTargetCache_; // media path -> the above
+    std::unordered_set<std::string> openTargetPending_; // paths with a lookup in flight
     // Proxy: a toggle-label button in the top toolbar, immediately left of
     // Letterbox, that opens a popup for picking the global media-representation
     // mode: the built-in "Full" plus whatever the naming config's
@@ -2874,6 +2878,15 @@ private:
     // (with a status set) when there is nothing to lay out, which is the caller's
     // signal not to enter the stage.
     bool openLayoutView();
+    // Absolute (editorial) source frame `clip` shows at timeline `frame`: the
+    // media's first frame number plus the clip's source position there.
+    int64_t absSourceFrame(const Clip& clip, int64_t frame);
+    // Line the comparison scratch sequence's clips up on absolute source frame (the
+    // earliest first frame among them becomes the sequence's frame 0), fit the view
+    // to it and park the playhead on absolute frame `shownAbs` — clamped into the
+    // sequence; -1 = its first frame. What openLayoutView ends on, and what a picker
+    // drop onto Create Layout / Create Stack does once its rows are in.
+    void alignScratchOnSource(int64_t shownAbs);
     // What the Layout stage tiles show at `frame`: one entry per video row, top row
     // first, null where that row has no clip there — so the entry count is the tile
     // count and does not move with the playhead. Also the set submitCacheRequests
@@ -2914,7 +2927,7 @@ private:
     // is the rotation order rather than what reaches the playhead.
     void stackRowClips(std::vector<const Clip*>& out) const;
     // The name overlay a cycle arms: the program's basename over the two under it,
-    // centred and fading out. A no-op once stackOverlayUntil_ has passed.
+    // centred. A no-op once stackOverlayUntil_ has passed.
     void renderStackOverlay();
 
     // ProjectExplorer (left media bin)
@@ -3430,7 +3443,17 @@ private:
     static void SDLCALL onRelocateChosen(void* userdata, const char* const* filelist, int filter);
     void newProject(); // clear timeline + forget any saved-file association
     void closeProject(); // clear timeline and return to the launcher
+    // Name the window after what the player shows (see windowTitleText). Called
+    // every render, since an image sequence's title follows the playhead frame by
+    // frame; the OS and the title bar are only touched when the text changes.
     void updateWindowTitle();
+    std::string windowTitleText();
+    // Basename of the file `clip` shows at timeline `frame`: the exact frame's file
+    // for an image sequence (the "####" form when the frame is outside the clip or
+    // the sequence's numbering is not known yet), the file itself otherwise.
+    std::string clipFrameName(const Clip& clip, int64_t frame);
+    std::string windowTitle_;        // last text handed to the OS / title bar
+    bool windowTitleSet_ = false;    // the window still carries its creation title
 
     // Unsaved-changes guard (App_Project.cpp). "Dirty" is derived, not tracked
     // per-edit: projectSignature() hashes the project serialized exactly as it
@@ -3485,6 +3508,15 @@ private:
     // latest-click-wins rather than concurrency. drainCompletions() runs its
     // callbacks on the main thread, same as work_.
     WorkQueue pickerWork_{ 1 };
+
+    // The naming convention's "Open Project" / "Open Sequence" lookup for the clip
+    // under the playhead (resolveOpenTargets). Off the UI thread because it walks
+    // the media's directories looking for a project document, which on network
+    // storage can take seconds -- and a command-line launch asks for it on the very
+    // tick that would put the first picture up. Its own queue rather than work_:
+    // that one is reset on every project load, which would drop a lookup still
+    // marked in flight, and it has nothing to wait behind here.
+    WorkQueue openTargetWork_{ 1 };
 
     // Decoration (labels/colors) runs on its own thread rather than pickerWork_:
     // it is the one picker query that can take tens of seconds, and behind a
