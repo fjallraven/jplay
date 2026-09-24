@@ -9,6 +9,8 @@
 #define NDILIB_CPP_DEFAULT_CONSTRUCTORS 0
 #include <Processing.NDI.Lib.h>
 
+#include "ParallelRows.h"
+
 #if defined(_WIN32)
 #include <windows.h>
 #else
@@ -19,9 +21,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <future>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -147,32 +147,6 @@ inline uint16_t clampRound(float v) {
 }
 inline uint16_t quantY(float y) { return clampRound(y * 56064.0f + 4096.0f); } // y in [0,1]
 inline uint16_t quantC(float c) { return clampRound(c * 57344.0f + 32768.0f); } // c in [-0.5,0.5]
-
-// Run fn(yBegin, yEnd) over `h` rows, split into bands across the pool.
-//
-// The encode costs ~40 ms/frame at 1080p and ~160 ms at 4K single-threaded — enough
-// to halve the playback rate on its own — and every row is independent, so it is split
-// into bands across the thread pool. This brings 1080p to ~5 ms and 4K to ~14 ms. The
-// join is a hard barrier, so no band outlives the caller's buffers.
-template <typename Fn>
-void parallelRows(int h, Fn fn) {
-    unsigned n = std::thread::hardware_concurrency();
-    if (n < 2 || h < 64) { // not worth the fan-out
-        fn(0, h);
-        return;
-    }
-    n = (std::min)(n, (unsigned)(h / 32)); // >= 32 rows per band
-    const int band = (h + (int)n - 1) / (int)n;
-    std::vector<std::future<void>> bands;
-    bands.reserve(n - 1);
-    for (int y = band; y < h; y += band) {
-        const int y0 = y, y1 = (std::min)(y + band, h);
-        bands.push_back(std::async(std::launch::async, [&fn, y0, y1] { fn(y0, y1); }));
-    }
-    fn(0, (std::min)(band, h)); // this thread takes the first band
-    for (auto& b : bands)
-        b.get();
-}
 
 // Encode `srcW` x `h` scRGB half pixels into `out` as P216: a 16-bit luma plane of
 // `h` rows followed by a 16-bit interleaved Cb,Cr plane of `h` rows, both with a

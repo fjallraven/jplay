@@ -5,14 +5,20 @@
 #include <DeckLinkAPI.h>
 #include <DeckLinkAPIVersion.h>
 
+#include "ParallelRows.h"
+
 #include <dlfcn.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -146,17 +152,34 @@ Ref<IDeckLinkOutput> firstOutputDevice(std::string* nameOut) {
 // NDI takes whatever resolution the player composited, but a DeckLink raster is
 // fixed by the display mode, so the program has to be scaled into it. Aspect is
 // preserved and the remainder is left black — the same letterbox/pillarbox the
-// player would show. Bilinear, which is enough for a monitoring path and cheap
-// enough to stay on the render thread.
+// player would show.
+//
+// This runs on the render thread once per composited frame, so it has to fit well
+// inside a 24p frame even at UHD. A per-channel double-precision bilinear with
+// lround cost ~270 ms at 3840x2160 and ~65 ms at 1080p, capping playback at ~4 fps
+// on a UHD mode. Three things bring it down:
+//  - the common case, a program that already matches the raster (or fits it at 1:1
+//    with bars), is a straight RGBA -> BGRA swizzle with no filtering at all;
+//  - a real rescale samples through per-column tables and 8-bit fixed-point
+//    weights, so the inner loop is integer multiply-adds;
+//  - rows are independent, so both are banded across threads, and only the bars
+//    are cleared rather than memsetting the whole frame first.
 //
 // `src` is RGBA8 top-row-first (OutputManager's readback order). `dst` is the
 // card's BGRA8 buffer, whose stride may exceed dstW * 4.
 // ---------------------------------------------------------------------------
+
+// One RGBA8 pixel (as a little-endian word) to opaque BGRA8.
+inline uint32_t rgbaToBgra(uint32_t p) {
+    return ((p >> 16) & 0xFFu) | (p & 0xFF00u) | ((p & 0xFFu) << 16) | 0xFF000000u;
+}
+
 void fitBgra(const uint8_t* src, int srcW, int srcH,
              uint8_t* dst, int dstW, int dstH, int dstStride) {
-    std::memset(dst, 0, (size_t)dstStride * dstH);
-    if (srcW <= 0 || srcH <= 0)
+    if (srcW <= 0 || srcH <= 0) {
+        std::memset(dst, 0, (size_t)dstStride * dstH);
         return;
+    }
 
     // Destination rect: the largest box of the source's aspect that fits.
     const double scale = std::min((double)dstW / srcW, (double)dstH / srcH);
@@ -164,35 +187,76 @@ void fitBgra(const uint8_t* src, int srcW, int srcH,
     const int outH = std::max(1, std::min(dstH, (int)std::lround(srcH * scale)));
     const int offX = (dstW - outW) / 2;
     const int offY = (dstH - outH) / 2;
+    const bool oneToOne = outW == srcW && outH == srcH;
 
-    for (int y = 0; y < outH; ++y) {
-        // Sample at pixel centres so the mapping stays symmetric at both edges.
-        const double sy = ((y + 0.5) * srcH / outH) - 0.5;
-        const int y0 = std::clamp((int)std::floor(sy), 0, srcH - 1);
-        const int y1 = std::min(y0 + 1, srcH - 1);
-        const double fy = std::clamp(sy - y0, 0.0, 1.0);
-        uint8_t* out = dst + (size_t)(y + offY) * dstStride + (size_t)offX * 4;
-        const uint8_t* row0 = src + (size_t)y0 * srcW * 4;
-        const uint8_t* row1 = src + (size_t)y1 * srcW * 4;
-        for (int x = 0; x < outW; ++x) {
-            const double sx = ((x + 0.5) * srcW / outW) - 0.5;
-            const int x0 = std::clamp((int)std::floor(sx), 0, srcW - 1);
-            const int x1 = std::min(x0 + 1, srcW - 1);
-            const double fx = std::clamp(sx - x0, 0.0, 1.0);
-            const uint8_t* a = row0 + (size_t)x0 * 4;
-            const uint8_t* b = row0 + (size_t)x1 * 4;
-            const uint8_t* c = row1 + (size_t)x0 * 4;
-            const uint8_t* d = row1 + (size_t)x1 * 4;
-            // RGBA in, BGRA out: channel 0 of the destination is blue.
-            for (int ch = 0; ch < 3; ++ch) {
-                const double top = a[ch] + (b[ch] - a[ch]) * fx;
-                const double bot = c[ch] + (d[ch] - c[ch]) * fx;
-                out[2 - ch] = (uint8_t)std::lround(top + (bot - top) * fy);
-            }
-            out[3] = 0xFF;
-            out += 4;
+    // Bilinear taps, 8-bit fixed-point weights. Sampled at pixel centres so the
+    // mapping stays symmetric at both edges. Built only when actually scaling.
+    struct Tap { int i0, i1, f; }; // two source indices and the weight of i1, 0..256
+    auto taps = [](int n, int srcN, std::vector<Tap>& t) {
+        t.resize(n);
+        for (int i = 0; i < n; ++i) {
+            const double s = ((i + 0.5) * srcN / n) - 0.5;
+            const int i0 = std::clamp((int)std::floor(s), 0, srcN - 1);
+            const int i1 = std::min(i0 + 1, srcN - 1);
+            const double f = std::clamp(s - i0, 0.0, 1.0);
+            t[i] = { i0, i1, (int)std::lround(f * 256.0) };
         }
+    };
+    std::vector<Tap> tx, ty;
+    if (!oneToOne) {
+        taps(outW, srcW, tx);
+        taps(outH, srcH, ty);
     }
+
+    parallelRows(dstH, [&](int yBegin, int yEnd) {
+        for (int y = yBegin; y < yEnd; ++y) {
+            uint8_t* row = dst + (size_t)y * dstStride;
+            const int oy = y - offY;
+            if (oy < 0 || oy >= outH) { // letterbox bar
+                std::memset(row, 0, (size_t)dstStride);
+                continue;
+            }
+            // Pillarbox bars (and any stride padding past the raster).
+            std::memset(row, 0, (size_t)offX * 4);
+            const size_t right = (size_t)(offX + outW) * 4;
+            std::memset(row + right, 0, (size_t)dstStride - right);
+
+            uint8_t* out = row + (size_t)offX * 4;
+            if (oneToOne) {
+                const uint8_t* in = src + (size_t)oy * srcW * 4;
+                for (int x = 0; x < outW; ++x) {
+                    uint32_t p;
+                    std::memcpy(&p, in + (size_t)x * 4, 4);
+                    p = rgbaToBgra(p);
+                    std::memcpy(out + (size_t)x * 4, &p, 4);
+                }
+                continue;
+            }
+
+            const Tap& vy = ty[oy];
+            const uint8_t* row0 = src + (size_t)vy.i0 * srcW * 4;
+            const uint8_t* row1 = src + (size_t)vy.i1 * srcW * 4;
+            const int fy = vy.f, gy = 256 - fy;
+            for (int x = 0; x < outW; ++x) {
+                const Tap& vx = tx[x];
+                const int fx = vx.f, gx = 256 - fx;
+                const uint8_t* a = row0 + (size_t)vx.i0 * 4;
+                const uint8_t* b = row0 + (size_t)vx.i1 * 4;
+                const uint8_t* c = row1 + (size_t)vx.i0 * 4;
+                const uint8_t* d = row1 + (size_t)vx.i1 * 4;
+                uint8_t px[4];
+                // RGBA in, BGRA out: channel 0 of the destination is blue. Each
+                // pass is at most 255 * 256 * 256, well inside an int.
+                for (int ch = 0; ch < 3; ++ch) {
+                    const int top = a[ch] * gx + b[ch] * fx;
+                    const int bot = c[ch] * gx + d[ch] * fx;
+                    px[2 - ch] = (uint8_t)((top * gy + bot * fy + 32768) >> 16);
+                }
+                px[3] = 0xFF;
+                std::memcpy(out + (size_t)x * 4, px, 4);
+            }
+        }
+    });
 }
 
 // An SDI/HDMI output on a DeckLink card, driven frame-at-a-time.
@@ -201,8 +265,18 @@ void fitBgra(const uint8_t* src, int srcW, int srcH,
 // follows the media and its rate follows the timeline — so EnableVideoOutput is
 // deferred to the first submit() and redone whenever the incoming geometry or
 // rate picks a different mode.
+//
+// DisplayVideoFrameSync blocks for the whole DMA of the frame to the card — ~22 ms
+// for a 4K DCI BGRA frame on a Mini Monitor 4K. On the render thread that, plus the
+// fit, pushed every new-frame iteration past three 60 Hz vsyncs and held playback at
+// ~20 fps. So the card gets a thread of its own: submit() fits into a free frame of a
+// small pool and posts it, and the worker hands posted frames to the card. Latest
+// wins — a frame still waiting when the next one is posted is skipped, never queued,
+// so the monitor cannot fall behind the player.
 class DeckLinkOutput : public OutputDevice {
 public:
+    ~DeckLinkOutput() override { close(); }
+
     bool open() override {
         out_ = firstOutputDevice(&device_);
         if (!out_)
@@ -250,6 +324,8 @@ public:
             out_.reset();
             return false;
         }
+        stop_ = false;
+        worker_ = std::thread([this] { run(); });
         return true;
     }
 
@@ -259,13 +335,23 @@ public:
         if (!configure(f.width, f.height, f.fps))
             return;
 
+        // A frame the worker neither holds nor has waiting. With three in the pool
+        // there always is one.
+        int slot = 0;
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            while (slot == pending_ || slot == showing_)
+                ++slot;
+        }
+        IDeckLinkMutableVideoFrame* frame = frames_[slot].get();
+
         // Newer SDKs moved pixel access off IDeckLinkVideoFrame onto
         // IDeckLinkVideoBuffer, reached by QueryInterface, and bracketed the
         // mapping with StartAccess/EndAccess. The 12.0 headers we vendor for
         // release predate that and map the frame directly.
 #ifdef JPLAY_DECKLINK_HAS_VIDEO_BUFFER
         Ref<IDeckLinkVideoBuffer> buf =
-            queryIface<IDeckLinkVideoBuffer>(frame_.get(), IID_IDeckLinkVideoBuffer);
+            queryIface<IDeckLinkVideoBuffer>(frame, IID_IDeckLinkVideoBuffer);
         if (!buf || buf->StartAccess(bmdBufferAccessWrite) != S_OK)
             return;
         void* bytes = nullptr;
@@ -276,24 +362,32 @@ public:
         buf->EndAccess(bmdBufferAccessWrite);
 #else
         void* bytes = nullptr;
-        if (frame_->GetBytes(&bytes) == S_OK && bytes) {
+        if (frame->GetBytes(&bytes) == S_OK && bytes) {
             fitBgra(f.rgba, f.width, f.height,
                     (uint8_t*)bytes, active_.width, active_.height, stride_);
         }
 #endif
 
-        // Synchronous display: the card shows this frame at its next opportunity
-        // and holds it until the next one. That matches the player driving the
-        // cadence (App_Player only submits on a fresh composite, so a paused
-        // timeline simply leaves the last frame on the monitor) at the cost of
-        // not being locked to the card's clock. Scheduled playback is the
-        // genlocked alternative and needs a feeding thread to go with it.
-        if (out_->DisplayVideoFrameSync(frame_.get()) != S_OK)
-            ++dropped_;
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            if (pending_ >= 0)
+                ++skipped_; // the card is still busy with the one before it
+            pending_ = slot;
+        }
+        cv_.notify_one();
     }
 
     void close() override {
-        frame_.reset();
+        if (worker_.joinable()) {
+            {
+                std::lock_guard<std::mutex> lk(m_);
+                stop_ = true;
+            }
+            cv_.notify_one();
+            worker_.join();
+        }
+        pending_ = showing_ = -1;
+        frames_.clear();
         if (out_ && enabled_) {
             out_->DisableVideoOutput();
             enabled_ = false;
@@ -320,8 +414,10 @@ public:
             else if (!(ref & bmdReferenceNotSupportedByHardware))
                 s += ", no ref";
         }
-        if (dropped_)
-            s += ", " + std::to_string(dropped_) + " dropped";
+        if (const unsigned d = dropped_)
+            s += ", " + std::to_string(d) + " dropped";
+        if (const unsigned k = skipped_)
+            s += ", " + std::to_string(k) + " skipped";
         return s;
     }
 
@@ -331,6 +427,38 @@ public:
     bool wantsHdr() const override { return false; }
 
 private:
+    // The card's feeding thread. Synchronous display: the card shows each frame at
+    // its next opportunity and holds it until the next one. That matches the player
+    // driving the cadence (App_Player only submits on a fresh composite, so a paused
+    // timeline simply leaves the last frame on the monitor) at the cost of not being
+    // locked to the card's clock. Scheduled playback is the genlocked alternative.
+    void run() {
+        std::unique_lock<std::mutex> lk(m_);
+        for (;;) {
+            cv_.wait(lk, [this] { return stop_ || pending_ >= 0; });
+            if (stop_)
+                return;
+            showing_ = pending_;
+            pending_ = -1;
+            IDeckLinkMutableVideoFrame* frame = frames_[showing_].get();
+            lk.unlock();
+            const bool ok = out_->DisplayVideoFrameSync(frame) == S_OK;
+            lk.lock();
+            if (!ok)
+                ++dropped_;
+            showing_ = -1;
+            idle_.notify_all();
+        }
+    }
+
+    // Wait until the worker holds no frame and has none waiting, so the pool and
+    // the output can be torn down under it.
+    void drain() {
+        std::unique_lock<std::mutex> lk(m_);
+        pending_ = -1;
+        idle_.wait(lk, [this] { return showing_ < 0; });
+    }
+
     // Bring the card up on the mode that best carries a `w`x`h` @ `fps` program,
     // reusing the current one when the pick has not changed. False means nothing
     // on this card can carry it.
@@ -338,11 +466,12 @@ private:
         const Mode* pick = pickMode(w, h, fps);
         if (!pick)
             return false;
-        if (enabled_ && pick->mode == active_.mode && frame_)
+        if (enabled_ && pick->mode == active_.mode && !frames_.empty())
             return true;
 
+        drain();
+        frames_.clear();
         if (enabled_) {
-            frame_.reset();
             out_->DisableVideoOutput();
             enabled_ = false;
         }
@@ -374,12 +503,16 @@ private:
         if (rowBytes <= 0)
             rowBytes = active_.width * 4;
         stride_ = rowBytes;
-        if (out_->CreateVideoFrame(active_.width, active_.height, rowBytes, kPixelFormat,
-                                   bmdFrameFlagDefault, frame_.addr()) != S_OK) {
-            std::fprintf(stderr, "DeckLink: CreateVideoFrame failed\n");
-            out_->DisableVideoOutput();
-            enabled_ = false;
-            return false;
+        frames_.resize(kPoolSize);
+        for (Ref<IDeckLinkMutableVideoFrame>& fr : frames_) {
+            if (out_->CreateVideoFrame(active_.width, active_.height, rowBytes, kPixelFormat,
+                                       bmdFrameFlagDefault, fr.addr()) != S_OK) {
+                std::fprintf(stderr, "DeckLink: CreateVideoFrame failed\n");
+                frames_.clear();
+                out_->DisableVideoOutput();
+                enabled_ = false;
+                return false;
+            }
         }
         std::fprintf(stderr, "DeckLink: %s on %s\n", active_.name.c_str(), device_.c_str());
         return true;
@@ -428,15 +561,29 @@ private:
     // colour maths of our own in the path.
     static constexpr BMDPixelFormat kPixelFormat = bmdFormat8BitBGRA;
 
+    // One being written, one waiting, one on its way to the card.
+    static constexpr int kPoolSize = 3;
+
     Ref<IDeckLinkOutput>            out_;
-    Ref<IDeckLinkMutableVideoFrame> frame_;
+    std::vector<Ref<IDeckLinkMutableVideoFrame>> frames_; // kPoolSize, once configured
     std::vector<Mode>               modes_;
     Mode                            active_;
     std::string                     device_;
     int                             stride_ = 0;
     bool                            enabled_ = false;
-    unsigned                        dropped_ = 0;
+    std::atomic<unsigned>           dropped_{ 0 }; // the card refused a frame
+    std::atomic<unsigned>           skipped_{ 0 }; // replaced before the card took it
     BMDDisplayMode                  failedMode_ = bmdModeUnknown; // last mode we failed to enable
+
+    // Card thread. m_ guards pending_, showing_ and stop_; pending_ and
+    // showing_ are indices into frames_, -1 for none.
+    std::thread             worker_;
+    std::mutex              m_;
+    std::condition_variable cv_;   // wakes the worker: a frame is pending, or stop
+    std::condition_variable idle_; // wakes drain(): the worker let go of its frame
+    int                     pending_ = -1;
+    int                     showing_ = -1;
+    bool                    stop_ = false;
 };
 
 } // namespace
