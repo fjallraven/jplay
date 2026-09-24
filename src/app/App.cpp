@@ -1228,7 +1228,12 @@ void App::populateOutputMenu() {
         }
         std::string id = b.id, label = b.label;
         menuBar_.addItem(outputMenuIdx_, "  " + label,
-            [this, id] { reviewEnabled_ = false; output_.select(id); },
+            [this, id] {
+                // Clicking the active backend again turns it off.
+                bool on = !reviewEnabled_ && output_.activeId() == id;
+                reviewEnabled_ = false;
+                output_.select(on ? "" : id);
+            },
             nullptr, nullptr, "",
             [this, id] { return !reviewEnabled_ && output_.activeId() == id; });
         // What the device is actually sending, under the entry that selects it: the
@@ -1271,6 +1276,10 @@ void App::populateOutputMenu() {
             menuBar_.addItem(outputMenuIdx_, "  " + label,
                 [this, id] {
                     output_.select("");
+                    if (reviewEnabled_ && reviewDisplay_ == id) {
+                        reviewEnabled_ = false; // clicking the active monitor again turns it off
+                        return;
+                    }
                     if (reviewWindow_ && reviewDisplay_ != id)
                         closeReviewWindow(); // rebuild on the newly-chosen monitor
                     reviewDisplay_ = id;
@@ -1572,7 +1581,7 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
             cycleStack(dir);
         else if (panelOpen(kPanelProjectExplorer) && peActiveTab_ == PeTabSources)
             stepBinSelection(dir);
-        else if (panelOpen(kPanelClipSource) && !k.repeat)
+        else if (panelOpen(kPanelClipSource) && clipSourceTab_ == ClipSrcTabSource && !k.repeat)
             // No repeat: each step is a real media swap behind a Python query, and
             // a held key would queue one per tick.
             stepClipSourceVersion(dir);

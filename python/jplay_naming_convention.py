@@ -56,7 +56,7 @@ panel's own color. To say more than the name — an approval state, a status, wh
 version it is — give the option as a dict instead of a string. "value" is the
 identity (the version/asset/department the naming convention resolves paths with,
 and the only part sent back to the host); "label" is what the Component Picker
-panel, the Clip Source panel and the clip right-click menu draw, and "color"
+panel, the Clip panel and the clip right-click menu draw, and "color"
 ("#RRGGBB", or an (r, g, b) tuple of 0-255 ints) tints that label.
 
 "badge" says it without touching either. It is a short word — the status itself —

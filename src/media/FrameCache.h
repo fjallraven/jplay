@@ -55,6 +55,11 @@ public:
     bool mediaFailed(const std::string& mediaId) const;
 
     void clear(); // drop cached frames + pending work (in-flight reads finish and are discarded)
+    // clear() for one media: its frames go, and reads of it already in flight are
+    // discarded on arrival, while every other media's frames stay. For a change to
+    // what the media's frames contain (an EXR layer switch) rather than to the
+    // cache as a whole.
+    void dropMedia(const std::string& mediaId);
     // Bumped by clear(). A caller that skips re-submitting an unchanged wanted set
     // watches this so a flushed cache is refilled rather than left empty.
     uint64_t generation() const;
@@ -118,6 +123,14 @@ private:
     std::unordered_set<std::string> busyVideos_; // media ids a worker is currently decoding (one worker per video)
     std::unordered_set<std::string> failedMedia_; // media ids whose reads failed (see mediaFailed)
     std::unordered_map<CacheKey, Entry, CacheKeyHash> map_;
+    // Bumped per media by dropMedia(): generation_ for one media. A read admits its
+    // frame only if its media's count is still what it was when the read started.
+    // Absent = 0; a media is only entered here once it has been dropped.
+    std::unordered_map<std::string, uint64_t> mediaEpoch_;
+    uint64_t mediaEpochLocked(const std::string& mediaId) const {
+        auto it = mediaEpoch_.find(mediaId);
+        return it == mediaEpoch_.end() ? 0 : it->second;
+    }
     size_t totalBytes_ = 0;
     size_t maxBytes_;
     uint64_t tick_ = 0;

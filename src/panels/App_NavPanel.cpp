@@ -68,7 +68,7 @@ void App::registerLeftPanels() {
 
     jplay::LeftPanelDesc cs;
     cs.id = "clip-source";
-    cs.label = "Clip Source";
+    cs.label = "Clip";
     cs.icon = iconCp(ICON_MDI_LAYERS_TRIPLE);
     cs.resizable = true;
     cs.render = [this] {
@@ -81,8 +81,11 @@ void App::registerLeftPanels() {
         clipSourceScroll_ = 0.0f;
     };
     cs.onClose = [this] { closeClipSource(); };
-    cs.onWheel = [this](float d, float, float) { // upper clamp in renderClipSourcePanel
-        clipSourceScroll_ = std::max(0.0f, clipSourceScroll_ - d * 48.0f);
+    cs.onWheel = [this](float d, float, float) { // upper clamps in the tabs' renders
+        float& scroll = clipSourceTab_ == ClipSrcTabExr  ? clipSourceExrScroll_
+                      : clipSourceTab_ == ClipSrcTabInfo ? clipSourceInfoScroll_
+                                                         : clipSourceScroll_;
+        scroll = std::max(0.0f, scroll - d * 48.0f);
     };
     leftPanels_.push_back(cs);
 

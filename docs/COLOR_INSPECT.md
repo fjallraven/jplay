@@ -60,7 +60,7 @@ up as a different path in the inspector:
 - the active [proxy mode](PROXY_MODES.md), which substitutes a representation at
   decode time,
 - a [picker](GETTING_STARTED.md#the-naming-convention) switch, which swaps the
-  clip's media outright — the **Clip Source** panel shows the current department,
+  clip's media outright — the **Clip** panel shows the current department,
   asset and version for the clip under the playhead.
 
 ## Related

@@ -21,12 +21,28 @@
 //
 //   exrbench <sequence path> [exr thread counts...]   (default: 0 4 <cores>)
 //   JPLAY_EXR_NOFAST=1 exrbench ...                   OpenEXR path for every read
+//   JPLAY_BENCH_COLD=1,4,8,16 exrbench ...            cold-read sweep instead (below)
+//   JPLAY_BENCH_KEEP=1 JPLAY_BENCH_COLD=...           same sweep on cached files
+//
+// The cold sweep is the network-share case: before each row the files it reads
+// are dropped from the OS cache (posix_fadvise DONTNEED, no root needed), so
+// every read goes to the disk or server. Each worker count reads its own slice
+// of the sequence, and the sweep runs up then down so a busy server's drift
+// shows as two disagreeing rows rather than a fake trend. "cpu/worker" is
+// process CPU time over wall time per worker: near 100% is decode-bound, low is
+// time spent waiting on I/O.
 
 #include "ExrFast.h"
 #include "ExrSource.h"
 #include "FrameAlloc.h"
 
 #include <OpenEXR/ImfThreading.h>
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -151,6 +167,77 @@ static void checkInterleaveKernel() {
            (double)n * 6 * 2 / (ms * 1e6), n, ms);
 }
 
+#ifndef _WIN32
+static bool evict(const std::string& path) {
+    const int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) return false;
+    const bool ok = ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED) == 0;
+    ::close(fd);
+    return ok;
+}
+
+static double cpuSeconds() {
+    rusage ru{};
+    getrusage(RUSAGE_SELF, &ru);
+    return ru.ru_utime.tv_sec + ru.ru_stime.tv_sec +
+           (ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) / 1e6;
+}
+
+static int coldSweep(ExrSequenceSource& src, const char* spec) {
+    std::vector<int> counts;
+    for (const char* p = spec; *p;) {
+        counts.push_back(std::max(1, std::atoi(p)));
+        while (*p && *p != ',') ++p;
+        if (*p) ++p;
+    }
+    const auto& files = src.sequenceFiles();
+    const int64_t n = src.frameCount();
+    const int64_t slice = std::min<int64_t>(48, n);
+    const bool keep = std::getenv("JPLAY_BENCH_KEEP") != nullptr;
+    for (const auto& f : files)
+        if (!keep) evict(f);
+
+    std::vector<int> order = counts;
+    order.insert(order.end(), counts.rbegin(), counts.rend());
+    printf("\n   %s reads, %lld frames per row, sweep up then down\n", keep ? "cached" : "cold",
+           (long long)slice);
+    printf("   %8s %8s %10s %12s %12s %11s\n", "workers", "fps", "MB/s", "read p50 ms",
+           "read p95 ms", "cpu/worker");
+    int64_t start = 0;
+    for (int w : order) {
+        if (start + slice > n) start = 0;
+        for (int64_t i = start; i < start + slice && !keep; ++i)
+            evict(files[(size_t)i]);
+        std::vector<double> lat((size_t)slice);
+        std::atomic<int64_t> next{0};
+        std::atomic<size_t> bytes{0};
+        const double cpu0 = cpuSeconds();
+        auto t0 = Clock::now();
+        std::vector<std::thread> ts;
+        for (int k = 0; k < w; ++k)
+            ts.emplace_back([&] {
+                for (int64_t i; (i = next++) < slice;) {
+                    auto a = Clock::now();
+                    FramePtr f = src.readFrame(start + i);
+                    lat[(size_t)i] = msOf(Clock::now() - a);
+                    if (f) bytes += f->linearRgb.size() * sizeof(Imath::half);
+                }
+            });
+        for (auto& t : ts)
+            t.join();
+        const double wall = msOf(Clock::now() - t0) / 1000.0;
+        const double cpu = cpuSeconds() - cpu0;
+        std::sort(lat.begin(), lat.end());
+        printf("   %8d %8.1f %10.0f %12.0f %12.0f %10.0f%%\n", w, slice / wall,
+               bytes / wall / 1e6, lat[lat.size() / 2], lat[lat.size() * 95 / 100],
+               100.0 * cpu / (wall * w));
+        fflush(stdout);
+        start += slice;
+    }
+    return 0;
+}
+#endif
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         printf("usage: exrbench <sequence path> [exr thread counts...]\n");
@@ -174,6 +261,10 @@ int main(int argc, char** argv) {
            (long long)n, cores);
     for (const InfoField& f : src->describe())
         printf("   %s: %s\n", f.key.c_str(), f.value.c_str());
+#ifndef _WIN32
+    if (const char* cold = std::getenv("JPLAY_BENCH_COLD"))
+        return coldSweep(*src, cold);
+#endif
 
     Imf::setGlobalThreadCount(0);
     auto t0 = Clock::now();
@@ -194,8 +285,9 @@ int main(int argc, char** argv) {
     {
         Frame::HalfBuffer buf;
         int w = 0, h = 0, handled = -1;
+        const std::string rgb[3] = { "R", "G", "B" };
         for (int part = 0; part < 4 && handled < 0; ++part)
-            if (exrfast::readRgbHalf(src->sequenceFiles().front(), part, "", buf, w, h))
+            if (exrfast::readRgbHalf(src->sequenceFiles().front(), part, rgb, buf, w, h))
                 handled = part;
         if (handled >= 0)
             printf("   fast path: handled (part %d)\n", handled);

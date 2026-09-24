@@ -311,7 +311,7 @@ void interleaveRgbHalf(const uint16_t* r, const uint16_t* g, const uint16_t* b, 
     interleaveScalar(r, g, b, dst, n);
 }
 
-bool readRgbHalf(const std::string& path, int part, const std::string& layerPrefix,
+bool readRgbHalf(const std::string& path, int part, const std::string (&rgb)[3],
                  Frame::HalfBuffer& out, int& dispW, int& dispH) {
     File file;
     file.f = openRead(path);
@@ -385,25 +385,22 @@ bool readRgbHalf(const std::string& path, int part, const std::string& layerPref
 
     // Channel layout within one scanline chunk: each channel's full row, in file
     // order. Any subsampled channel would make that layout row-dependent.
+    // A name repeated across the slots resolves to the same offset, which the
+    // interleave below reads three times over: grayscale at no extra cost.
     size_t rowBytes = 0;
-    size_t offR = 0, offG = 0, offB = 0;
-    bool haveR = false, haveG = false, haveB = false;
+    size_t off[3] = {};
+    bool have[3] = {};
     for (const Channel& ch : h.channels) {
         if (ch.xSampling != 1 || ch.ySampling != 1) return false;
         const size_t bps = bytesPerSample(ch.type);
         if (!bps) return false;
-        if (ch.name.size() > layerPrefix.size() &&
-            ch.name.compare(0, layerPrefix.size(), layerPrefix) == 0) {
-            const char* tail = ch.name.c_str() + layerPrefix.size();
-            if (ch.type == kHalf && tail[1] == 0) {
-                if (*tail == 'R') { offR = rowBytes; haveR = true; }
-                else if (*tail == 'G') { offG = rowBytes; haveG = true; }
-                else if (*tail == 'B') { offB = rowBytes; haveB = true; }
-            }
-        }
+        if (ch.type == kHalf)
+            for (int k = 0; k < 3; ++k)
+                if (ch.name == rgb[k]) { off[k] = rowBytes; have[k] = true; }
         rowBytes += (size_t)dataW * bps;
     }
-    if (!haveR || !haveG || !haveB) return false;
+    if (!have[0] || !have[1] || !have[2]) return false;
+    const size_t offR = off[0], offG = off[1], offB = off[2];
 
     // Chunk table: one 8-byte offset per scanline (an uncompressed chunk is one
     // line), following every part's header, one table per part in part order.

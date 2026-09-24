@@ -1039,13 +1039,16 @@ private:
     // "Properties" on a source's right-click menu shows its file + media info in a
     // sub-panel at the bottom of the SOURCES tab (see renderSourceInfoPanel).
     // inspectMediaPath_ holds that source's path; empty means the sub-panel is
-    // closed. The file facts below are cached and only recomputed when the
-    // inspected source changes (avoids stat() every frame).
+    // closed. The file facts are cached and only recomputed when the inspected
+    // source changes (avoids stat() every frame; see refreshSourceInfoFacts).
     std::string inspectMediaPath_;
-    std::string inspectFileInfoPath_; // path the cached facts below apply to
-    std::string inspectModTime_;      // filesystem last-write time "YYYY-MM-DD HH:MM"
-    std::string inspectFileSize_;     // on-disk size, human-readable
-    std::string inspectFrameRange_;   // EXR sequence frame range + count (else empty)
+    struct SourceInfoFacts {
+        std::string path;       // the source these apply to
+        std::string modTime;    // filesystem last-write time "YYYY-MM-DD HH:MM"
+        std::string fileSize;   // on-disk size, human-readable
+        std::string frameRange; // image sequence frame range + count (else empty)
+    };
+    SourceInfoFacts inspectFacts_;
     float sourceInfoScroll_ = 0.0f;   // source-info sub-panel vertical scroll (px)
     float sourceInfoContentH_ = 0.0f; // last frame's sub-panel content height (for clamping)
     SDL_FRect sourceInfoRect_{};       // source-info sub-panel bounds (for wheel hit-test)
@@ -1124,6 +1127,25 @@ private:
     // Dropped whenever the panel re-describes, navigates or commits a pick.
     std::vector<std::string> clipSourceMarked_;
     std::string clipSourceMarkAnchor_; // shift-range anchor (a commit option value)
+    // The panel's three tabs: the pickers above (SOURCE), the target source's EXR
+    // parts / views / layers / channels with a pick of what to display (CHANNELS),
+    // and the same MEDIA / FORMAT info the SOURCES tab's Properties shows (INFO).
+    // See App_ClipSource.cpp.
+    enum { ClipSrcTabSource = 0, ClipSrcTabExr = 1, ClipSrcTabInfo = 2 };
+    int clipSourceTab_ = ClipSrcTabSource;
+    SDL_FRect clipSourceTabRects_[3]{};
+    // The media the CHANNELS and INFO tabs show: the target clip's, held while
+    // playback drives the target (the INFO facts stat every frame file, too much
+    // to repeat at each clip boundary crossed).
+    std::string clipSourceViewMediaId_;
+    float clipSourceExrScroll_ = 0.0f;
+    float clipSourceInfoScroll_ = 0.0f;
+    float clipSourceInfoContentH_ = 0.0f; // last frame's INFO content height (for clamping)
+    SourceInfoFacts clipSourceFacts_;
+    // CHANNELS tab rows laid out by the last render, for hit-testing: each is the
+    // selection a click on it applies.
+    struct ClipSourceExrRow { SDL_FRect rect; ChannelSelection sel; };
+    std::vector<ClipSourceExrRow> clipSourceExrRows_;
 
     // Settings panel (left-expand pane, mutually exclusive with the other left
     // panes). Houses project FPS and app-level preferences. See App_Settings.cpp.
@@ -2686,6 +2708,9 @@ private:
     void drawPeButton(const SDL_FRect& b, bool plus, bool hover); // small +/- section button
     void renderInspector();        // inspector overlay, centred on the frame (only when open)
     void renderSourceInfoPanel(const SDL_FRect& area); // selected-source info, bottom of SOURCES tab
+    void refreshSourceInfoFacts(SourceInfoFacts& f, Media* mptr, const std::string& path);
+    float drawSourceInfoRows(float x, float y, float keyColW, Media* mptr,
+                             const std::string& path, const SourceInfoFacts& f);
     Media* inspectedMedia() const;                     // media at inspectMediaPath_, or null
     // SOURCES thumbnail view. Defined in App_ProjectExplorer.cpp.
     void syncSourceThumbs(const std::vector<Media*>& cells); // (re)start generation for the drawn cells
@@ -2748,6 +2773,14 @@ private:
     // Arrow-key move through the commit (version) section: picks the option `dir`
     // places from the current one and swaps to it, exactly as clicking that row does.
     void stepClipSourceVersion(int dir);
+    // The tab bar, the CHANNELS tab and the INFO tab (App_ClipSource.cpp).
+    void renderClipSourceTabs(SDL_FRect& body);
+    void renderClipSourceExr(const SDL_FRect& panel, SDL_FRect& body);
+    void renderClipSourceInfo(const SDL_FRect& panel, SDL_FRect& body);
+    std::shared_ptr<Media> clipSourceViewMedia(); // the CHANNELS / INFO tabs' media, or null
+    // Display the channels `sel` names for media `m` in place of what it shows now:
+    // drops the frames read with the old channels and re-requests the wanted set.
+    void applyChannelSelection(Media& m, const ChannelSelection& sel);
     // Aligned drop: a picker drag hovering the free video row directly under
     // the clip it came off, within that clip's span. Reports the clip above (the
     // one to line up with), else nullptr for the ordinary cursor-following drop.

@@ -328,88 +328,62 @@ void App::renderInspector() {
     }
 }
 
-// Source-info sub-panel: drawn at the bottom of the ProjectExplorer's SOURCES tab
-// whenever a media row is selected (inspectMediaPath_). Shows the selected
-// source's file + media info. Facts (mod time / size / range) are cached until
-// the selection changes so we don't stat the disk every frame. `area` is the
-// panel rect handed in by renderProjectExplorer.
-void App::renderSourceInfoPanel(const SDL_FRect& area) {
-    if (inspectMediaPath_.empty())
+// The file facts a source's info lists (mod time / size / range), recomputed only
+// when `path` differs from the one they were gathered for: summing an image
+// sequence's sizes is a stat per frame, too much to repeat every drawn frame.
+void App::refreshSourceInfoFacts(SourceInfoFacts& f, Media* mptr, const std::string& path) {
+    if (f.path == path)
         return;
-
-    Media* mptr = nullptr;
-    for (const auto& kv : timeline_.media)
-        if (kv.second && kv.second->path() == inspectMediaPath_) { mptr = kv.second.get(); break; }
-
-    if (inspectFileInfoPath_ != inspectMediaPath_) {
-        inspectFileInfoPath_ = inspectMediaPath_;
-        inspectModTime_.clear();
-        inspectFileSize_.clear();
-        inspectFrameRange_.clear();
-        if (mptr) {
-            inspectModTime_ = modTimeStr(mptr->path());
-            if (mptr->type() == ClipType::ImageSequence) {
-                std::error_code ec;
-                uint64_t total = 0;
-                for (const auto& f : ImageSeq::files(mptr->path())) {
-                    uint64_t sz = (uint64_t)fs::file_size(f, ec);
-                    if (!ec) total += sz;
-                }
-                inspectFileSize_ = humanSize(total);
-                std::string err;
-                if (auto src = mptr->ensureOpen(err)) {
-                    int64_t first = src->firstFrameNumber();
-                    int64_t cnt = src->frameCount();
-                    if (cnt > 0)
-                        inspectFrameRange_ = std::to_string(first) + "-" +
-                            std::to_string(first + cnt - 1) +
-                            " (" + std::to_string(cnt) + ")";
-                }
-            } else {
-                std::error_code ec;
-                uint64_t sz = (uint64_t)fs::file_size(mptr->path(), ec);
-                if (!ec)
-                    inspectFileSize_ = humanSize(sz);
-            }
+    f = SourceInfoFacts{};
+    f.path = path;
+    if (!mptr)
+        return;
+    f.modTime = modTimeStr(mptr->path());
+    if (mptr->type() == ClipType::ImageSequence) {
+        std::error_code ec;
+        uint64_t total = 0;
+        for (const auto& file : ImageSeq::files(mptr->path())) {
+            uint64_t sz = (uint64_t)fs::file_size(file, ec);
+            if (!ec) total += sz;
         }
+        f.fileSize = humanSize(total);
+        std::string err;
+        if (auto src = mptr->ensureOpen(err)) {
+            int64_t first = src->firstFrameNumber();
+            int64_t cnt = src->frameCount();
+            if (cnt > 0)
+                f.frameRange = std::to_string(first) + "-" +
+                    std::to_string(first + cnt - 1) +
+                    " (" + std::to_string(cnt) + ")";
+        }
+    } else {
+        std::error_code ec;
+        uint64_t sz = (uint64_t)fs::file_size(mptr->path(), ec);
+        if (!ec)
+            f.fileSize = humanSize(sz);
     }
+}
 
-    // Panel background + top divider separating it from the scrolling list.
-    SDL_SetRenderDrawColor(renderer_, 26, 27, 31, 255);
-    jplay::fillRect(renderer_, &area);
-    SDL_SetRenderDrawColor(renderer_, 12, 12, 14, 255);
-    jplay::drawLine(renderer_, area.x, area.y + 0.5f, area.x + area.w, area.y + 0.5f);
-
-    SDL_Rect clip = { (int)area.x, (int)area.y, (int)area.w, (int)area.h };
-    SDL_SetRenderClipRect(renderer_, &clip);
-
-    const float pad = 8.0f;
+// A source's MEDIA and FORMAT rows, top at `y`, keys at `x` and values `keyColW`
+// to their right. Returns the y below the last row. Shared by the SOURCES tab's
+// info sub-panel and the Clip Source panel's INFO tab, so the two list the same.
+float App::drawSourceInfoRows(float x, float y, float keyColW, Media* mptr,
+                              const std::string& path, const SourceInfoFacts& f) {
     const float lineH = 16.0f;
-    const float keyColW = textFont_.measure(renderer_, "Pixel format") + 8.0f;
-    const float closeBtn = 14.0f; // X button, reserved at the right of the MEDIA header row
-    // Content scrolls with sourceInfoScroll_ under the clip set above. Clamp
-    // against last frame's content height before drawing so an over-scrolled
-    // offset is never rendered (avoids a one-frame flicker at the limits).
-    const float viewTop = area.y + pad;
-    const float viewH = area.h - pad - 4.0f;
-    float maxScroll = std::max(0.0f, sourceInfoContentH_ - viewH);
-    sourceInfoScroll_ = std::clamp(sourceInfoScroll_, 0.0f, maxScroll);
-    float y = viewTop - sourceInfoScroll_;
-
     auto row = [&](const std::string& key, const std::string& val) {
-        drawText(area.x + pad, y, { 130, 135, 148, 255 }, key);
-        drawText(area.x + pad + keyColW, y, { 215, 218, 225, 255 }, val);
+        drawText(x, y, { 130, 135, 148, 255 }, key);
+        drawText(x + keyColW, y, { 215, 218, 225, 255 }, val);
         y += lineH;
     };
     auto header = [&](const std::string& label) {
-        drawText(area.x + pad, y, { 160, 170, 200, 255 }, label);
+        drawText(x, y, { 160, 170, 200, 255 }, label);
         y += lineH + 5.0f;
     };
 
     header("MEDIA");
-    if (!inspectModTime_.empty())    row("Modified",  inspectModTime_);
-    if (!inspectFileSize_.empty())   row("File Size", inspectFileSize_);
-    if (!inspectFrameRange_.empty()) row("Range",     inspectFrameRange_);
+    if (!f.modTime.empty())    row("Modified",  f.modTime);
+    if (!f.fileSize.empty())   row("File Size", f.fileSize);
+    if (!f.frameRange.empty()) row("Range",     f.frameRange);
     if (mptr) {
         y += 6.0f;
         fs::path mp(mptr->path());
@@ -435,12 +409,48 @@ void App::renderSourceInfoPanel(const SDL_FRect& area) {
         if (auto src = mptr->ensureOpen(err)) {
             y += 6.0f;
             header("FORMAT");
-            for (const auto& f : src->describe())
-                row(f.key, f.value);
+            for (const auto& field : src->describe())
+                row(field.key, field.value);
         }
     } else {
-        row("Name", fs::path(inspectMediaPath_).filename().string());
+        row("Name", fs::path(path).filename().string());
     }
+    return y;
+}
+
+// Source-info sub-panel: drawn at the bottom of the ProjectExplorer's SOURCES tab
+// whenever a media row is selected (inspectMediaPath_). Shows the selected
+// source's file + media info (drawSourceInfoRows). `area` is the panel rect
+// handed in by renderProjectExplorer.
+void App::renderSourceInfoPanel(const SDL_FRect& area) {
+    if (inspectMediaPath_.empty())
+        return;
+
+    Media* mptr = inspectedMedia();
+    refreshSourceInfoFacts(inspectFacts_, mptr, inspectMediaPath_);
+
+    // Panel background + top divider separating it from the scrolling list.
+    SDL_SetRenderDrawColor(renderer_, 26, 27, 31, 255);
+    jplay::fillRect(renderer_, &area);
+    SDL_SetRenderDrawColor(renderer_, 12, 12, 14, 255);
+    jplay::drawLine(renderer_, area.x, area.y + 0.5f, area.x + area.w, area.y + 0.5f);
+
+    SDL_Rect clip = { (int)area.x, (int)area.y, (int)area.w, (int)area.h };
+    SDL_SetRenderClipRect(renderer_, &clip);
+
+    const float pad = 8.0f;
+    const float lineH = 16.0f;
+    const float keyColW = textFont_.measure(renderer_, "Pixel format") + 8.0f;
+    const float closeBtn = 14.0f; // X button, reserved at the right of the MEDIA header row
+    // Content scrolls with sourceInfoScroll_ under the clip set above. Clamp
+    // against last frame's content height before drawing so an over-scrolled
+    // offset is never rendered (avoids a one-frame flicker at the limits).
+    const float viewTop = area.y + pad;
+    const float viewH = area.h - pad - 4.0f;
+    float maxScroll = std::max(0.0f, sourceInfoContentH_ - viewH);
+    sourceInfoScroll_ = std::clamp(sourceInfoScroll_, 0.0f, maxScroll);
+    const float y = drawSourceInfoRows(area.x + pad, viewTop - sourceInfoScroll_, keyColW, mptr,
+                                       inspectMediaPath_, inspectFacts_);
 
     SDL_SetRenderClipRect(renderer_, nullptr);
 

@@ -98,6 +98,15 @@ public:
     std::string resolvedColorSpace(const std::string& configKey) const;
     void setResolvedColorSpace(const std::string& configKey, std::string cs);
 
+    // Which channels of a multi-channel source (EXR layers/AOVs) are displayed;
+    // see ChannelSelection. Session state only, never serialized. Applied to the
+    // open decoder at once and kept for any later re-open (a proxy switch), where
+    // a source without those channels quietly stays on its default. The caller
+    // drops this media's frames from the cache: they were read with the old one.
+    // Returns false when the open source refused it (nothing changed).
+    ChannelSelection channelSelection() const;
+    bool setChannelSelection(const ChannelSelection& sel);
+
     MediaInfo info() const;            // thread-safe snapshot
     void setInfo(const MediaInfo& i);
 
@@ -195,4 +204,5 @@ private:
     // fast-path reader that sees the source sees the offset it was opened with.
     std::atomic<int64_t> slateOffset_{0};
     bool openFailed_ = false;
+    ChannelSelection channelSel_; // under openMtx_
 };

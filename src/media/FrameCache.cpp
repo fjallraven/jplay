@@ -4,6 +4,7 @@
 #include <SDL3/SDL_log.h>
 
 #include <algorithm>
+#include <iterator>
 
 FrameCache::FrameCache(size_t maxBytes, int numThreads)
     : maxBytes_(maxBytes) {
@@ -162,6 +163,31 @@ void FrameCache::clear() {
         std::thread([d = std::move(doomed)]() mutable { d.clear(); }).detach();
 }
 
+void FrameCache::dropMedia(const std::string& mediaId) {
+    std::vector<FramePtr> doomed;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        ++mediaEpoch_[mediaId];
+        for (auto it = map_.begin(); it != map_.end();) {
+            if (it->first.media == mediaId) {
+                totalBytes_ -= std::min(totalBytes_, it->second.bytes);
+                doomed.push_back(std::move(it->second.frame));
+                it = map_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        // Its reads in flight are doomed, so none of them may hold off a re-request
+        // (see inflight_): the next endRequests() starts fresh ones straight away.
+        for (auto it = inflight_.begin(); it != inflight_.end();)
+            it = it->first.media == mediaId ? inflight_.erase(it) : std::next(it);
+        failedMedia_.erase(mediaId);
+    }
+    // Freed off the lock and off this thread, as clear() does and for its reason.
+    if (!doomed.empty())
+        std::thread([d = std::move(doomed)]() mutable { d.clear(); }).detach();
+}
+
 uint64_t FrameCache::generation() const {
     std::lock_guard<std::mutex> lk(mtx_);
     return generation_;
@@ -273,6 +299,7 @@ void FrameCache::workerLoop() {
         if (isVideo)
             busyVideos_.insert(job.key.media);
         uint64_t gen = generation_;
+        const uint64_t mediaEpoch = mediaEpochLocked(job.key.media);
 
         lk.unlock();
         std::string err;
@@ -285,8 +312,11 @@ void FrameCache::workerLoop() {
 
         // Only if this read is still the live one: a doomed read finishing after a
         // fresh one was started for the same frame must not retract its entry.
+        // Doomed by clear() (the generation moved) or by dropMedia() (its media's
+        // epoch did).
+        const bool live = gen == generation_ && mediaEpochLocked(job.key.media) == mediaEpoch;
         auto inf = inflight_.find(job.key);
-        if (inf != inflight_.end() && inf->second == gen)
+        if (live && inf != inflight_.end() && inf->second == gen)
             inflight_.erase(inf);
         if (isVideo) {
             busyVideos_.erase(job.key.media);
@@ -301,7 +331,7 @@ void FrameCache::workerLoop() {
                             err.empty() ? "" : ": ", err.c_str());
         } else {
             failedMedia_.erase(job.key.media);
-            if (gen == generation_ && !map_.count(job.key)) {
+            if (live && !map_.count(job.key)) {
                 const size_t admitted = frame->bytes();
                 totalBytes_ += admitted;
                 map_[job.key] = { std::move(frame), admitted, ++tick_, wantEpoch_, job.priority };

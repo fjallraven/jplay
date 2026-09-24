@@ -88,7 +88,7 @@ What the convention captures shows up as:
 
 - the second line of a clip's timeline label (configurable — see
   [config files](CONFIG_FILES.md)),
-- the cascading dropdowns in the **Clip Source** panel and on `Ctrl`+right-click
+- the cascading dropdowns in the **Clip** panel and on `Ctrl`+right-click
   over a clip, which jump a clip to a different department, asset or version,
 - the search terms the [MCP control channel](MCP_CONTROL_CHANNEL.md) accepts.
 
