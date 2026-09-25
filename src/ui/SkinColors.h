@@ -30,6 +30,7 @@ struct SkinColors {
     SDL_Color dropBg          {  25,  25,  30, 255 };
     SDL_Color border          {  80,  82,  90, 255 };
     SDL_Color borderStrong    {  90,  92, 100, 255 };
+    SDL_Color windowBorder    {  40,  41,  46, 255 };
 
     // ── Accents ──
     SDL_Color accent          {  55,  78, 130, 255 };

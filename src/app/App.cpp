@@ -4198,6 +4198,12 @@ void App::render() {
         drawAppIcon();                // app icon in the title bar, left of the menu
         menuBar_.render(renderer_);   // menu titles/dropdowns drawn into the bar
     }
+    // Draw window border
+    if (!cinemaMode_ && !(SDL_GetWindowFlags(window_) & SDL_WINDOW_MAXIMIZED)) {
+        setColor(renderer_, jplay::colors().windowBorder);
+        const SDL_FRect frame{ 0.0f, 0.0f, winW_, winH_ };
+        jplay::drawRect(renderer_, &frame);
+    }
     exportDialog_.render(renderer_, &textFont_, winW_, winH_); // modal overlay last
     renderRelocateModal();                                     // (mutually exclusive with export)
     clipMenu_.render(renderer_);                               // clip right-click popup, top-most
