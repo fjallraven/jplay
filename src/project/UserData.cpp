@@ -223,6 +223,7 @@ static void writeSettings(const std::vector<RecentProject>& list, const Prefs& p
     os << "overlaySize=" << prefs.overlaySize << '\n';
     os << "overlayColor=" << prefs.overlayColor << '\n';
     os << "compactTimeline=" << (prefs.compactTimeline ? 1 : 0) << '\n';
+    os << "windowMaximized=" << (prefs.windowMaximized ? 1 : 0) << '\n';
 }
 
 void recordRecent(const RecentProject& rp) {
@@ -316,6 +317,8 @@ Prefs loadPrefs() {
             p.frameOverlayBottom = on;
         else if (key == "compactTimeline")
             p.compactTimeline = on;
+        else if (key == "windowMaximized")
+            p.windowMaximized = on;
         else if (key == "overlaySize")
             p.overlaySize = std::atoi(val.c_str());
         else if (key == "overlayColor")

@@ -54,6 +54,7 @@ struct Prefs {
     int  overlaySize = 0;           // burn-in text size (index into App::kOverlaySizes)
     int  overlayColor = 0;          // burn-in text colour (index into App::kOverlayColors)
     bool compactTimeline = false;   // timeline collapsed to its ruler + cache strip (TAB / View row)
+    bool windowMaximized = false;   // main window was maximized when last changed; restored at launch
 };
 
 // Base data directory (~/.jplay), created on first use. Falls back to

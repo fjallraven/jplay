@@ -907,5 +907,5 @@ void App::writePrefs() {
                           syncNetwork_, syncPort_, mcpEnabled_, proxyEnabled_,
                           (int)(gridThumbH_ + 0.5f), volume_, muted_,
                           frameOverlay_, frameOverlayBottom_, overlaySize_,
-                          overlayColor_, compactTimeline_ });
+                          overlayColor_, compactTimeline_, windowMaximized_ });
 }

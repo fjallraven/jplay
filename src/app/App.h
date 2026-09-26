@@ -214,6 +214,9 @@ private:
     // is the only place that reads this, and the bands it zeroes take their hit
     // regions with them (overTrackArea() bounds on tracksViewH_, which comes out 0).
     bool compactTimeline_ = false;
+    // Main window maximized state, persisted in settings.conf (windowMaximized) and
+    // reapplied when the window is first shown.
+    bool windowMaximized_ = false;
     // What compactTimeline_ was when the Layout / Stack stage was entered. Those
     // stages force compact and refuse to leave it, so the way out has to put back
     // what the user had rather than leaving the tracks collapsed behind them.

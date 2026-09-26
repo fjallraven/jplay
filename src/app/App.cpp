@@ -862,6 +862,7 @@ bool App::init(int argc, char** argv) {
         // Straight to the member rather than through setCompactTimeline: there is no
         // pane to close and no status line to raise before the first frame is up.
         compactTimeline_ = prefs.compactTimeline;
+        windowMaximized_ = prefs.windowMaximized;
         volume_ = std::clamp(prefs.volume, 0.0f, 1.0f);
         muted_ = prefs.muted;
         if (audio_) // the device thread was joined above
@@ -2111,6 +2112,21 @@ void App::handleEvent(SDL_Event& e) {
             bool want = windowCanPresentHdr_(window_, gpuDevice_) && !externalSinkActive();
             if (hdrActive_ != want)
                 rebuildRenderer_(want);
+        }
+        break;
+    case SDL_EVENT_WINDOW_MAXIMIZED:
+    case SDL_EVENT_WINDOW_RESTORED:
+        // Remember maximized vs. restored for the next launch. Minimize and cinema
+        // mode's fullscreen are transient and leave the saved state alone.
+        if (e.window.windowID == SDL_GetWindowID(window_) && !cinemaMode_) {
+            SDL_WindowFlags f = SDL_GetWindowFlags(window_);
+            if (!(f & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_FULLSCREEN))) {
+                bool maxed = (f & SDL_WINDOW_MAXIMIZED) != 0;
+                if (maxed != windowMaximized_) {
+                    windowMaximized_ = maxed;
+                    writePrefs();
+                }
+            }
         }
         break;
     case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
@@ -4548,6 +4564,8 @@ void App::run() {
             // (which destroys and recreates the native window) stays invisible.
             // Reveal it now that it has real content in it.
             SDL_ShowWindow(window_);
+            if (windowMaximized_)
+                SDL_MaximizeWindow(window_);
             if (jplayDebugLogging())
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                             "  [startup] first frame presented, window shown: %.1f ms after launch",
