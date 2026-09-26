@@ -234,6 +234,12 @@ private:
     int playDir_ = 1;
     double playAcc_ = 0.0;
     Uint64 lastTickMs_ = 0;
+    // The playback clock counts whole display refreshes, not the time between
+    // ticks (see update); this is how far that count has drifted from real time,
+    // in seconds, so a refresh is taken or given back once it reaches half of one.
+    Uint64 lastTickNs_ = 0;
+    double playClockErr_ = 0.0;
+    bool playClockRunning_ = false; // false until the first playing tick
     // Visible playback rate (debug readout): timestamps (ms) of distinct frames
     // actually shown in the player over the last ~1s. fpsVisible_ is the rate
     // derived from them — reads the project fps when playback keeps up and sags
@@ -1482,6 +1488,69 @@ private:
     int infoClipId_ = -1;
     std::vector<InfoField> infoFields_;
 
+    // ── Playback timings (App_Timings.cpp) ───────────────────────────────────
+    // A floating chart over the frame, toggled with 'T': one stacked bar per frame
+    // that reached the screen, showing where it spent its time from the file to
+    // the display. The read stages come from the cache worker that decoded it (see
+    // ReadTiming), the display stages from renderPlayer. Nothing on the UI thread is
+    // timed while the panel is shut. The samples are a fixed ring, oldest overwritten.
+    struct TimingSample {
+        int64_t frame = 0;     // timeline frame shown
+        float waitIoMs = 0.0f; // file open + header
+        float readIoMs = 0.0f; // pixel data read
+        float exrMs = 0.0f;    // interleave / decode into the frame buffer
+        float ocioMs = 0.0f;   // UI thread: composite, OCIO/colour work, upload
+        float outputMs = 0.0f; // UI thread: readback + submit to an output / review monitor
+        // The whole UI tick up to present, every stage above included: what the
+        // display side's frame rate is bounded by. Not one of the stacked stages.
+        float uiMs = 0.0f;
+        bool hasRead = false;  // the read figures above are known
+        bool fresh = false;    // first showing since that read (false: shown again from the cache)
+        bool ioSplit = false;  // readIoMs measured apart from exrMs (see ReadTiming)
+        // Time since the previous new frame reached the screen; 0 for the first
+        // after a pause, which has nothing to measure against.
+        float intervalMs = 0.0f;
+        // Mean of the last kTimingRateWindow intervals, this one included: the shown
+        // rate as a frame time. Taken when the sample is committed, while the
+        // intervals before it are still in the ring, so the oldest samples keep
+        // theirs once those scroll out. 0 until the window is full.
+        float rateMs = 0.0f;
+        // The rate this frame's work could be kept up at: the slower of the read
+        // side (the worker pool reads in parallel, so workers / read time) and the
+        // UI tick. A frame shown again from the cache had no read to pay for.
+        float sustainFps = 0.0f;
+        bool readLimited = false;  // the read side was the slower of the two
+        // Frames already in the cache, in a row after this one in play order, as
+        // seconds of playback when it was shown: what a run of slow reads can eat
+        // into before a frame is held. Capped at kTimingAheadCapSec; -1 unknown.
+        float aheadSec = -1.0f;
+        float readMs() const { return waitIoMs + readIoMs + exrMs; }
+        float displayMs() const { return ocioMs + outputMs; }
+    };
+    static constexpr int kTimingSamples = 240; // 10 s at 24 fps
+    static constexpr int kTimingRateWindow = 24;
+    static constexpr double kTimingAheadCapSec = 10.0;
+    // Like the pixel probe, it is a frame overlay rather than chrome: it stays up in
+    // cinema mode, which is where full-screen playback is judged.
+    bool timingsOpen_ = false;
+    SDL_FRect timingsRect_{};         // panel bounds
+    SDL_FRect timingsCloseRect_{};    // close (X) button
+    SDL_FRect timingsExpandRect_{};   // expand / contract button, left of the close
+    // Expanded: the panel fills the frame, less the same margin on every side,
+    // for reading a long run of bars. Not persisted, like the panel itself.
+    bool timingsExpanded_ = true;
+    std::array<TimingSample, kTimingSamples> timingSamples_{};
+    int timingHead_ = 0;              // next slot to write
+    int timingCount_ = 0;             // samples held (<= kTimingSamples)
+    // The sample for the frame renderPlayer composited this pass. Output time on the
+    // HDR pipeline is only known further down, after the offscreen readback, and the
+    // UI tick's only once everything but the present is drawn, so the sample is
+    // committed by render() just after the present rather than where it is begun.
+    TimingSample timingPending_{};
+    bool timingPendingValid_ = false;
+    Uint64 timingTickStartNs_ = 0;    // when this drawFrame began
+    Uint64 timingLastShownNs_ = 0;    // when the previous new frame reached the screen
+
     // ── Pixel inspector (App_PixelInspector.cpp) ─────────────────────────────
     // A probe on the program image, toggled with 'P': an overlay in a bottom corner
     // of the frame with a nearest-neighbour magnifier around the cursor, a crosshair
@@ -2587,6 +2656,7 @@ private:
     void onKeyDown(const SDL_KeyboardEvent& k);
     void onKeyUp(const SDL_KeyboardEvent& k);
     void update();
+    double refreshPeriodSec() const; // of the display pacing the loop; 0 if unknown
     void submitCacheRequests();
     // Guard against re-deriving an unchanged prefetch window every frame: a
     // signature over everything the wanted set is built from, plus when it was last
@@ -2605,6 +2675,12 @@ private:
     void openAppIconMenu();                      // window menu, dropped under the icon
     bool appIconHandleEvent(const SDL_Event& e); // icon clicks + its popup; true if consumed
     void renderPlayer();
+    // ── Playback timings (App_Timings.cpp) ───────────────────────────────
+    void toggleTimingsPanel(); // 'T' / View > Playback Timings; opening starts a fresh history
+    void commitTimingSample(); // timingPending_ -> the ring
+    double timingBufferedAheadSec(); // see TimingSample::aheadSec
+    void clearTimingSamples();
+    void renderTimingsPanel(); // draw the chart (only when open)
     // ── Pixel inspector (App_PixelInspector.cpp) ─────────────────────────
     void samplePixelInspector(); // probe_ <- the cursor and this frame's pipeline
     void renderPixelInspector(); // draw the overlay from probe_

@@ -37,6 +37,7 @@ overlay. Any click dismisses it.
 | `N` | Toggle luminance heatmap (nits) |
 | `N` + drag | Scrub HDR ref white over the frame |
 | `P` | Toggle the pixel inspector |
+| `T` | Toggle the playback timings chart |
 | `F` | Fit frame or timeline |
 | `Alt + F` | Fit the sequence under the playhead |
 | `Shift + F` | Zoom to the clip under the playhead |

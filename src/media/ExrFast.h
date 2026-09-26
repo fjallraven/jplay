@@ -30,8 +30,11 @@ bool enabled();
 // file the fast path does not cover: compressed, tiled, deep, float or subsampled
 // channels, a data window wider than the display window, a chunk layout that is
 // not one contiguous run, or a header this parser cannot follow.
+// With `timing`, adds the header's time to waitIoMs and the pixel data's to
+// readIoMs (the reads) and exrMs (the interleave), declined files included.
 bool readRgbHalf(const std::string& path, int part, const std::string (&rgb)[3],
-                 Frame::HalfBuffer& out, int& dispW, int& dispH);
+                 Frame::HalfBuffer& out, int& dispW, int& dispH,
+                 ReadTiming* timing = nullptr);
 
 // The interleave kernel on its own (planar R, G, B halves -> packed RGB), for the
 // benchmark and for tests. `n` pixels.

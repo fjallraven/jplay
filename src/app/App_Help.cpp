@@ -53,6 +53,7 @@ void App::renderHelpPanel() {
         { "N",             "Toggle luminance heatmap (nits)" },
         { "N + drag",       "Scrub HDR ref white over the frame" },
         { "P",             "Toggle pixel inspector" },
+        { "T",             "Toggle playback timings" },
         { "F",             "Fit frame or timeline" },
         { "Alt + F",         "Fit sequence under playhead" },
         { "Shift + F",       "Zoom to clip under playhead" },

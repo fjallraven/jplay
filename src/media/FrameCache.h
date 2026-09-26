@@ -32,6 +32,9 @@ public:
 
     FramePtr get(const CacheKey& key); // touches LRU; nullptr if absent
     bool has(const CacheKey& key);
+    // How many of `keys`, from the first, are resident before the first that is
+    // not: has() over a run of frames under one lock.
+    int residentRun(const std::vector<CacheKey>& keys);
     // Insert an already-decoded frame (e.g. lifted from a hover-preview decode) so
     // playback can reuse it. Stored outside the current wanted set, so it is among
     // the first evicted under pressure and never displaces playhead-wanted frames.
@@ -53,6 +56,14 @@ public:
     // LOADING for ever with nothing said anywhere. Cleared by clear(), and by the
     // first frame of that media that does decode.
     bool mediaFailed(const std::string& mediaId) const;
+
+    // Where the read that brought `key` in spent its time (see ReadTiming). False
+    // for a frame with none: not resident, or from a source that does not time its
+    // reads. `firstShowing` is true on the first call for this read and false after
+    // it: the Playback Timings panel asks as a frame reaches the screen, so a frame
+    // shown again on the next lap of a loop is told apart from one just read.
+    bool readTiming(const CacheKey& key, ReadTiming& out, bool& firstShowing);
+    int threadCount() const { return (int)workers_.size(); }
 
     void clear(); // drop cached frames + pending work (in-flight reads finish and are discarded)
     // clear() for one media: its frames go, and reads of it already in flight are
@@ -88,6 +99,8 @@ private:
         uint64_t tick = 0;
         uint64_t wantEpoch = 0; // last beginRequests() epoch that re-requested this frame
         int wantPrio = 0;       // its priority in that epoch (lower = nearer the playhead)
+        ReadTiming timing;      // the read that brought it in
+        bool timingShown = false; // readTiming() has reported it once
     };
 
     void workerLoop();

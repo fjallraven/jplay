@@ -395,7 +395,7 @@ bool ExrSequenceSource::setChannelSelection(const ChannelSelection& sel) {
     return true;
 }
 
-FramePtr ExrSequenceSource::readFrame(int64_t index) {
+FramePtr ExrSequenceSource::read(int64_t index, ReadTiming* timing) {
     if (files_.empty())
         return nullptr;
     if (index < 0) index = 0;
@@ -421,10 +421,15 @@ FramePtr ExrSequenceSource::readFrame(int64_t index) {
         // OpenEXR path below instead, and the result is the same either way.
         bool done = false;
         if (plan->fast && exrfast::enabled()) {
-            done = exrfast::readRgbHalf(file, plan->part, plan->rgb, linear, dispW, dispH);
+            done = exrfast::readRgbHalf(file, plan->part, plan->rgb, linear, dispW, dispH, timing);
         }
+        if (timing)
+            timing->ioSplit = done;
 
         if (!done) {
+            // OpenEXR's constructors open the file and parse its headers: the wait.
+            // readPixels then reads and decodes in one call, which is exrMs whole.
+            const double tOpen = timing ? readTimingNowMs() : 0.0;
             std::optional<Imf::MultiPartInputFile> mp;
             std::optional<Imf::InputPart> part;
             std::optional<Imf::RgbaInputFile> rgbaFile;
@@ -439,6 +444,18 @@ FramePtr ExrSequenceSource::readFrame(int64_t index) {
                 disp = rgbaFile->displayWindow();
                 data = rgbaFile->dataWindow();
             }
+
+            const double tPixels = timing ? readTimingNowMs() : 0.0;
+            if (timing)
+                timing->waitIoMs += tPixels - tOpen;
+            struct PixelStamp {
+                ReadTiming* t;
+                double from;
+                ~PixelStamp() {
+                    if (t)
+                        t->exrMs += readTimingNowMs() - from;
+                }
+            } pixelStamp{ timing, tPixels };
 
             dispW = disp.max.x - disp.min.x + 1;
             dispH = disp.max.y - disp.min.y + 1;
@@ -560,6 +577,15 @@ FramePtr ExrSequenceSource::readFrame(int64_t index) {
         // says every frame will need it anyway (see decodeRgba8), into a retired
         // buffer from the pool when one is there.
         if (decodeRgba8()) {
+            const double tBuild = timing ? readTimingNowMs() : 0.0;
+            struct BuildStamp {
+                ReadTiming* t;
+                double from;
+                ~BuildStamp() {
+                    if (t)
+                        t->exrMs += readTimingNowMs() - from;
+                }
+            } buildStamp{ timing, tBuild };
             std::vector<uint8_t> rgba;
             {
                 std::lock_guard<std::mutex> lk(pool_->mtx);
@@ -571,6 +597,8 @@ FramePtr ExrSequenceSource::readFrame(int64_t index) {
             raw->buildRgba8(std::move(rgba));
         }
 
+        if (timing)
+            timing->valid = true;
         std::shared_ptr<BufferPool> pool = pool_;
         return std::shared_ptr<Frame>(raw, [pool](Frame* p) {
             std::vector<uint8_t> rgba = p->releaseRgba8();

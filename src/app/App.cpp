@@ -1065,6 +1065,8 @@ void App::buildMenu() {
     menuBar_.addItem(view, "  Pixel Inspector",
                      [this] { pixelInspectorOpen_ = !pixelInspectorOpen_; }, onStage,
                      nullptr, "P", [this] { return pixelInspectorOpen_; });
+    menuBar_.addItem(view, "  Playback Timings", [this] { toggleTimingsPanel(); }, onStage,
+                     nullptr, "T", [this] { return timingsOpen_; });
     menuBar_.addSeparator(view);
 
     // Burn-in over the picture: file name and the playhead readout, on the main
@@ -1628,6 +1630,9 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
         break;
     case SDLK_P:
         pixelInspectorOpen_ = !pixelInspectorOpen_;
+        break;
+    case SDLK_T:
+        toggleTimingsPanel();
         break;
     case SDLK_COMMA:
     case SDLK_PERIOD:
@@ -2223,6 +2228,17 @@ void App::handleEvent(SDL_Event& e) {
         if (inspectorVisible() && e.button.button == SDL_BUTTON_LEFT
             && inRect(inspectorCloseRect_, mx, my)) {
             inspectorOpen_ = false;
+            break;
+        }
+        // The timings panel likewise: its close and expand buttons only.
+        if (timingsOpen_ && e.button.button == SDL_BUTTON_LEFT
+            && inRect(timingsCloseRect_, mx, my)) {
+            timingsOpen_ = false;
+            break;
+        }
+        if (timingsOpen_ && e.button.button == SDL_BUTTON_LEFT
+            && inRect(timingsExpandRect_, mx, my)) {
+            timingsExpanded_ = !timingsExpanded_;
             break;
         }
         // Left panels capture all clicks within their strip (below the title bar,
@@ -3169,8 +3185,10 @@ void App::handleEvent(SDL_Event& e) {
 
 void App::update() {
     Uint64 now = SDL_GetTicks();
-    double dt = (double)(now - lastTickMs_) / 1000.0;
     lastTickMs_ = now;
+    const Uint64 nowNs = SDL_GetTicksNS();
+    double dt = lastTickNs_ ? (double)(nowNs - lastTickNs_) * 1e-9 : 0.0;
+    lastTickNs_ = nowNs;
 
     // Clip-drop mode follows Ctrl live: tapping the key mid-drag must re-place the
     // drop (ripple jumps a landing that straddles a neighbour forward, overwrite
@@ -3197,6 +3215,8 @@ void App::update() {
         fpsShown_ = 0.0;
         visibleFrameTimes_.clear();
         fpsWindowFrom_ = 0;
+        playClockErr_ = 0.0;
+        playClockRunning_ = false;
     } else {
         const Uint64 windowMs = 1000;
         if (fpsWindowFrom_ == 0) fpsWindowFrom_ = now;
@@ -3244,9 +3264,40 @@ void App::update() {
     }
 
     playbackStalled_ = false;
+    // Advance by whole refreshes of the display pacing the loop, not by the time
+    // the tick measured. Each tick puts one refresh on screen, but it wakes after
+    // the present with a millisecond or two of jitter, and at 24 fps on 60 Hz the
+    // accumulator lands exactly on the frame boundary every other frame: the
+    // jitter alone then decided whether the frame changed on this refresh or the
+    // next, breaking the 2-3 cadence into 2-2 and 3-3 runs (judder, and a shown
+    // rate reading 23.6 / 24.4 with every frame on time). Counted in refreshes the
+    // cadence is exact. The drift from real time is kept, so a mis-reported rate,
+    // or a loop not held to vsync, still plays at wall-clock speed.
+    // The tick that starts playback measured time from before Play was pressed,
+    // which would advance the first frame early: the clock starts from here.
+    if (!playClockRunning_) {
+        playClockRunning_ = true;
+        dt = 0.0;
+    }
+    const double period = refreshPeriodSec();
+    if (period > 0.0) {
+        double n = std::round(dt / period);
+        playClockErr_ += dt - n * period;
+        if (playClockErr_ >= period * 0.5) {
+            n += 1.0;
+            playClockErr_ -= period;
+        } else if (playClockErr_ <= -period * 0.5 && n >= 1.0) {
+            n -= 1.0;
+            playClockErr_ += period;
+        }
+        dt = n * period;
+    }
     playAcc_ += dt;
     const double spf = 1.0 / timeline_.fps;
-    while (playAcc_ >= spf) {
+    // The tolerance keeps a boundary the refresh count lands on exactly (every
+    // other frame at 24 on 60 Hz) on one side of it, whatever rounding the sum
+    // has picked up.
+    while (playAcc_ + 1e-7 >= spf) {
         playAcc_ -= spf;
         int64_t lo = 0, hi = 0;
         playbackRange(lo, hi); // in/out range, confined to the scoped sequence
@@ -3272,6 +3323,19 @@ void App::update() {
     }
     followPlayhead();
     updateAudio();
+}
+
+// The refresh period, in seconds, of the display whose present paces the main
+// loop: the review monitor's while it is up (its present carries vsync, see
+// render), else the main window's. 0 when the display does not report a rate.
+double App::refreshPeriodSec() const {
+    SDL_Window* pacer = reviewActive() ? reviewWindow_ : window_;
+    const SDL_DisplayMode* mode = pacer ? SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(pacer)) : nullptr;
+    if (!mode)
+        return 0.0;
+    if (mode->refresh_rate_numerator > 0 && mode->refresh_rate_denominator > 0)
+        return (double)mode->refresh_rate_denominator / (double)mode->refresh_rate_numerator;
+    return mode->refresh_rate > 0.0f ? 1.0 / (double)mode->refresh_rate : 0.0;
 }
 
 // Bake `c`'s volume curve into the linear-gain envelope the mixer consumes,
@@ -4177,6 +4241,7 @@ void App::render() {
     renderPlayer();
     renderTechOverlay();              // false-color / clipping legend over the stage
     renderPixelInspector();           // pixel probe at the bottom left of the frame
+    renderTimingsPanel();             // playback timings chart, top right of the frame
     renderInfoOverlay();
     // While the launcher shows, the timeline (and its transport) and the left
     // side panel are hidden; only the recent/create launcher fills the player.
@@ -4228,7 +4293,11 @@ void App::render() {
     renderDialog();                                            // confirm/warn message dialog, over everything
     renderPlayerDropBoxes();                                   // view/replace/add chooser while dragging over the frame
     renderBinDragGhost();                                      // dragged source card, follows the cursor
+    if (timingPendingValid_)
+        timingPending_.uiMs = (float)(SDL_GetTicksNS() - timingTickStartNs_) * 1e-6f;
     SDL_RenderPresent(renderer_);
+    if (timingPendingValid_)
+        commitTimingSample(); // stamped after the present: as near to "on screen" as can be told
 
     // Hand HDR to whichever sink owns it now (main window vs. external output). Runs
     // before syncReviewWindow so the main window is already sRGB by the time a review
@@ -4350,6 +4419,8 @@ void App::drawFrame(bool isLiveMovingOrResizing) {
         return;
     inDrawFrame_ = true;
     struct Guard { bool& f; ~Guard() { f = false; } } guard{ inDrawFrame_ };
+    if (timingsOpen_)
+        timingTickStartNs_ = SDL_GetTicksNS();
 
     computeLayout();
 

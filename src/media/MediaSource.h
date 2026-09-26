@@ -5,6 +5,7 @@
 #include <Imath/half.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -100,6 +101,27 @@ private:
 void setDecodeRgba8(bool on);
 bool decodeRgba8();
 
+// Where one frame read spent its time, for the Playback Timings panel. Filled by
+// a source that can tell (MediaSource::readFrameTimed); `valid` stays false for
+// one that cannot. The cache workers time every read, panel open or not: it is a
+// handful of clock readings against milliseconds of IO, and a frame read before
+// the panel was opened then still has its figures when it is shown.
+struct ReadTiming {
+    double waitIoMs = 0.0; // opening the file and reading its header: the wait for first data
+    double readIoMs = 0.0; // reading the pixel data
+    double exrMs = 0.0;    // turning it into the frame's buffer: interleave or decode, 8-bit build
+    // Whether readIoMs was measured on its own. OpenEXR's readPixels reads and
+    // decodes in one call, so for a file it handles readIoMs is 0 and exrMs holds both.
+    bool ioSplit = false;
+    bool valid = false;
+};
+
+// Milliseconds on a monotonic clock, for the ReadTiming stamps.
+inline double readTimingNowMs() {
+    using namespace std::chrono;
+    return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
+}
+
 // One scene-linear half (by bit pattern) through the same baked sRGB LUT rgba8()
 // is built with. For a consumer that samples a frame rather than reading all of
 // it -- a scope over 200k of 8.8M pixels -- this gives the identical code value
@@ -166,6 +188,9 @@ public:
     // shape. Constant for the whole source.
     virtual float pixelAspect() const { return 1.0f; }
     virtual FramePtr readFrame(int64_t index) = 0;
+    // readFrame(), also reporting where the read spent its time. The default
+    // reports nothing (timing.valid stays false); the EXR source fills it in.
+    virtual FramePtr readFrameTimed(int64_t index, ReadTiming& /*timing*/) { return readFrame(index); }
     virtual const std::string& path() const = 0;
 
     // The real frame number of source index 0, used for the clip-frame readout.

@@ -54,9 +54,28 @@ bool FrameCache::mediaFailed(const std::string& mediaId) const {
     return failedMedia_.count(mediaId) != 0;
 }
 
+bool FrameCache::readTiming(const CacheKey& key, ReadTiming& out, bool& firstShowing) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = map_.find(key);
+    if (it == map_.end() || !it->second.timing.valid)
+        return false;
+    out = it->second.timing;
+    firstShowing = !it->second.timingShown;
+    it->second.timingShown = true;
+    return true;
+}
+
 bool FrameCache::has(const CacheKey& key) {
     std::lock_guard<std::mutex> lk(mtx_);
     return map_.count(key) != 0;
+}
+
+int FrameCache::residentRun(const std::vector<CacheKey>& keys) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    int n = 0;
+    while (n < (int)keys.size() && map_.count(keys[(size_t)n]) != 0)
+        ++n;
+    return n;
 }
 
 void FrameCache::put(const CacheKey& key, FramePtr frame) {
@@ -315,8 +334,9 @@ void FrameCache::workerLoop() {
         auto src = job.media->ensureOpen(err);          // slow: first call opens the decoder
         // + slateOffset: under a proxy mode whose substitute opens on a slate card,
         // the shot starts behind it and every index shifts by that much.
-        FramePtr frame = src ? src->readFrame(job.srcFrame + job.media->slateOffset())
-                             : nullptr; // slow: decode/IO
+        const int64_t index = job.srcFrame + job.media->slateOffset();
+        ReadTiming timing;
+        FramePtr frame = src ? src->readFrameTimed(index, timing) : nullptr; // slow: decode/IO
         lk.lock();
 
         // Only if this read is still the live one: a doomed read finishing after a
@@ -353,7 +373,7 @@ void FrameCache::workerLoop() {
             if (live && !map_.count(job.key)) {
                 const size_t admitted = frame->bytes();
                 totalBytes_ += admitted;
-                map_[job.key] = { std::move(frame), admitted, ++tick_, wantEpoch_, job.priority };
+                map_[job.key] = { std::move(frame), admitted, ++tick_, wantEpoch_, job.priority, timing };
                 std::vector<FramePtr> doomed;
                 evictLocked(doomed);
                 if (!doomed.empty()) {

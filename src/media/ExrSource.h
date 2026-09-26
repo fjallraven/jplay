@@ -50,7 +50,8 @@ public:
     int width() const override { return width_; }
     int height() const override { return height_; }
     float pixelAspect() const override { return pixelAspect_; }
-    FramePtr readFrame(int64_t index) override;
+    FramePtr readFrame(int64_t index) override { return read(index, nullptr); }
+    FramePtr readFrameTimed(int64_t index, ReadTiming& timing) override { return read(index, &timing); }
     const std::string& path() const override { return firstFile_; }
     int64_t firstFrameNumber() const override { return firstFrame_; }
     // Scene-referred float; no encoding tags of its own (see SourceColorTags).
@@ -69,6 +70,9 @@ public:
 
 private:
     ExrSequenceSource() = default;
+
+    // Both readFrame()s: `timing`, when given, is filled as the read goes.
+    FramePtr read(int64_t index, ReadTiming* timing);
 
     std::string firstFile_;          // representative path (serialized in projects)
     int64_t firstFrame_ = 0;         // trailing frame number of firstFile_ (0 if none)

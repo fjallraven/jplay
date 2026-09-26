@@ -312,7 +312,22 @@ void interleaveRgbHalf(const uint16_t* r, const uint16_t* g, const uint16_t* b, 
 }
 
 bool readRgbHalf(const std::string& path, int part, const std::string (&rgb)[3],
-                 Frame::HalfBuffer& out, int& dispW, int& dispH) {
+                 Frame::HalfBuffer& out, int& dispW, int& dispH, ReadTiming* timing) {
+    // Everything up to the first pixel block is the wait for data: the open, the
+    // headers and the offset table. Charged on every way out, a decline included,
+    // since the caller's OpenEXR read starts over from nothing.
+    const double t0 = timing ? readTimingNowMs() : 0.0;
+    struct WaitStamp {
+        ReadTiming* t;
+        double from;
+        bool done = false;
+        void stop() {
+            if (t && !done)
+                t->waitIoMs += readTimingNowMs() - from;
+            done = true;
+        }
+        ~WaitStamp() { stop(); }
+    } wait{ timing, t0 };
     File file;
     file.f = openRead(path);
     if (!file.f) return false;
@@ -483,15 +498,26 @@ bool readRgbHalf(const std::string& path, int part, const std::string (&rgb)[3],
     thread_local std::vector<unsigned char> block;
     block.resize(chunksPerBlock * chunkBytes);
     if (!seekTo(f, base)) return false;
+    wait.stop();
 
+    // Timed per block, never per row: two clock readings per megabyte.
     int64_t remaining = chunkCount;
     while (remaining > 0) {
         const size_t take = (size_t)std::min<int64_t>(remaining, (int64_t)chunksPerBlock);
         const size_t want = take * chunkBytes;
-        if (std::fread(block.data(), 1, want, f) != want) return false;
+        const double tRead = timing ? readTimingNowMs() : 0.0;
+        const bool got = std::fread(block.data(), 1, want, f) == want;
+        const double tWork = timing ? readTimingNowMs() : 0.0;
+        if (timing)
+            timing->readIoMs += tWork - tRead;
+        if (!got) return false;
         const unsigned char* p = block.data();
-        for (size_t i = 0; i < take; ++i, p += chunkBytes)
-            if (!processChunk(p)) return false;
+        bool ok = true;
+        for (size_t i = 0; i < take && ok; ++i, p += chunkBytes)
+            ok = processChunk(p);
+        if (timing)
+            timing->exrMs += readTimingNowMs() - tWork;
+        if (!ok) return false;
         remaining -= (int64_t)take;
     }
     return true;

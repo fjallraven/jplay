@@ -57,7 +57,7 @@ find_package(Threads REQUIRED)
 find_package(RapidJSON CONFIG REQUIRED)
 
 # vcpkg's shaderc port exports a single config package on every platform.
-    find_package(unofficial-shaderc CONFIG REQUIRED)
+find_package(unofficial-shaderc CONFIG REQUIRED)
 
 
 # NDI
@@ -265,6 +265,7 @@ add_executable(jplay WIN32
     src/timeline/App_CurveLane.cpp
     src/stage/App_Player.cpp
     src/stage/App_PixelInspector.cpp
+    src/stage/App_Timings.cpp
     src/panels/App_ProjectExplorer.cpp
     src/panels/App_NavPanel.cpp
     src/app/App_Project.cpp
@@ -388,7 +389,7 @@ if(WIN32)
 endif()
 
 # shaderc
-    target_link_libraries(jplay PRIVATE unofficial::shaderc::shaderc)
+target_link_libraries(jplay PRIVATE unofficial::shaderc::shaderc)
 
 
 # NDI

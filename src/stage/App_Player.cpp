@@ -1235,6 +1235,9 @@ void App::renderPlayer() {
                 // A re-render of the same frame (e.g. OCIO setting change) keeps the
                 // same key and is not counted.
                 bool newVisibleFrame = !(displayedKey_ == key);
+                // Playback Timings: everything from here to the output push is the
+                // OCIO stage (composite, colour work, upload).
+                const Uint64 tDisplay0 = timingsOpen_ ? SDL_GetTicksNS() : 0;
 
                 // The colour space each half is read in. Resolved before the
                 // composite because a dissolve joining two different ones cannot be
@@ -1515,6 +1518,7 @@ void App::renderPlayer() {
                 displayedMix_ = mix;
                 displayedFade_ = fade;
                 hasTexture_ = true;
+                const Uint64 tOutput0 = timingsOpen_ ? SDL_GetTicksNS() : 0;
                 // Push the freshly-composited program image (post OCIO/grade/tech)
                 // to any active sink. A single GL readback feeds both the external
                 // output device and the review-monitor window. GL path only — the
@@ -1534,6 +1538,30 @@ void App::renderPlayer() {
                 }
                 if (newVisibleFrame)
                     visibleFrameTimes_.push_back(SDL_GetTicks());
+                if (newVisibleFrame && timingsOpen_) {
+                    const Uint64 tEnd = SDL_GetTicksNS();
+                    TimingSample& ts = timingPending_;
+                    ts = TimingSample{};
+                    ts.frame = timeline_.playhead;
+                    ts.ocioMs = (float)(tOutput0 - tDisplay0) * 1e-6f;
+                    ts.outputMs = (float)(tEnd - tOutput0) * 1e-6f; // SDR readback; HDR adds its own below
+                    // A dissolve's frame needed both halves read, so both are charged.
+                    // It is fresh when either half is: something was read for it.
+                    ReadTiming rt;
+                    ts.ioSplit = true;
+                    for (const CacheKey* k : { &key, bClip ? &keyB : nullptr }) {
+                        bool first = false;
+                        if (!k || !cache_->readTiming(*k, rt, first))
+                            continue;
+                        ts.hasRead = true;
+                        ts.fresh = ts.fresh || first;
+                        ts.waitIoMs += (float)rt.waitIoMs;
+                        ts.readIoMs += (float)rt.readIoMs;
+                        ts.exrMs += (float)rt.exrMs;
+                        ts.ioSplit = ts.ioSplit && rt.ioSplit;
+                    }
+                    timingPendingValid_ = true;
+                }
             }
         } else {
             loading = true; // keep showing the previous texture while decoding
@@ -1693,6 +1721,20 @@ void App::renderPlayer() {
                     }
                 }
                 if (viaOffscreen && ensureHdrProgramTex_(texW_, texH_)) {
+                    // The readback waits for the GPU, so on this pipeline the output
+                    // stage is the offscreen draw, the readback and the submits. Only
+                    // charged when a sink is what forced the detour.
+                    const bool timeOutput = timingPendingValid_ &&
+                                            (output_.active() || reviewActive());
+                    const Uint64 tOut0 = timeOutput ? SDL_GetTicksNS() : 0;
+                    struct OutStamp {
+                        TimingSample* s;
+                        Uint64 from;
+                        ~OutStamp() {
+                            if (s)
+                                s->outputMs += (float)(SDL_GetTicksNS() - from) * 1e-6f;
+                        }
+                    } outStamp{ timeOutput ? &timingPending_ : nullptr, tOut0 };
                     SDL_SetRenderTarget(renderer_, hdrProgramTex_);
                     drawProgram(nullptr);
                     bool read = readbackHdrProgram_(texW_, texH_, wantSdr, outHdr);
