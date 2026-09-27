@@ -313,6 +313,7 @@ void App::closeProject() {
     // newProject() so its gridView() thumbnail restart isn't fired for a clip set
     // that is being cleared.
     setPlayerStage(PlayerStage::Frame);
+    timingsOpen_ = false; // the chart is of this project's playback; the launcher has none
     newProject(); // leaves hideLauncher_ false, so the launcher comes back
     setStatus("PROJECT CLOSED");
 }
