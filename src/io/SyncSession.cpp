@@ -1,4 +1,5 @@
 #include "SyncSession.h"
+#include "Preferences.h"
 
 // All platform/socket code is confined to this translation unit; SyncSession.h
 // stays header-only-friendly (no <winsock2.h> leaking into App.h).
@@ -58,10 +59,26 @@ namespace syncreview {
 
 namespace {
 
-constexpr uint16_t kDiscoveryPort = 45777;     // UDP beacon port (fixed)
+constexpr uint16_t kDefaultDiscoveryPort = 52156; // UDP beacon port unless [sync] discovery_port overrides
 constexpr char     kBeaconTag[]    = "JPLAYSYNC1";
 constexpr uint32_t kMaxMsgLen      = 64u * 1024u * 1024u; // 64 MiB guard
 constexpr uint64_t kBeaconTtlMs    = 5000;     // drop a beacon unseen this long
+
+// UDP beacon port from [sync] discovery_port; every peer on the LAN must agree.
+// Read once — preferences are fixed for the life of the process.
+uint16_t discoveryPort() {
+    static const uint16_t port = [] {
+        const std::string v = Preferences::get("sync", "discovery_port");
+        if (!v.empty()) {
+            const long n = std::strtol(v.c_str(), nullptr, 10);
+            if (n > 0 && n <= 65535)
+                return (uint16_t)n;
+            SDL_Log("sync: ignoring invalid [sync] discovery_port '%s'", v.c_str());
+        }
+        return kDefaultDiscoveryPort;
+    }();
+    return port;
+}
 
 uint64_t nowMs() {
     using namespace std::chrono;
@@ -257,7 +274,7 @@ void Session::Impl::sendBeacon() {
     auto sendTo = [&](uint32_t addrHost) {
         sockaddr_in dst{};
         dst.sin_family = AF_INET;
-        dst.sin_port = htons(kDiscoveryPort);
+        dst.sin_port = htons(discoveryPort());
         dst.sin_addr.s_addr = htonl(addrHost);
         ::sendto(beaconSock, msg, n, 0, (sockaddr*)&dst, sizeof(dst));
     };
@@ -662,7 +679,7 @@ void Session::startDiscovery() {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(kDiscoveryPort);
+    addr.sin_port = htons(discoveryPort());
     if (::bind(s, (sockaddr*)&addr, sizeof(addr)) != 0) {
         ::closesocket(s);
         return;

@@ -261,6 +261,12 @@ Prefs loadPrefs() {
     p.syncNetwork = Preferences::getBool("sync", "enabled", p.syncNetwork);
     p.mcpEnabled = Preferences::getBool("control", "enabled", p.mcpEnabled);
     p.proxyEnabled = Preferences::getBool("proxy_media", "enabled", p.proxyEnabled);
+    {
+        const std::string v = Preferences::get("sync", "port");
+        const long n = v.empty() ? 0 : std::strtol(v.c_str(), nullptr, 10);
+        if (n > 0 && n <= 65535)
+            p.syncPort = (int)n;
+    }
 
     const std::string& base = dir();
     if (base.empty())

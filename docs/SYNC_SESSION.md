@@ -72,8 +72,21 @@ travels.
 
 | | |
 | --- | --- |
-| Discovery | UDP **45777**, broadcast beacon |
-| Control | TCP **45778** by default, overridable per host |
+| Discovery | UDP **52156**, broadcast beacon |
+| Control | TCP **52155** by default, overridable per host |
+
+Both defaults can be changed in the `[sync]` section of
+`jplay_preferences.conf`:
+
+```ini
+[sync]
+port = 52155            # TCP control port; the SESSION panel's starting value
+discovery_port = 52156  # UDP beacon port; must match on every machine
+```
+
+`port` is only the default for the panel's port field; a port the user has
+saved in `~/.jplay/settings.conf` wins. `discovery_port` has no panel field, so
+every machine that should see each other's sessions must use the same value.
 
 Framing is `[u8 type][u32 payloadLen][payload]`, little-endian. Message kinds:
 project bytes, play, pause, seek, sequence, stroke, clear, annotations, hello,

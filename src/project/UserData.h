@@ -43,7 +43,7 @@ struct Prefs {
     float hdrRefWhiteNits = 100.0f; // master paper/diffuse-white nits mapped to panel SDR white (PQ HDR)
     float uiScale = 0.0f;           // UI Scale: device pixels per logical unit; 0 = Auto (follow the display)
     bool syncNetwork = false;       // sync review may open sockets; off means no port is bound at launch
-    int  syncPort = 45778;          // TCP port a sync host listens on (syncreview::kDefaultPort)
+    int  syncPort = 52155;          // TCP port a sync host listens on (syncreview::kDefaultPort)
     bool mcpEnabled = false;        // open the local control channel the MCP server drives
     bool proxyEnabled = false;      // show the top-bar Proxy dropdown and allow non-Full modes
     int  gridThumbH = 60;          // Overview grid tile height in device px (ctrl+wheel over the grid)

@@ -84,7 +84,7 @@ As shipped, directory layouts like
 are recognised, along with filenames that carry the same tokens
 (`unh0400_0010_lighting.0994.exr`, `hero_comp_v012.1001.exr`, and so on).
 
-What the convention captures shows up as:
+For example regex `^(?P<asset_later>.+?)_(?P<take>(?:tk|take)\d+)[._](?P<frame>\d+)\.(?P<extension>exr)$` would result in the following:
 
 ![Clip source panel showing the parsed sequence, shot, department, asset and version](images/clip_source_panel.png)
 
@@ -94,8 +94,9 @@ What the convention captures shows up as:
 
 *The same dropdowns, available via `Ctrl`+right-click directly on a clip.*
 
-Sites adapt it by editing `naming_convention.conf` — and, where regexes are not
-enough, by overriding a [Python callback](PYTHON.md). (For example query asset tracking server)
+By default look up of sources are done by checking directories and files against the matching maning convention.
+
+If you need further control like query an asset tracking system, then override [Python callback](PYTHON.md).
 
 ## Create From Directory
 

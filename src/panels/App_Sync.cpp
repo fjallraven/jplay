@@ -720,7 +720,7 @@ void App::commitSyncPort() {
         setStatus("PORT MUST BE 1-65535", 3000);
         return;
     }
-    sessionPortFld_.setText(std::to_string(n)); // normalize "0045778" / stray text
+    sessionPortFld_.setText(std::to_string(n)); // normalize "0052155" / stray text
     if ((int)n == syncPort_)
         return;
     syncPort_ = (int)n;
@@ -730,8 +730,8 @@ void App::commitSyncPort() {
 // Parse the manual host field and connect. The host half is anything the system
 // resolver accepts (see Session::join): an IPv4 literal, a machine name, or an
 // IPv6 literal. IPv6 is the awkward case, since the address is itself full of
-// colons and "fe80::1:45777" cannot be split — so a port may only be appended to
-// the bracketed form, "[fe80::1]:45777", the same rule URLs use. An unbracketed
+// colons and "fe80::1:52155" cannot be split — so a port may only be appended to
+// the bracketed form, "[fe80::1]:52155", the same rule URLs use. An unbracketed
 // string with more than one colon is therefore taken whole, as a bare IPv6
 // literal on the default port.
 void App::startJoinFromField() {

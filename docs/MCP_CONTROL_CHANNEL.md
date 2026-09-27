@@ -20,7 +20,7 @@ firewall prompt.
   port    = 52154
   ```
 
-Leave `port` unset or invalid and the compiled-in fallback (`45125`) is used.
+Leave `port` unset or invalid and the compiled-in fallback (`52154`) is used.
 
 ## Finding the channel
 
@@ -149,5 +149,5 @@ channel off unless something is driving it.
 ## Related
 
 - [Sync session](SYNC_SESSION.md) — the *other* socket, for LAN review. Separate
-  toggle, separate ports (UDP 45777 / TCP 45778).
+  toggle, separate ports (TCP 52155 / UDP 52156).
 - [Config files](CONFIG_FILES.md) · [Python](PYTHON.md)

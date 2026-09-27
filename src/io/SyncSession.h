@@ -30,7 +30,7 @@ namespace syncreview {
 // port). Overridable per user in the SESSION panel; peers that browse by beacon
 // pick the host's choice up automatically, a manual join needs "ip:port".
 // One host per machine and port; a second local host fails to bind (reported).
-constexpr uint16_t kDefaultPort = 45778;
+constexpr uint16_t kDefaultPort = 52155;
 
 enum class Role { None, Host, Spectator };
 

@@ -32,8 +32,8 @@
 namespace control {
 
 // Fallback port, used when jplay_preferences.conf names none. Kept clear of
-// 45777 (UDP sync beacon) and 45778 (sync TCP), which sync review already owns.
-constexpr uint16_t kDefaultPort = 45125;
+// 52155 (sync TCP) and 52156 (UDP sync beacon), which sync review already owns.
+constexpr uint16_t kDefaultPort = 52154;
 
 // The port to listen on: `port` under [control] in jplay_preferences.conf, or
 // kDefaultPort when that option is absent or not a valid port number.
