@@ -86,11 +86,13 @@ are recognised, along with filenames that carry the same tokens
 
 What the convention captures shows up as:
 
-- the second line of a clip's timeline label (configurable — see
-  [config files](CONFIG_FILES.md)),
-- the cascading dropdowns in the **Clip** panel and on `Ctrl`+right-click
-  over a clip, which jump a clip to a different department, asset or version,
-- the search terms the [MCP control channel](MCP_CONTROL_CHANNEL.md) accepts.
+![Clip source panel showing the parsed sequence, shot, department, asset and version](images/clip_source_panel.png)
+
+*The **Clip** panel's cascading dropdowns, populated from the parsed path.*
+
+![Clip source context menu on Ctrl+right-click over a clip](images/clip_source_context.png)
+
+*The same dropdowns, available via `Ctrl`+right-click directly on a clip.*
 
 Sites adapt it by editing `naming_convention.conf` — and, where regexes are not
 enough, by overriding a [Python callback](PYTHON.md). No code change is needed
