@@ -95,8 +95,7 @@ What the convention captures shows up as:
 *The same dropdowns, available via `Ctrl`+right-click directly on a clip.*
 
 Sites adapt it by editing `naming_convention.conf` — and, where regexes are not
-enough, by overriding a [Python callback](PYTHON.md). No code change is needed
-to add or rename a level.
+enough, by overriding a [Python callback](PYTHON.md). (For example query asset tracking server)
 
 ## Create From Directory
 
