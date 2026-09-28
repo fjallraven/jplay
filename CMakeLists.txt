@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(JPlay VERSION 0.1.6 LANGUAGES CXX)
+project(JPlay VERSION 0.1.7 LANGUAGES CXX)
 
 set(JPLAY_VERSION "" CACHE STRING
     "Version string to stamp into the build (default: <project version>-dev)")
