@@ -643,15 +643,7 @@ void App::finishCreateFromDirectory(const std::string& root, Timeline& tl,
 // sequence isn't in the OTIO / has no clips.
 int App::graftOtioSequence(Timeline& src, const std::string& seqName, const std::string& sceneName,
                            const std::string& keepShot, const std::string& keepPath) {
-    // Locate the source sequence. create_otio_project tags each clip with two
-    // independent names: sequence_name — the shot's sequence display name out of
-    // watchtower's sequences.json, which import folds into Sequence::name — and
-    // scene_name, the <scene> element of the <project>/<scene>/... asset
-    // path, which lands on Shot::sceneName. The two are unrelated strings and often
-    // differ, and a caller resolving names from a media path only recovers the
-    // scene, so try both as a sequence name before falling back to the scene tags:
-    // Sequence::name against seqName, then against sceneName, then the first source
-    // sequence carrying a shot whose scene_name matches.
+    // Locate the source sequence.
     Sequence* srcSeq = nullptr;
     auto findByName = [&](const std::string& name) -> Sequence* {
         if (name.empty())
