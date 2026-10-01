@@ -236,6 +236,11 @@ private:
     bool playing_ = false;
     int playDir_ = 1;
     double playAcc_ = 0.0;
+    // Set by update() when playback advances the playhead, taken by the timings
+    // sample of the frame it advanced to (see TimingSample::lateRefreshes).
+    bool playLateValid_ = false;
+    int playLateRefreshes_ = 0;
+    int playSkippedFrames_ = 0;
     Uint64 lastTickMs_ = 0;
     // The playback clock counts whole display refreshes, not the time between
     // ticks (see update); this is how far that count has drifted from real time,
@@ -1518,6 +1523,11 @@ private:
         // intervals before it are still in the ring, so the oldest samples keep
         // theirs once those scroll out. 0 until the window is full.
         float rateMs = 0.0f;
+        // Refreshes this frame reached the screen after the one it was due on (0 on
+        // time), and frames passed over to get to it; -1 when not advanced by
+        // playback (a step, a scrub, the first frame after Play).
+        int lateRefreshes = -1;
+        int skippedFrames = 0;
         // The rate this frame's work could be kept up at: the slower of the read
         // side (the worker pool reads in parallel, so workers / read time) and the
         // UI tick. A frame shown again from the cache had no read to pay for.
@@ -1618,6 +1628,7 @@ private:
     // OpenColorIO: display transform applied at review time to EXR frames.
     OcioManager ocio_;
     OcioGpu     ocioGpu_;             // GPU display transform (when GL backend active)
+    FramePtr    preuploadedFrame_;    // frame ocioGpu_ last preuploaded, held so its tag (address) stays unique
 
     // The OCIO colour space `m` is read in: its explicit override when the user set
     // one, else the config's answer for it (file rules, then the container's own
@@ -2681,6 +2692,7 @@ private:
     // ── Playback timings (App_Timings.cpp) ───────────────────────────────
     void toggleTimingsPanel(); // 'T' / View > Playback Timings; opening starts a fresh history
     void commitTimingSample(); // timingPending_ -> the ring
+    void preuploadNextFrame(); // App_Player.cpp: next frame's OCIO input upload, on an idle refresh
     double timingBufferedAheadSec(); // see TimingSample::aheadSec
     void clearTimingSamples();
     void renderTimingsPanel(); // draw the chart (only when open)

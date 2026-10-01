@@ -213,12 +213,21 @@ void App::renderTimingsPanel() {
         const int oldest = (timingHead_ - timingCount_ + kTimingSamples) % kTimingSamples;
         return timingSamples_[(size_t)((oldest + i) % kTimingSamples)];
     };
-    // The shown rate at each frame (see commitTimingSample), snapped as the info
-    // bar snaps it, so a rate that reads as the project's there sits exactly on it
-    // here too, flat rather than a pixel either side. 0 where there is none
-    // (paused, or just after Play).
-    auto shownFps = [&](const TimingSample& s) {
-        return s.rateMs > 0.0f ? snappedFps(1000.0 / s.rateMs, fps) : 0.0;
+    // The shown rate at each frame, judged frame by frame against the play
+    // clock (see TimingSample::lateRefreshes): the project rate for a frame put up
+    // on the refresh it was due, else the rate its own late or skipping step
+    // played at. A mean over a window of intervals would carry one late frame for
+    // the whole window and then echo it the other way as the late interval left
+    // before the catch-up after it; this marks the frame it happened on and no
+    // other. 0 where there is none (paused, a step, just after Play).
+    const double period = refreshPeriodSec();
+    auto shownFps = [&](const TimingSample& s) -> double {
+        if (s.lateRefreshes < 0 || fps <= 0.0)
+            return 0.0;
+        if (s.lateRefreshes == 0 && s.skippedFrames == 0)
+            return fps;
+        const double spf = 1.0 / fps;
+        return snappedFps(1.0 / (spf * (1 + s.skippedFrames) + period * s.lateRefreshes), fps);
     };
     auto onRate = [&](double v) { return fps <= 0.0 || std::fabs(v - fps) < 1e-6; };
     auto aheadText = [&](float sec, char* buf, size_t n) {
@@ -287,6 +296,18 @@ void App::renderTimingsPanel() {
                 SDL_snprintf(buf, sizeof(buf), "%.1f fps", shown);
             else
                 SDL_snprintf(buf, sizeof(buf), "\xe2\x80\x94 fps");
+            text += buf;
+            buf[0] = '\0';
+            // Frames in the chart that missed their refresh, or were passed over:
+            // each one is a single red dip on the rate line below.
+            int late = 0, skipped = 0;
+            for (int i = 0; i < timingCount_; ++i) {
+                const TimingSample& s = sampleAt(i);
+                late += s.lateRefreshes > 0 ? 1 : 0;
+                skipped += s.skippedFrames;
+            }
+            if (late > 0 || skipped > 0)
+                SDL_snprintf(buf, sizeof(buf), " (%d late, %d skipped in view)", late, skipped);
             text += buf;
             if (costMs > 0.0) {
                 const double est = 1000.0 / costMs;

@@ -8,6 +8,7 @@
 
 
 #include <cstdio>
+#include <utility>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -729,18 +730,67 @@ void OcioGpu::armNextSlot_() {
         b.size = 0; // not known to be free: have stagePbo_ replace the buffer object
 }
 
+void OcioGpu::swapInput_() {
+    std::swap(inputTex_, preTex_);
+    std::swap(inW_, preW_);
+    std::swap(inH_, preH_);
+    std::swap(inFmt_, preFmt_);
+}
+
+bool OcioGpu::preupload(const void* pixels, InputFormat fmt, int width, int height, uint64_t tag) {
+    if (!ready_ || !pixels || width <= 0 || height <= 0 || tag == 0)
+        return false;
+    if (tag == preTag_)
+        return true;
+    preTag_ = 0;
+    // A copy render() started (beginStage_) is for its own frame; this one stages
+    // synchronously behind it, which stagePbo_ handles.
+    SDL_FlushRenderer(renderer_);
+    GLint prevActiveTex = 0, prevTex2D = 0;
+    p_glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActiveTex);
+    p_glActiveTexture(GL_TEXTURE0);
+    p_glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex2D);
+    while (p_glGetError() != GL_NO_ERROR) {}
+    p_glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    p_glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    p_glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+    p_glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+
+    // uploadInput_ fills inputTex_; point it at the spare for the call.
+    swapInput_();
+    uploadInput_(pixels, fmt, width, height);
+    swapInput_();
+    const bool ok = p_glGetError() == GL_NO_ERROR;
+    armNextSlot_();
+
+    p_glBindTexture(GL_TEXTURE_2D, (GLuint)prevTex2D);
+    p_glActiveTexture((GLenum)prevActiveTex);
+    if (ok)
+        preTag_ = tag;
+    return ok;
+}
+
 bool OcioGpu::render(const void* pixels, InputFormat fmt, int width, int height,
-                     unsigned dstTexGL, unsigned dstTexTarget, float exposureEV) {
+                     unsigned dstTexGL, unsigned dstTexTarget, float exposureEV, uint64_t tag) {
     Program* prog = active_();
     if (!ready_ || !prog || !prog->id || !pixels || width <= 0 || height <= 0)
         return false;
+    // Uploaded ahead (preupload): draw from that texture, no upload this time.
+    const bool pre = tag != 0 && tag == preTag_ && preW_ == width && preH_ == height &&
+                     preFmt_ == (int)fmt;
+    // An untagged render (a Layout tile) leaves the preupload for the program's
+    // next frame alone; a tagged one either takes it or finds it stale (the frame
+    // it was for was skipped).
+    if (tag != 0)
+        preTag_ = 0;
 
     // The staging copy goes first, before anything touches GL. With vsync on, the
     // first GL call that needs the driver's attention (the state queries below)
     // is where this thread waits out the previous frame's swap -- most of a
     // refresh interval on a 60 Hz display -- and the copy helpers can do all of
     // their work inside that wait rather than after it.
-    beginStage_(pixels, (size_t)width * height * bytesPerPixel_(fmt));
+    if (!pre)
+        beginStage_(pixels, (size_t)width * height * bytesPerPixel_(fmt));
     // Submit SDL's queued GL commands before we change GL state out from under it.
     SDL_FlushRenderer(renderer_);
 
@@ -768,7 +818,10 @@ bool OcioGpu::render(const void* pixels, InputFormat fmt, int width, int height,
     p_glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
     p_glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
 
-    uploadInput_(pixels, fmt, width, height);
+    if (pre)
+        swapInput_();
+    else
+        uploadInput_(pixels, fmt, width, height);
 
     // Render the OCIO pass into the destination texture via the FBO.
     p_glBindFramebuffer(GL_FRAMEBUFFER, fbo_);

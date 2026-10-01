@@ -1124,6 +1124,42 @@ std::string App::ocioInputCsLabel() {
     return cs.empty() ? "File Colorspace" : "* " + cs;
 }
 
+// On a refresh of playback that puts up no new frame, upload the next one into
+// OcioGpu's spare input texture, so the refresh that shows it has only the draw
+// left to do (see OcioGpu::preupload). Only the plain case: one clip, no
+// dissolve or fade, the GPU display transform on, already decoded. Anything else
+// leaves the next render to upload as it always has.
+void App::preuploadNextFrame() {
+    if (!ocioGpu_.isReady() || !ocio_.isReady() || !ocio_.isEnabled() ||
+        techMode_ == TechMode::Luminance)
+        return;
+    int64_t lo = 0, hi = 0;
+    playbackRange(lo, hi);
+    int64_t next = timeline_.playhead + 1;
+    if (next > hi || next < lo)
+        next = lo;
+    const Clip* clip = getTopMostClipAtFrame(next);
+    if (!clip || clip->mediaId.empty())
+        return;
+    const ProgramSource ps = programSourceAt(next);
+    if (ps.a != clip || ps.b || ps.fade != 1.0f)
+        return;
+    auto media = timeline_.findMediaById(clip->mediaId);
+    if (!media || media->openFailed())
+        return;
+    FramePtr f = cache_->get(CacheKey{ clip->mediaId, clip->sourceOffset + (next - clip->timelineStart) });
+    if (!f)
+        return;
+    const uint64_t tag = (uint64_t)(uintptr_t)f.get();
+    if (ocioGpu_.preuploadedTag() == tag)
+        return;
+    const void* px = nullptr;
+    OcioGpu::InputFormat fmt = OcioGpu::InputFormat::Rgba8;
+    frameInput(*f, px, fmt);
+    if (px && ocioGpu_.preupload(px, fmt, f->width, f->height, tag))
+        preuploadedFrame_ = std::move(f); // held so the tag (its address) stays its own
+}
+
 void App::renderPlayer() {
     // Black backdrop: a frame with no media on any track stays black.
     setColor(renderer_, kBlack);
@@ -1473,9 +1509,12 @@ void App::renderPlayer() {
                         Sint64 texTarget = SDL_GetNumberProperty(
                             tp, SDL_PROP_TEXTURE_OPENGL_TEXTURE_TARGET_NUMBER, 0);
                         if (texId != 0 && texTarget != 0) {
+                            // Tagged only when drawing the cached frame as it is, the
+                            // one case preuploadNextFrame() uploads ahead for.
+                            const uint64_t tag = fr == frame.get() ? (uint64_t)(uintptr_t)fr : 0;
                             didGpu = ocioGpu_.render(px, ifmt, fr->width, fr->height,
                                                      (unsigned)texId, (unsigned)texTarget,
-                                                     grade_.gain);
+                                                     grade_.gain, tag);
                             gainHandledUpstream = didGpu;
                         }
                     }
@@ -1543,6 +1582,11 @@ void App::renderPlayer() {
                     TimingSample& ts = timingPending_;
                     ts = TimingSample{};
                     ts.frame = timeline_.playhead;
+                    if (playing_ && playLateValid_) {
+                        ts.lateRefreshes = playLateRefreshes_;
+                        ts.skippedFrames = playSkippedFrames_;
+                    }
+                    playLateValid_ = false;
                     ts.ocioMs = (float)(tOutput0 - tDisplay0) * 1e-6f;
                     ts.outputMs = (float)(tEnd - tOutput0) * 1e-6f; // SDR readback; HDR adds its own below
                     // A dissolve's frame needed both halves read, so both are charged.
@@ -1562,6 +1606,8 @@ void App::renderPlayer() {
                     }
                     timingPendingValid_ = true;
                 }
+            } else if (playing_ && !hdrPipeline_) {
+                preuploadNextFrame(); // nothing new on this refresh: get the next frame's upload done
             }
         } else {
             loading = true; // keep showing the previous texture while decoding

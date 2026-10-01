@@ -59,8 +59,24 @@ public:
     // space, between the two halves of the transform, so a stop means the same
     // thing whatever the source. Returns false on any failure so the caller can
     // fall back to the CPU path.
+    // `tag`, when non-zero, names the frame for preupload(): a render whose tag
+    // matches the last preupload draws from the texture already uploaded and skips
+    // the upload. The caller keeps the tag unique per frame for as long as it may
+    // match (holding the frame alive, if the tag is its address).
     bool render(const void* pixels, InputFormat fmt, int width, int height,
-                unsigned dstTexGL, unsigned dstTexTarget, float exposureEV = 0.0f);
+                unsigned dstTexGL, unsigned dstTexTarget, float exposureEV = 0.0f,
+                uint64_t tag = 0);
+
+    // Upload a frame that is about to be shown into a second input texture, ahead
+    // of the render() that draws it. Called on a refresh that puts up no new frame
+    // (at 24 fps on 60 Hz one or two of every two or three), it moves the
+    // host->GPU copy, the larger half of the GPU's work for a frame, off the
+    // refresh that has to present: that one is left with the draw alone, and has
+    // the headroom to ride out the GPU dropping to a lower power state mid-play.
+    // No-op if `tag` is already uploaded. Returns false on any failure (the
+    // render then uploads as usual).
+    bool preupload(const void* pixels, InputFormat fmt, int width, int height, uint64_t tag);
+    uint64_t preuploadedTag() const { return preTag_; }
 
     // Render a scene-referred luminance heatmap of `linear` into `dstTexGL` — a
     // "true HDR" nit map computed BEFORE any display transform. Per pixel: apply
@@ -81,6 +97,12 @@ private:
     unsigned inputTex_ = 0;
     int      inW_ = 0, inH_ = 0;
     int      inFmt_ = -1;       // InputFormat the input texture is allocated for
+    // The second input texture preupload() fills, swapped with the first by the
+    // render() it was uploaded for. preTag_ 0: holds nothing to be used.
+    unsigned preTex_ = 0;
+    int      preW_ = 0, preH_ = 0, preFmt_ = -1;
+    uint64_t preTag_ = 0;
+    void swapInput_();
     unsigned nitProg_ = 0;      // scene-linear nit-heatmap program (processor-independent)
     bool nitTried_ = false;     // nitProg_ build attempted (once only; see ensureNitProgram_)
     int nitExpLoc_ = -1, nitScaleLoc_ = -1; // "uExposure"/"uNitScale" in nitProg_

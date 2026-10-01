@@ -3233,6 +3233,7 @@ void App::update() {
         fpsWindowFrom_ = 0;
         playClockErr_ = 0.0;
         playClockRunning_ = false;
+        playLateValid_ = false;
     } else {
         const Uint64 windowMs = 1000;
         if (fpsWindowFrom_ == 0) fpsWindowFrom_ = now;
@@ -3313,6 +3314,7 @@ void App::update() {
     // The tolerance keeps a boundary the refresh count lands on exactly (every
     // other frame at 24 on 60 Hz) on one side of it, whatever rounding the sum
     // has picked up.
+    int advanced = 0;
     while (playAcc_ + 1e-7 >= spf) {
         playAcc_ -= spf;
         int64_t lo = 0, hi = 0;
@@ -3336,6 +3338,17 @@ void App::update() {
         }
         timeline_.playhead = next;
         playDir_ = 1;
+        ++advanced;
+    }
+    // How far behind its due refresh the frame just advanced to goes up: what is
+    // left in the accumulator past the boundary it crossed, in whole refreshes.
+    // On time that is under one (the 2-3 cadence leaves 0 or half a refresh); a
+    // tick that missed a vsync leaves a whole one more. Frames passed over in the
+    // same tick never reached the screen at all.
+    if (advanced > 0) {
+        playLateRefreshes_ = period > 0.0 ? (int)std::floor((playAcc_ + 1e-7) / period) : 0;
+        playSkippedFrames_ = advanced - 1;
+        playLateValid_ = true;
     }
     followPlayhead();
     updateAudio();
