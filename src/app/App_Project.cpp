@@ -800,11 +800,6 @@ void App::showInSequence() {
                         "[jplay] Show in Sequence: path context lookup failed for \"%s\"", openedPath.c_str());
         }
     }
-    // All the path resolves is the scene (the naming convention's "sequence",
-    // cached under the "scene" key) — the OTIO's sequence_name is watchtower's
-    // sequence display name, which is a different string on most projects. Pass the
-    // scene as both: graftOtioSequence tries it as a sequence name and then against
-    // the clips' scene_name tags, so either spelling finds the sequence.
     if (sequenceName.empty())
         sequenceName = sceneName;
 
