@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  VCPKG_COMMIT: 32305df7d0b9a308e6ac454dd98ebfe550342c09
+  VCPKG_COMMIT: c95f39b145ca15c4e2d4d73435647179a1a96dfd
   # temporary: since autobuilds are wiped monthly, use latest tag
   FFMPEG_TAG: latest
   LINUX_GLIBC_MAX: "2.34"
