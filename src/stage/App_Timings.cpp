@@ -77,7 +77,127 @@ void App::clearTimingSamples() {
     timingHead_ = 0;
     timingCount_ = 0;
     timingPendingValid_ = false;
+    timingGpuPending_ = false;
     timingLastShownNs_ = 0;
+}
+
+namespace {
+
+// The GL entry points the tick timer uses, resolved once. The GL renderer's
+// context is 3.2 compatibility; GL_TIME_ELAPSED needs 3.3 or ARB_timer_query.
+constexpr unsigned kGlTimeElapsed = 0x88BF;
+constexpr unsigned kGlQueryResult = 0x8866;
+struct TickGl {
+    void (*finish)(void) = nullptr;
+    void (*genQueries)(int, unsigned*) = nullptr;
+    void (*beginQuery)(unsigned, unsigned) = nullptr;
+    void (*endQuery)(unsigned) = nullptr;
+    void (*getQueryObjectui64v)(unsigned, unsigned, Uint64*) = nullptr;
+    void (*getIntegerv)(unsigned, int*) = nullptr;
+};
+const TickGl& tickGl() {
+    static const TickGl gl = [] {
+        TickGl g;
+        g.finish = (void (*)(void))SDL_GL_GetProcAddress("glFinish");
+        g.genQueries = (void (*)(int, unsigned*))SDL_GL_GetProcAddress("glGenQueries");
+        g.beginQuery = (void (*)(unsigned, unsigned))SDL_GL_GetProcAddress("glBeginQuery");
+        g.endQuery = (void (*)(unsigned))SDL_GL_GetProcAddress("glEndQuery");
+        g.getQueryObjectui64v =
+            (void (*)(unsigned, unsigned, Uint64*))SDL_GL_GetProcAddress("glGetQueryObjectui64v");
+        g.getIntegerv = (void (*)(unsigned, int*))SDL_GL_GetProcAddress("glGetIntegerv");
+        return g;
+    }();
+    return gl;
+}
+
+} // namespace
+
+// With vsync on, the GL present returns at once and this thread waits out the
+// swap at the first blocking GL call of the next tick (see OcioGpu::render).
+// Inside the timed span that wait would read as work: the display side could
+// never look much faster than the refresh rate, its phase wandering with the 2:3
+// cadence. So it is taken here, before the clock starts. That also leaves the GPU
+// idle, so the previous tick's timer query has its result. Only on the GL path
+// with the GUI holding vsync: the review monitor leaves the GUI unthrottled, and
+// its context may be the current one here.
+void App::timingTickBegin() {
+    const bool gl = !hdrPipeline_ && !reviewActive();
+    const TickGl& g = tickGl();
+    if (gl && g.finish)
+        g.finish();
+    if (timingGpuActive_) { // a tick that never reached the present
+        g.endQuery(kGlTimeElapsed);
+        timingGpuActive_ = false;
+        timingGpuPending_ = false;
+    }
+    if (timingGpuPending_) {
+        timingGpuPending_ = false;
+        Uint64 ns = 0;
+        g.getQueryObjectui64v(timingGpuQuery_, kGlQueryResult, &ns);
+        if (timingCount_ > 0) {
+            TimingSample& s = timingSamples_[(size_t)((timingHead_ - 1 + kTimingSamples) % kTimingSamples)];
+            s.gpuMs = (float)ns * 1e-6f;
+            if (s.sustainWanted)
+                setSustainFps(s);
+        }
+    }
+    if (gl && timingGpuSupport_ < 0) {
+        int major = 0, minor = 0;
+        if (g.getIntegerv) {
+            g.getIntegerv(0x821B /*GL_MAJOR_VERSION*/, &major);
+            g.getIntegerv(0x821C /*GL_MINOR_VERSION*/, &minor);
+        }
+        const bool api = g.genQueries && g.beginQuery && g.endQuery && g.getQueryObjectui64v;
+        timingGpuSupport_ = api && (major > 3 || (major == 3 && minor >= 3) ||
+                                    SDL_GL_ExtensionSupported("GL_ARB_timer_query")) ? 1 : 0;
+        if (timingGpuSupport_)
+            g.genQueries(1, &timingGpuQuery_);
+    }
+    if (gl && timingGpuSupport_ == 1 && timingGpuQuery_ != 0) {
+        g.beginQuery(kGlTimeElapsed, timingGpuQuery_);
+        timingGpuActive_ = true;
+    }
+    timingTickStartNs_ = SDL_GetTicksNS();
+}
+
+void App::timingTickEnd() {
+    if (timingPendingValid_)
+        timingPending_.uiMs = (float)(SDL_GetTicksNS() - timingTickStartNs_) * 1e-6f;
+    if (!timingGpuActive_)
+        return;
+    // SDL holds this tick's draws in its queue until the present; submit them so
+    // the query spans them.
+    SDL_FlushRenderer(renderer_);
+    tickGl().endQuery(kGlTimeElapsed);
+    timingGpuActive_ = false;
+    timingGpuPending_ = timingPendingValid_; // its sample is committed just after the present
+}
+
+// Reads run on the cache's worker pool in parallel with each other and with the UI
+// thread, so the read side sustains workers / read time; the display side is
+// bounded by the UI tick's CPU or GPU time, whichever is longer, since the two run
+// side by side as well. The slower side is the estimate.
+//
+// A read timed with the pool mostly idle (steady playback reads one frame per
+// frame shown) did not share the disk and memory bandwidth; run all workers at
+// once, each would be slower than that. So the read side is never costed below
+// what the pool has really managed with every worker busy
+// (FrameCache::fillRateCeiling), and a read slower than even that shows as itself.
+double App::readCostMs(double readMs, double readsPerFrame) {
+    const int workers = std::max(1, cache_->threadCount());
+    const double ceiling = cache_->fillRateCeiling();
+    const double floorMs = ceiling > 0.0 ? readsPerFrame * 1000.0 / ceiling : 0.0;
+    return std::max(readMs / workers, floorMs);
+}
+
+void App::setSustainFps(TimingSample& s) {
+    const double readCost = s.hasRead && s.fresh ? readCostMs(s.readMs(), 1.0) : 0.0;
+    const double dispCost = std::max(s.uiMs, s.gpuMs);
+    const double cost = std::max(readCost, dispCost);
+    if (cost > 0.0) {
+        s.sustainFps = (float)(1000.0 / cost);
+        s.readLimited = readCost > dispCost;
+    }
 }
 
 void App::commitTimingSample() {
@@ -110,13 +230,11 @@ void App::commitTimingSample() {
             s.rateMs = (float)(sum / n);
     }
     if (playing_) {
-        const int workers = std::max(1, cache_->threadCount());
-        const double readCost = s.hasRead && s.fresh ? s.readMs() / workers : 0.0;
-        const double cost = std::max(readCost, (double)s.uiMs);
-        if (cost > 0.0) {
-            s.sustainFps = (float)(1000.0 / cost);
-            s.readLimited = readCost > s.uiMs;
-        }
+        // With a GPU time still to come, the rate waits for it (timingTickBegin):
+        // the CPU time alone would put the newest point far above where it settles.
+        s.sustainWanted = true;
+        if (!timingGpuPending_)
+            setSustainFps(s);
         s.aheadSec = (float)timingBufferedAheadSec();
     }
     timingSamples_[(size_t)timingHead_] = s;
@@ -261,18 +379,17 @@ void App::renderTimingsPanel() {
     gapTop(body, 4.0f * dpiScale);
 
     // ---- summary: shown rate, what the pipeline could sustain, and the buffer ----
-    // Reads run on the cache's worker pool in parallel with each other and with the
-    // UI thread, so the stages are not added: the read side sustains workers / read
-    // time, the display side 1 / UI tick, and the slower of the two is the estimate.
-    // Averaged over the last second or so of samples; headroom is that over the
-    // project rate.
+    // The stages are not added (see setSustainFps): the read side sustains workers /
+    // read time, the display side 1 / the UI tick's CPU or GPU time, and the slower
+    // of the two is the estimate. Averaged over the last second or so of samples;
+    // headroom is that over the project rate.
     {
         const int recent = std::min(timingCount_, kTimingRateWindow);
         double readSum = 0.0, dispSum = 0.0;
         int reads = 0;
         for (int i = timingCount_ - recent; i < timingCount_; ++i) {
             const TimingSample& s = sampleAt(i);
-            dispSum += s.uiMs;
+            dispSum += std::max(s.uiMs, s.gpuMs);
             if (s.hasRead && s.fresh) {
                 readSum += s.readMs();
                 ++reads;
@@ -284,7 +401,8 @@ void App::renderTimingsPanel() {
         } else {
             // Frames shown again from the cache read nothing, so the read side is
             // costed per frame shown: the reads there were, over every frame.
-            const double readMsPerFrame = reads > 0 ? readSum / recent / workers : 0.0;
+            const double readMsPerFrame =
+                reads > 0 ? readCostMs(readSum / recent, (double)reads / recent) : 0.0;
             const double dispMsPerFrame = dispSum / recent;
             const bool readLimited = readMsPerFrame > dispMsPerFrame;
             const double costMs = std::max(readMsPerFrame, dispMsPerFrame);
@@ -312,11 +430,19 @@ void App::renderTimingsPanel() {
             if (costMs > 0.0) {
                 const double est = 1000.0 / costMs;
                 if (fps > 0.0)
-                    SDL_snprintf(buf, sizeof(buf), "   Sustainable %.0f fps, %.0f\xc3\x97 headroom (%s-limited, %d workers)",
+                    SDL_snprintf(buf, sizeof(buf), "   Sustainable %.0f fps, %.0f\xc3\x97 headroom (%s-limited, %d workers",
                                  est, est / fps, readLimited ? "read" : "display", workers);
                 else
-                    SDL_snprintf(buf, sizeof(buf), "   Sustainable %.0f fps (%s-limited, %d workers)",
+                    SDL_snprintf(buf, sizeof(buf), "   Sustainable %.0f fps (%s-limited, %d workers",
                                  est, readLimited ? "read" : "display", workers);
+                text += buf;
+                // The pool's measured ceiling, or that it has not been seen full yet
+                // and the read side is the optimistic workers / read time.
+                const double ceiling = cache_->fillRateCeiling();
+                if (ceiling > 0.0)
+                    SDL_snprintf(buf, sizeof(buf), ", fill %.0f fps)", ceiling);
+                else
+                    SDL_snprintf(buf, sizeof(buf), ", fill not measured)");
                 text += buf;
             }
             if (newest.aheadSec >= 0.0f) {

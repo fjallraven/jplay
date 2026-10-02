@@ -64,6 +64,12 @@ public:
     // shown again on the next lap of a loop is told apart from one just read.
     bool readTiming(const CacheKey& key, ReadTiming& out, bool& firstShowing);
     int threadCount() const { return (int)workers_.size(); }
+    // Frames per second the pool has actually read while every worker was busy:
+    // what a full fill sustains, with the workers sharing disk and memory bandwidth.
+    // A lone read run 8 ways would be far more than that. Over the last few seconds
+    // of such reading, so a switch to other media moves it; 0 until there has been
+    // enough (a pool that never fills, such as one reading a single video).
+    double fillRateCeiling() const;
 
     void clear(); // drop cached frames + pending work (in-flight reads finish and are discarded)
     // clear() for one media: its frames go, and reads of it already in flight are
@@ -147,6 +153,13 @@ private:
     // holding first frame
     bool firstFrameHold_ = true;
     int holdReads_ = 0; // on-screen reads in flight while the hold is up
+    // fillRateCeiling(): time spent with every worker reading, and the reads that
+    // finished in it, both halved each time the time passes kFillWindowNs.
+    void accountFillLocked(); // at every change of busy_
+    int busy_ = 0;            // workers inside a read
+    uint64_t fillMarkNs_ = 0; // when busy_ last changed
+    double fillNs_ = 0.0;
+    double fillReads_ = 0.0;
     size_t totalBytes_ = 0;
     size_t maxBytes_;
     uint64_t tick_ = 0;

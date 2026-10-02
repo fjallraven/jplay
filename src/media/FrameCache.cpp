@@ -4,6 +4,7 @@
 #include <SDL3/SDL_log.h>
 
 #include <algorithm>
+#include <chrono>
 #include <iterator>
 
 FrameCache::FrameCache(size_t maxBytes, int numThreads)
@@ -63,6 +64,35 @@ bool FrameCache::readTiming(const CacheKey& key, ReadTiming& out, bool& firstSho
     firstShowing = !it->second.timingShown;
     it->second.timingShown = true;
     return true;
+}
+
+namespace {
+constexpr double kFillWindowNs = 3e9;
+uint64_t nowNs() {
+    return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+} // namespace
+
+void FrameCache::accountFillLocked() {
+    const uint64_t now = nowNs();
+    if (fillMarkNs_ != 0 && busy_ >= (int)workers_.size())
+        fillNs_ += (double)(now - fillMarkNs_);
+    fillMarkNs_ = now;
+    if (fillNs_ > kFillWindowNs) {
+        fillNs_ *= 0.5;
+        fillReads_ *= 0.5;
+    }
+}
+
+double FrameCache::fillRateCeiling() const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    // A few reads per worker, so one batch finishing together does not stand for
+    // the rate. Kept short in time: a 2K loop fills in a fifth of a second, and a
+    // fill is the only time the pool runs full.
+    if (fillNs_ < 0.05e9 || fillReads_ < 3.0 * (double)workers_.size())
+        return 0.0;
+    return fillReads_ * 1e9 / fillNs_;
 }
 
 bool FrameCache::has(const CacheKey& key) {
@@ -328,6 +358,8 @@ void FrameCache::workerLoop() {
         const bool held = firstFrameHold_ && job.priority <= 0;
         if (held)
             ++holdReads_;
+        accountFillLocked();
+        ++busy_;
 
         lk.unlock();
         std::string err;
@@ -338,6 +370,11 @@ void FrameCache::workerLoop() {
         ReadTiming timing;
         FramePtr frame = src ? src->readFrameTimed(index, timing) : nullptr; // slow: decode/IO
         lk.lock();
+        accountFillLocked();
+        // Counted whether or not its result is kept: the read used the bandwidth.
+        if (frame && busy_ >= (int)workers_.size())
+            fillReads_ += 1.0;
+        --busy_;
 
         // Only if this read is still the live one: a doomed read finishing after a
         // fresh one was started for the same frame must not retract its entry.

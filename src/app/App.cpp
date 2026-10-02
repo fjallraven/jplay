@@ -4322,8 +4322,7 @@ void App::render() {
     renderDialog();                                            // confirm/warn message dialog, over everything
     renderPlayerDropBoxes();                                   // view/replace/add chooser while dragging over the frame
     renderBinDragGhost();                                      // dragged source card, follows the cursor
-    if (timingPendingValid_)
-        timingPending_.uiMs = (float)(SDL_GetTicksNS() - timingTickStartNs_) * 1e-6f;
+    timingTickEnd();                                           // the UI tick's CPU time, and the end of its GPU timer
     SDL_RenderPresent(renderer_);
     if (timingPendingValid_)
         commitTimingSample(); // stamped after the present: as near to "on screen" as can be told
@@ -4449,7 +4448,7 @@ void App::drawFrame(bool isLiveMovingOrResizing) {
     inDrawFrame_ = true;
     struct Guard { bool& f; ~Guard() { f = false; } } guard{ inDrawFrame_ };
     if (timingsOpen_)
-        timingTickStartNs_ = SDL_GetTicksNS();
+        timingTickBegin(); // after the previous swap: see there
 
     computeLayout();
 

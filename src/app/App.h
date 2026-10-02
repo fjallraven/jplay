@@ -1509,9 +1509,16 @@ private:
         float exrMs = 0.0f;    // interleave / decode into the frame buffer
         float ocioMs = 0.0f;   // UI thread: composite, OCIO/colour work, upload
         float outputMs = 0.0f; // UI thread: readback + submit to an output / review monitor
-        // The whole UI tick up to present, every stage above included: what the
-        // display side's frame rate is bounded by. Not one of the stacked stages.
+        // The whole UI tick up to present, every stage above included, as CPU time:
+        // the wait for the previous swap is taken before it starts (see
+        // timingTickBegin). gpuMs is the GPU time of the same tick's commands, from
+        // a timer query read on the next tick; -1 where there is none (the HDR
+        // pipeline, a review monitor, no timer queries). The display side's frame
+        // rate is bounded by the longer of the two. Neither is a stacked stage.
         float uiMs = 0.0f;
+        float gpuMs = -1.0f;
+        // Taken while playing: has a sustainable rate (below), set once gpuMs is in.
+        bool sustainWanted = false;
         bool hasRead = false;  // the read figures above are known
         bool fresh = false;    // first showing since that read (false: shown again from the cache)
         bool ioSplit = false;  // readIoMs measured apart from exrMs (see ReadTiming)
@@ -1530,7 +1537,8 @@ private:
         int skippedFrames = 0;
         // The rate this frame's work could be kept up at: the slower of the read
         // side (the worker pool reads in parallel, so workers / read time) and the
-        // UI tick. A frame shown again from the cache had no read to pay for.
+        // UI tick's CPU or GPU time. A frame shown again from the cache had no read
+        // to pay for.
         float sustainFps = 0.0f;
         bool readLimited = false;  // the read side was the slower of the two
         // Frames already in the cache, in a row after this one in play order, as
@@ -1562,6 +1570,13 @@ private:
     TimingSample timingPending_{};
     bool timingPendingValid_ = false;
     Uint64 timingTickStartNs_ = 0;    // when this drawFrame began
+    // GL_TIME_ELAPSED query around each UI tick while the panel is open (GL path,
+    // GUI holding vsync). The result is read at the start of the next tick, after
+    // the swap wait has drained the GPU, and filled into the sample it belongs to.
+    unsigned timingGpuQuery_ = 0;     // 0: not created yet, or unsupported
+    int timingGpuSupport_ = -1;       // -1 not checked, 0 no, 1 yes
+    bool timingGpuActive_ = false;    // begun this tick, not yet ended
+    bool timingGpuPending_ = false;   // ended on a tick that committed a sample
     Uint64 timingLastShownNs_ = 0;    // when the previous new frame reached the screen
 
     // ── Pixel inspector (App_PixelInspector.cpp) ─────────────────────────────
@@ -2692,6 +2707,10 @@ private:
     // ── Playback timings (App_Timings.cpp) ───────────────────────────────
     void toggleTimingsPanel(); // 'T' / View > Playback Timings; opening starts a fresh history
     void commitTimingSample(); // timingPending_ -> the ring
+    void timingTickBegin();    // drawFrame start, panel open: swap wait, last GPU time, start timers
+    void timingTickEnd();      // just before the present: CPU time, end the GPU timer
+    void setSustainFps(TimingSample& s); // see TimingSample::sustainFps
+    double readCostMs(double readMs, double readsPerFrame); // read side per frame shown
     void preuploadNextFrame(); // App_Player.cpp: next frame's OCIO input upload, on an idle refresh
     double timingBufferedAheadSec(); // see TimingSample::aheadSec
     void clearTimingSamples();
