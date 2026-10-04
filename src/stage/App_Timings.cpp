@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <iterator>
 #include <vector>
 
@@ -78,6 +79,7 @@ void App::clearTimingSamples() {
     timingCount_ = 0;
     timingPendingValid_ = false;
     timingGpuPending_ = false;
+    timingReviewGpuPending_ = false;
     timingLastShownNs_ = 0;
 }
 
@@ -117,12 +119,32 @@ const TickGl& tickGl() {
 // Inside the timed span that wait would read as work: the display side could
 // never look much faster than the refresh rate, its phase wandering with the 2:3
 // cadence. So it is taken here, before the clock starts. That also leaves the GPU
-// idle, so the previous tick's timer query has its result. Only on the GL path
-// with the GUI holding vsync: the review monitor leaves the GUI unthrottled, and
-// its context may be the current one here.
+// idle, so the previous tick's timer queries have their results. GL path only.
+// With a review monitor up, it holds vsync and the GUI presents unthrottled: its
+// context is drained the same way, then the GUI's, each made current by hand as
+// either may be the current one here. The review window's draw has a query of its
+// own (timingReviewBegin); the tick's GPU time is the sum of the two, as both
+// windows' work queues on the GPU. A review monitor not on OpenGL has no timer.
 void App::timingTickBegin() {
-    const bool gl = !hdrPipeline_ && !reviewActive();
+    const bool review = reviewActive();
+    const bool gl = !hdrPipeline_ && (!review || (mainGlContext_ && reviewGlContext_));
     const TickGl& g = tickGl();
+    Uint64 ns = 0;
+    bool haveGpu = false;
+    if (gl && review) {
+        SDL_GL_MakeCurrent(reviewWindow_, reviewGlContext_);
+        if (g.finish)
+            g.finish();
+        if (timingReviewGpuPending_) {
+            Uint64 reviewNs = 0;
+            g.getQueryObjectui64v(timingReviewQuery_, kGlQueryResult, &reviewNs);
+            ns += reviewNs;
+            haveGpu = true;
+        }
+    }
+    timingReviewGpuPending_ = false;
+    if (mainGlContext_)
+        SDL_GL_MakeCurrent(window_, mainGlContext_);
     if (gl && g.finish)
         g.finish();
     if (timingGpuActive_) { // a tick that never reached the present
@@ -132,14 +154,16 @@ void App::timingTickBegin() {
     }
     if (timingGpuPending_) {
         timingGpuPending_ = false;
-        Uint64 ns = 0;
-        g.getQueryObjectui64v(timingGpuQuery_, kGlQueryResult, &ns);
-        if (timingCount_ > 0) {
-            TimingSample& s = timingSamples_[(size_t)((timingHead_ - 1 + kTimingSamples) % kTimingSamples)];
-            s.gpuMs = (float)ns * 1e-6f;
-            if (s.sustainWanted)
-                setSustainFps(s);
-        }
+        Uint64 mainNs = 0;
+        g.getQueryObjectui64v(timingGpuQuery_, kGlQueryResult, &mainNs);
+        ns += mainNs;
+        haveGpu = true;
+    }
+    if (haveGpu && timingCount_ > 0) {
+        TimingSample& s = timingSamples_[(size_t)((timingHead_ - 1 + kTimingSamples) % kTimingSamples)];
+        s.gpuMs = (float)ns * 1e-6f;
+        if (s.sustainWanted)
+            setSustainFps(s);
     }
     if (gl && timingGpuSupport_ < 0) {
         int major = 0, minor = 0;
@@ -168,9 +192,54 @@ void App::timingTickEnd() {
     // SDL holds this tick's draws in its queue until the present; submit them so
     // the query spans them.
     SDL_FlushRenderer(renderer_);
+    if (mainGlContext_) // with nothing queued the flush leaves the context as it was
+        SDL_GL_MakeCurrent(window_, mainGlContext_);
     tickGl().endQuery(kGlTimeElapsed);
     timingGpuActive_ = false;
     timingGpuPending_ = timingPendingValid_; // its sample is committed just after the present
+}
+
+// The review monitor's draw, for a frame with a sample pending: its CPU time up to
+// the present is charged to the sample's Output stage and UI tick, and its GPU time
+// goes to a query on its own context, read with the GUI's on the next tick. The
+// present is left out: with the review monitor holding vsync, that is the wait.
+void App::timingReviewBegin() {
+    if (!timingPendingValid_)
+        return;
+    timingReviewStartNs_ = SDL_GetTicksNS();
+    if (hdrPipeline_ || !mainGlContext_ || !reviewGlContext_ || timingGpuSupport_ != 1)
+        return;
+    const TickGl& g = tickGl();
+    SDL_GL_MakeCurrent(reviewWindow_, reviewGlContext_);
+    if (timingReviewQuery_ == 0)
+        g.genQueries(1, &timingReviewQuery_); // query objects are not shared between contexts
+    if (timingReviewQuery_ != 0) {
+        g.beginQuery(kGlTimeElapsed, timingReviewQuery_);
+        timingReviewGpuActive_ = true;
+    }
+}
+
+void App::timingReviewEnd() {
+    if (!timingPendingValid_)
+        return;
+    // Submit the queued draws, so both the CPU time and the query span them.
+    SDL_FlushRenderer(reviewRenderer_);
+    if (timingReviewGpuActive_) {
+        SDL_GL_MakeCurrent(reviewWindow_, reviewGlContext_);
+        tickGl().endQuery(kGlTimeElapsed);
+        timingReviewGpuActive_ = false;
+        timingReviewGpuPending_ = true;
+    }
+    const float ms = (float)(SDL_GetTicksNS() - timingReviewStartNs_) * 1e-6f;
+    timingPending_.outputMs += ms;
+    timingPending_.uiMs += ms;
+}
+
+SDL_GLContext App::glContextOf_(SDL_Renderer* r) {
+    // SDL's GL renderer makes the context it creates current, and the caller asks
+    // straight after creating r.
+    const char* name = r ? SDL_GetRendererName(r) : nullptr;
+    return name && std::strcmp(name, "opengl") == 0 ? SDL_GL_GetCurrentContext() : nullptr;
 }
 
 // Reads run on the cache's worker pool in parallel with each other and with the UI
@@ -233,7 +302,7 @@ void App::commitTimingSample() {
         // With a GPU time still to come, the rate waits for it (timingTickBegin):
         // the CPU time alone would put the newest point far above where it settles.
         s.sustainWanted = true;
-        if (!timingGpuPending_)
+        if (!timingGpuPending_ && !timingReviewGpuPending_)
             setSustainFps(s);
         s.aheadSec = (float)timingBufferedAheadSec();
     }

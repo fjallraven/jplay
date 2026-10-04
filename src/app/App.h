@@ -1508,13 +1508,15 @@ private:
         float readIoMs = 0.0f; // pixel data read
         float exrMs = 0.0f;    // interleave / decode into the frame buffer
         float ocioMs = 0.0f;   // UI thread: composite, OCIO/colour work, upload
-        float outputMs = 0.0f; // UI thread: readback + submit to an output / review monitor
+        float outputMs = 0.0f; // UI thread: readback + submit to an output / review monitor, and the review window's draw
         // The whole UI tick up to present, every stage above included, as CPU time:
         // the wait for the previous swap is taken before it starts (see
-        // timingTickBegin). gpuMs is the GPU time of the same tick's commands, from
-        // a timer query read on the next tick; -1 where there is none (the HDR
-        // pipeline, a review monitor, no timer queries). The display side's frame
-        // rate is bounded by the longer of the two. Neither is a stacked stage.
+        // timingTickBegin). With a review monitor up it includes that window's draw
+        // up to its present. gpuMs is the GPU time of the same tick's commands (both
+        // windows' with a review monitor), from timer queries read on the next tick;
+        // -1 where there is none (the HDR pipeline, a review monitor not on OpenGL,
+        // no timer queries). The display side's frame rate is bounded by the longer
+        // of the two. Neither is a stacked stage.
         float uiMs = 0.0f;
         float gpuMs = -1.0f;
         // Taken while playing: has a sustainable rate (below), set once gpuMs is in.
@@ -1577,6 +1579,16 @@ private:
     int timingGpuSupport_ = -1;       // -1 not checked, 0 no, 1 yes
     bool timingGpuActive_ = false;    // begun this tick, not yet ended
     bool timingGpuPending_ = false;   // ended on a tick that committed a sample
+    // The GL renderers' contexts, taken as each is created (glContextOf_); null when
+    // that renderer is not OpenGL. Either may be current at a given point, so the
+    // timer code makes the one it needs current itself. The review monitor's draw
+    // has a query of its own on its context, read along with the GUI's.
+    SDL_GLContext mainGlContext_ = nullptr;
+    SDL_GLContext reviewGlContext_ = nullptr;
+    unsigned timingReviewQuery_ = 0;      // on reviewGlContext_; 0: not created yet
+    bool timingReviewGpuActive_ = false;  // begun in renderReviewWindow, not yet ended
+    bool timingReviewGpuPending_ = false; // ended for a sample, result not read yet
+    Uint64 timingReviewStartNs_ = 0;      // when the review window's draw began
     Uint64 timingLastShownNs_ = 0;    // when the previous new frame reached the screen
 
     // ── Pixel inspector (App_PixelInspector.cpp) ─────────────────────────────
@@ -2709,6 +2721,9 @@ private:
     void commitTimingSample(); // timingPending_ -> the ring
     void timingTickBegin();    // drawFrame start, panel open: swap wait, last GPU time, start timers
     void timingTickEnd();      // just before the present: CPU time, end the GPU timer
+    void timingReviewBegin();  // renderReviewWindow start: its CPU time and GPU timer
+    void timingReviewEnd();    // just before its present: charged to the pending sample
+    static SDL_GLContext glContextOf_(SDL_Renderer* r); // r's context, just after creating it
     void setSustainFps(TimingSample& s); // see TimingSample::sustainFps
     double readCostMs(double readMs, double readsPerFrame); // read side per frame shown
     void preuploadNextFrame(); // App_Player.cpp: next frame's OCIO input upload, on an idle refresh
