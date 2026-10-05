@@ -151,6 +151,7 @@ void App::openReviewWindow(SDL_DisplayID display) {
         reviewRenderer_ = SDL_CreateRenderer(reviewWindow_, "opengl");
     if (!reviewRenderer_)
         reviewRenderer_ = SDL_CreateRenderer(reviewWindow_, nullptr);
+    reviewGlContext_ = glContextOf_(reviewRenderer_); // the timings panel's GPU timer
     if (!reviewRenderer_) {
         std::fprintf(stderr, "Review: SDL_CreateRenderer failed: %s\n", SDL_GetError());
         SDL_DestroyWindow(reviewWindow_);
@@ -208,6 +209,11 @@ void App::closeReviewWindow() {
         reviewGpuDevice_ = nullptr;
     }
     reviewHdr_ = false;
+    // The timer query went with the context.
+    reviewGlContext_ = nullptr;
+    timingReviewQuery_ = 0;
+    timingReviewGpuActive_ = false;
+    timingReviewGpuPending_ = false;
     // The main window was rendering the SDR companion display while the HDR review
     // monitor owned the selected one (mainForcedSdrOcio); force one recomposite so its
     // color pass is rebuilt with the selected transform now that it is the reference.
@@ -305,6 +311,7 @@ void App::renderReviewWindow() {
     if (!reviewRenderer_)
         return;
 
+    timingReviewBegin(); // Playback Timings: this draw is part of the frame's output
     SDL_SetRenderDrawColor(reviewRenderer_, 0, 0, 0, 255);
     SDL_RenderClear(reviewRenderer_);
 
@@ -350,5 +357,6 @@ void App::renderReviewWindow() {
         }
     }
 
+    timingReviewEnd();
     SDL_RenderPresent(reviewRenderer_); // vsync here: paces the loop to the review monitor
 }

@@ -195,6 +195,7 @@ void App::rebuildRenderer_(bool toHdr) {
         // Extremely unlikely; drop to OpenGL SDR (loses the HDR pipeline / HDR review).
         renderer_ = SDL_CreateRenderer(window_, "opengl");
         if (!renderer_) renderer_ = SDL_CreateRenderer(window_, nullptr);
+        mainGlContext_ = glContextOf_(renderer_);
         hdrPipeline_ = false;
         toHdr = false;
     }
@@ -719,6 +720,7 @@ bool App::init(int argc, char** argv) {
         std::fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
         return false;
     }
+    mainGlContext_ = glContextOf_(renderer_); // the timings panel's GPU timer
     if (jplayDebugLogging())
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  [startup] SDL_CreateRenderer: %.1f ms", elapsedMs());
     // Which GL implementation we actually got. A software rasteriser ("GDI
@@ -4324,8 +4326,11 @@ void App::render() {
     renderBinDragGhost();                                      // dragged source card, follows the cursor
     timingTickEnd();                                           // the UI tick's CPU time, and the end of its GPU timer
     SDL_RenderPresent(renderer_);
-    if (timingPendingValid_)
-        commitTimingSample(); // stamped after the present: as near to "on screen" as can be told
+    // Stamped after the present: as near to "on screen" as can be told. With a
+    // review monitor up the sample waits for its window too (below): that draw is
+    // part of the frame's output, and its present is the one that paces playback.
+    if (timingPendingValid_ && !reviewActive())
+        commitTimingSample();
 
     // Hand HDR to whichever sink owns it now (main window vs. external output). Runs
     // before syncReviewWindow so the main window is already sRGB by the time a review
@@ -4338,6 +4343,8 @@ void App::render() {
     syncReviewWindow();
     if (reviewActive())
         renderReviewWindow();
+    if (timingPendingValid_)
+        commitTimingSample();
 }
 
 // Build the title-bar icon texture from the executable's embedded icon. Decoded

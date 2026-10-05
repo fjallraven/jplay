@@ -1274,6 +1274,9 @@ void App::renderPlayer() {
                 // Playback Timings: everything from here to the output push is the
                 // OCIO stage (composite, colour work, upload).
                 const Uint64 tDisplay0 = timingsOpen_ ? SDL_GetTicksNS() : 0;
+                // The HDR review monitor's upload happens inside that span but is a
+                // sink's cost, so it is taken out of OCIO and charged to Output.
+                Uint64 reviewFeedNs = 0;
 
                 // The colour space each half is read in. Resolved before the
                 // composite because a dissolve joining two different ones cannot be
@@ -1464,7 +1467,10 @@ void App::renderPlayer() {
                     // there, so no readback of this renderer is needed for it.
                     if (reviewActive() && reviewHdr_) {
                         reviewSrcSceneLinear_ = hdrFrameManaged_;
+                        const Uint64 tFeed0 = timingsOpen_ ? SDL_GetTicksNS() : 0;
                         feedReviewSource_(hdrPixels_.data(), fr->width, fr->height);
+                        if (timingsOpen_)
+                            reviewFeedNs += SDL_GetTicksNS() - tFeed0;
                     }
                 } else {
                 // Luminance mode: a true HDR nit heatmap of the scene-linear data,
@@ -1587,8 +1593,10 @@ void App::renderPlayer() {
                         ts.skippedFrames = playSkippedFrames_;
                     }
                     playLateValid_ = false;
-                    ts.ocioMs = (float)(tOutput0 - tDisplay0) * 1e-6f;
-                    ts.outputMs = (float)(tEnd - tOutput0) * 1e-6f; // SDR readback; HDR adds its own below
+                    ts.ocioMs = (float)(tOutput0 - tDisplay0 - reviewFeedNs) * 1e-6f;
+                    // SDR readback (or the HDR review upload); the HDR readback adds its
+                    // own below, the review window's draw in renderReviewWindow.
+                    ts.outputMs = (float)(tEnd - tOutput0 + reviewFeedNs) * 1e-6f;
                     // A dissolve's frame needed both halves read, so both are charged.
                     // It is fresh when either half is: something was read for it.
                     ReadTiming rt;
@@ -1721,7 +1729,7 @@ void App::renderPlayer() {
                 // whenever the pass really produced an HDR rendering; every other sink —
                 // an SDR review monitor, or an output device on any non-PQ frame — takes
                 // the tonemapped 8-bit image. An HDR review monitor transforms on its own
-                // device (feedReviewSource_ above), so it costs nothing here.
+                // device (feedReviewSource_ above), so it needs no readback here.
                 const OutputTransfer outXfer =
                     (output_.active() && output_.wantsHdr()) ? hdrProgramTransfer_()
                                                             : OutputTransfer::None;
