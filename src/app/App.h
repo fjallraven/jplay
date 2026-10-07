@@ -358,8 +358,8 @@ private:
     float tlHoverX_ = 0.0f;      // cursor x while tlHoverActive_
     // ── Ruler hover frame-preview thumbnail (Settings-gated, pause only) ──────
     // A ~128px-wide thumbnail drawn above the faded hover indicator showing the
-    // frame under the cursor. Frames are resolved at most once per 5px of cursor
-    // travel, then either lifted from the resident full-res FrameCache or decoded
+    // frame under the cursor, snapped to every kPreviewStep frames of the clip.
+    // Frames are resolved at most once per 5px of cursor travel, then either lifted from the resident full-res FrameCache or decoded
     // off the main thread, downscaled once, and kept in a small in-memory LRU
     // keyed by (mediaId, sourceFrame). Color conversion is skipped — the source's
     // baked 8-bit RGBA is used directly. Cleared on project change.
@@ -369,6 +369,7 @@ private:
     std::unordered_set<CacheKey, CacheKeyHash> previewInflight_;  // decode in flight
     CacheKey previewKey_;                 // frame wanted under the cursor
     int previewClipId_ = -1;              // clip under the cursor at last resolve
+    std::string previewMediaId_;          // its source (gates showing a stale frame)
     bool previewHasKey_ = false;
     float previewLastResolveX_ = 0.0f;    // cursor x at last resolve (5px throttle)
     bool previewResolvedOnce_ = false;
@@ -376,7 +377,7 @@ private:
     SDL_Texture* previewTex_ = nullptr;   // reusable upload target
     int previewTexW_ = 0, previewTexH_ = 0;
     CacheKey previewDisplayedKey_;        // key currently uploaded to previewTex_
-    int previewDisplayedClipId_ = -1;     // clip the uploaded thumbnail belongs to
+    std::string previewDisplayedMediaId_; // source the uploaded thumbnail belongs to
     bool previewDisplayedValid_ = false;
     // Slow-network guard: set by a preview worker when a single frame read exceeds
     // kPreviewSlowMs. Once latched, ensurePreviewThumb() stops decoding on demand
@@ -390,6 +391,7 @@ private:
     std::unordered_set<std::string> previewThumbWritten_;
 
     static constexpr int kPreviewW = 128;   // thumbnail width in px
+    static constexpr int64_t kPreviewStep = 24; // one thumbnail per this many frames
     static constexpr size_t kPreviewMax = 64; // LRU entry cap
     static constexpr int64_t kPreviewSlowMs = 500; // read slower than this → degrade
 

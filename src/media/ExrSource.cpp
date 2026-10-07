@@ -25,10 +25,134 @@
 #include <filesystem>
 #include <optional>
 #include <set>
+#include <stdexcept>
+#include <vector>
+
+#ifndef _WIN32
+#include <OpenEXR/ImfIO.h>
+#include <cerrno>
+#include <cstdlib>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
 static std::atomic<int> g_exrReads{0};
+
+#ifndef _WIN32
+// The file under an OpenEXR read of a single-part file, read whole in large
+// blocks once its headers are parsed, and every later read served from memory.
+// OpenEXR otherwise reads one chunk at a time -- 100-400 KB on a 4K frame, a
+// single scanline (tens of KB) for ZIPS -- each a synchronous round trip. On
+// the studio NFS share a cold single stream measured 137-217 MB/s in 64 KB reads
+// against 800 MB/s in 4 MB ones, and a lone 4K ZIPS frame (the first frame, a
+// scrub target) read in 82-92 ms instead of 162-179 ms. Eight workers reading at
+// once gained nothing either way: between them they already keep enough
+// requests in flight. JPLAY_EXR_WHOLEFILE=0 turns it off.
+//
+// Stateless (pread), as the library's own file access is, so its decode threads
+// read concurrently rather than serialized behind the library's lock.
+class WholeFileExrStream : public Imf::IStream {
+public:
+    explicit WholeFileExrStream(const char* path) : Imf::IStream(path) {
+        do {
+            fd_ = ::open(path, O_RDONLY | O_CLOEXEC);
+        } while (fd_ < 0 && errno == EINTR);
+        if (fd_ < 0)
+            throw std::runtime_error(std::string("cannot open: ") + std::strerror(errno));
+    }
+    ~WholeFileExrStream() override {
+        ::close(fd_);
+        // The buffer stays with the thread for its next frame, unless this file
+        // was an outlier that would otherwise pin its size for good.
+        if (data_ && data_->capacity() > kKeepBytes)
+            std::vector<char>().swap(*data_);
+    }
+
+    static bool enabled() {
+        static const bool on = [] {
+            const char* v = std::getenv("JPLAY_EXR_WHOLEFILE");
+            return !(v && v[0] == '0');
+        }();
+        return on;
+    }
+
+    // Read the whole file into this thread's buffer. On the calling thread, before
+    // readPixels: OpenEXR's pool threads only read once that has started, and
+    // read through data_, which points at this thread's buffer while it waits.
+    // Leaves a file too large to be worth holding to chunk-by-chunk reads.
+    void loadAll() {
+        const int64_t total = size();
+        if (total <= 0 || (uint64_t)total > kMaxWholeBytes)
+            return;
+        static thread_local std::vector<char> buffer;
+        buffer.resize((size_t)total);
+        uint64_t got = 0;
+        while (got < (uint64_t)total) {
+            const uint64_t want = std::min<uint64_t>(kBlockBytes, (uint64_t)total - got);
+            const int64_t n = readAt(buffer.data() + got, want, got);
+            if (n <= 0)
+                break; // shorter than fstat said (a file still being written): serve what there is
+            got += (uint64_t)n;
+        }
+        buffer.resize((size_t)got);
+        data_ = &buffer;
+    }
+
+    bool isStatelessRead() const override { return true; }
+    int64_t read(void* buf, uint64_t sz, uint64_t offset) override {
+        if (data_) {
+            if (offset >= data_->size())
+                return 0;
+            const uint64_t n = std::min<uint64_t>(sz, data_->size() - offset);
+            std::memcpy(buf, data_->data() + offset, (size_t)n);
+            return (int64_t)n;
+        }
+        return readAt(static_cast<char*>(buf), sz, offset);
+    }
+    // The stateful interface is pure virtual, so it is here too; with stateless
+    // reads on offer the library uses it for nothing.
+    bool read(char c[], int n) override {
+        if (read(c, (uint64_t)n, pos_) != (int64_t)n)
+            throw std::runtime_error("unexpected end of file");
+        pos_ += (uint64_t)n;
+        return true;
+    }
+    uint64_t tellg() override { return pos_; }
+    void seekg(uint64_t pos) override { pos_ = pos; }
+    int64_t size() override {
+        struct stat st;
+        return ::fstat(fd_, &st) == 0 ? (int64_t)st.st_size : -1;
+    }
+
+private:
+    // Short of `sz` only at the end of the file, which is not an error here.
+    int64_t readAt(char* p, uint64_t sz, uint64_t offset) {
+        uint64_t got = 0;
+        while (got < sz) {
+            const ssize_t n = ::pread(fd_, p + got, (size_t)(sz - got), (off_t)(offset + got));
+            if (n < 0 && errno == EINTR)
+                continue;
+            if (n < 0)
+                return -1;
+            if (n == 0)
+                break;
+            got += (uint64_t)n;
+        }
+        return (int64_t)got;
+    }
+
+    static constexpr uint64_t kBlockBytes = 4ull << 20;
+    static constexpr uint64_t kMaxWholeBytes = 1ull << 30;
+    static constexpr size_t kKeepBytes = 256u << 20;
+
+    int fd_ = -1;
+    uint64_t pos_ = 0;
+    std::vector<char>* data_ = nullptr; // the whole file, once loadAll() has run
+};
+#endif
 
 // pixelAspectRatio is a required EXR attribute, so it is always present — but
 // writers do emit 0 or a NaN for it, and a bad value would collapse or explode
@@ -430,17 +554,36 @@ FramePtr ExrSequenceSource::read(int64_t index, ReadTiming* timing) {
             // OpenEXR's constructors open the file and parse its headers: the wait.
             // readPixels then reads and decodes in one call, which is exrMs whole.
             const double tOpen = timing ? readTimingNowMs() : 0.0;
+            // A single-part file is read through WholeFileExrStream. Only a single-
+            // part one: of a multi-part file only the image's part is read, and the
+            // others can be many times its size. Declared first, so it outlives the
+            // files reading from it.
+#ifndef _WIN32
+            std::optional<WholeFileExrStream> stream;
+            if (layout_.parts.size() == 1 && WholeFileExrStream::enabled())
+                stream.emplace(file.c_str());
+#endif
             std::optional<Imf::MultiPartInputFile> mp;
             std::optional<Imf::InputPart> part;
             std::optional<Imf::RgbaInputFile> rgbaFile;
             Imath::Box2i disp, data;
             if (plan->direct) {
-                mp.emplace(file.c_str(), threads);
+#ifndef _WIN32
+                if (stream)
+                    mp.emplace(*stream, threads);
+                else
+#endif
+                    mp.emplace(file.c_str(), threads);
                 part.emplace(*mp, plan->part);
                 disp = part->header().displayWindow();
                 data = part->header().dataWindow();
             } else {
-                rgbaFile.emplace(plan->part, file.c_str(), plan->rgbaLayer, threads);
+#ifndef _WIN32
+                if (stream)
+                    rgbaFile.emplace(plan->part, *stream, plan->rgbaLayer, threads);
+                else
+#endif
+                    rgbaFile.emplace(plan->part, file.c_str(), plan->rgbaLayer, threads);
                 disp = rgbaFile->displayWindow();
                 data = rgbaFile->dataWindow();
             }
@@ -456,6 +599,10 @@ FramePtr ExrSequenceSource::read(int64_t index, ReadTiming* timing) {
                         t->exrMs += readTimingNowMs() - from;
                 }
             } pixelStamp{ timing, tPixels };
+#ifndef _WIN32
+            if (stream)
+                stream->loadAll(); // part of the read, so inside exrMs with the rest of it
+#endif
 
             dispW = disp.max.x - disp.min.x + 1;
             dispH = disp.max.y - disp.min.y + 1;

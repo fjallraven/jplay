@@ -4311,6 +4311,7 @@ void App::updateFramePreview() {
     if (!showFramePreview_ || playing_ || !tlHoverActive_) {
         previewHasKey_ = false;
         previewClipId_ = -1;
+        previewMediaId_.clear();
         previewResolvedOnce_ = false; // re-enter resolves immediately
         return;
     }
@@ -4328,10 +4329,16 @@ void App::updateFramePreview() {
     auto media = timeline_.findMediaById(clip->mediaId);
     if (!media || media->openFailed()) { previewHasKey_ = false; previewClipId_ = -1; return; }
 
-    int64_t sf = clip->sourceOffset + (hf - clip->timelineStart);
+    // Snap to one thumbnail per kPreviewStep frames, counted from the clip's own
+    // start so the sampled frame always lies inside the clip. Fewer distinct frames
+    // means fewer decodes and far more LRU hits while scrubbing.
+    int64_t rel = hf - clip->timelineStart;
+    rel -= rel % kPreviewStep;
+    int64_t sf = clip->sourceOffset + rel;
     CacheKey key{ clip->mediaId, sf };
     previewKey_ = key;
     previewClipId_ = clip->id;
+    previewMediaId_ = clip->mediaId;
     previewHasKey_ = true;
     // The frame we're about to have is also a usable Overview / SOURCES thumbnail
     // for this clip, so pass those keys along for the gap-fill write-through.
@@ -4355,12 +4362,30 @@ void App::ensurePreviewThumb(const CacheKey& key, std::shared_ptr<Media> media,
     if (previewInflight_.count(key))
         return; // decode already pending
 
+    const uint64_t gen = previewGen_;
+
     // Fast path: the display cache already holds this exact frame at full res.
+    // The downscale still walks every source pixel (a 4K frame is tens of ms), so
+    // it runs on a worker too — on the UI thread it froze the panel mid-scrub.
     if (FramePtr f = cache_->get(key); f && f->width > 0 && f->height > 0) {
-        PreviewThumb t;
-        downscaleToWidth(*f, kPreviewW, t.rgba, t.w, t.h);
-        if (t.w > 0) storePreview(key, std::move(t));
-        fillThumbsFromPreviewFrame(f, clipKey, srcKey);
+        previewInflight_.insert(key);
+        auto out = std::make_shared<PreviewThumb>();
+        work_.submit(
+            [f, out](const std::atomic<bool>& stop) {
+                if (stop) return;
+                downscaleToWidth(*f, kPreviewW, out->rgba, out->w, out->h);
+            },
+            [this, key, gen, out, f, clipKey, srcKey]() {
+                previewInflight_.erase(key);
+                if (gen != previewGen_) return;
+                if (out->w > 0 && out->h > 0)
+                    storePreview(key, std::move(*out));
+                fillThumbsFromPreviewFrame(f, clipKey, srcKey);
+                if (previewHasKey_ && !(previewKey_ == key)) { // see slow path
+                    previewResolvedOnce_ = false;
+                    updateFramePreview();
+                }
+            });
         return;
     }
 
@@ -4372,14 +4397,13 @@ void App::ensurePreviewThumb(const CacheKey& key, std::shared_ptr<Media> media,
     if (previewSlowAccess_.load(std::memory_order_relaxed))
         return;
     if (!previewInflight_.empty())
-        return; // one on-demand decode at a time
+        return; // one on-demand decode at a time (re-resolved when it lands)
 
     // Slow path: decode on a worker thread, downscale, publish on the main thread.
     // The full-res frame is also handed back so playback can reuse it (see below).
     previewInflight_.insert(key);
     auto out = std::make_shared<PreviewThumb>();
     auto full = std::make_shared<FramePtr>();
-    const uint64_t gen = previewGen_;
     work_.submit(
         [this, media, srcFrame, out, full](const std::atomic<bool>& stop) {
             if (stop) return;
@@ -4408,6 +4432,14 @@ void App::ensurePreviewThumb(const CacheKey& key, std::shared_ptr<Media> media,
             if (out->w > 0 && out->h > 0)
                 storePreview(key, std::move(*out));
             fillThumbsFromPreviewFrame(*full, clipKey, srcKey);
+            // The cursor may have moved on while this decode ran, and any request
+            // made meanwhile was dropped by the one-at-a-time cap above. Resolve
+            // again at the current cursor so the preview catches up even if the
+            // mouse has since stopped.
+            if (previewHasKey_ && !(previewKey_ == key)) {
+                previewResolvedOnce_ = false;
+                updateFramePreview();
+            }
         });
 }
 
@@ -4461,9 +4493,10 @@ void App::clearFramePreview() {
     previewInflight_.clear();
     previewHasKey_ = false;
     previewClipId_ = -1;
+    previewMediaId_.clear();
     previewResolvedOnce_ = false;
     previewDisplayedValid_ = false;
-    previewDisplayedClipId_ = -1;
+    previewDisplayedMediaId_.clear();
     previewSlowAccess_.store(false, std::memory_order_relaxed); // re-probe new media
     previewThumbWritten_.clear(); // thumbnail dir/keys change with the project
     waveforms_.clear(); // media set changed: re-decode envelopes on demand
@@ -4494,16 +4527,18 @@ void App::renderFramePreview() {
             if (previewTex_ && !(previewDisplayedValid_ && previewDisplayedKey_ == previewKey_)) {
                 SDL_UpdateTexture(previewTex_, nullptr, t.rgba.data(), t.w * 4);
                 previewDisplayedKey_ = previewKey_;
-                previewDisplayedClipId_ = previewClipId_;
+                previewDisplayedMediaId_ = previewMediaId_;
                 previewDisplayedValid_ = true;
             }
         }
     }
 
-    // Crossing into a different clip closes the panel immediately: the "keep the
-    // last frame up" lag above is only wanted for a fast scrub within one clip, so
-    // that we never briefly show the previous clip's frame over a new clip's range.
-    if (previewDisplayedValid_ && previewDisplayedClipId_ != previewClipId_)
+    // Crossing onto a different source hides the panel until that source's frame
+    // is ready: the "keep the last frame up" lag above is only wanted while the
+    // cursor stays on the same source, so we never show one shot's frame over
+    // another's range. Off any clip (gap) there is nothing to show either.
+    if (previewDisplayedValid_
+            && (!previewHasKey_ || previewDisplayedMediaId_ != previewMediaId_))
         previewDisplayedValid_ = false;
 
     if (!previewTex_ || !previewDisplayedValid_)
