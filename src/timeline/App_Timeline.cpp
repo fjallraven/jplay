@@ -5206,30 +5206,39 @@ void App::findAndAttachAudio(int clipId) {
 }
 
 void App::findAndAttachAudioAll(const std::vector<int>* onlyClipIds) {
-    // Snapshot the active sequence's clips to consider before attaching, since
-    // addPairedAudio mutates seq.clips. Skip any that already has audio under it.
+    // Snapshot the clips to consider before attaching, since addPairedAudio
+    // mutates seq.clips. Every sequence is scanned, not just the active one: a
+    // timeline built from many sources holds one sequence per source, so the
+    // active sequence alone is a single clip. Skip any that already has audio
+    // under it (in its own sequence).
     struct Target { int owner; int track; int clipId; int64_t start; int64_t dur; std::string path; };
     auto targets = std::make_shared<std::vector<Target>>();
-    const Sequence& seq = activeSequence();
-    for (const Clip& clip : seq.clips) {
-        if (clip.audio)
-            continue;
-        if (onlyClipIds &&
-            std::find(onlyClipIds->begin(), onlyClipIds->end(), clip.id) == onlyClipIds->end())
-            continue;
-        auto media = timeline_.findMediaById(clip.mediaId);
-        if (!media || media->type() != ClipType::ImageSequence)
-            continue;
-        bool hasAudio = false;
-        for (const Clip& o : seq.clips)
-            if (o.audio && clip.timelineStart < o.end() && clip.end() > o.timelineStart) {
-                hasAudio = true;
-                break;
+    for (int s = 0; s < (int)timeline_.sequences.size(); ++s) {
+        const Sequence& seq = timeline_.sequences[s];
+        for (const Clip& clip : seq.clips) {
+            if (clip.audio)
+                continue;
+            if (onlyClipIds &&
+                std::find(onlyClipIds->begin(), onlyClipIds->end(), clip.id) == onlyClipIds->end())
+                continue;
+            auto media = timeline_.findMediaById(clip.mediaId);
+            if (!media || media->type() != ClipType::ImageSequence) {
+                // not an image sequence skip it
+                continue;
             }
-        if (hasAudio)
-            continue;
-        targets->push_back({ activeSequenceIdx_, clip.track, clip.id, clip.timelineStart, clip.duration,
-                             media->resolvedPath() });
+            const Clip* under = nullptr;
+            for (const Clip& o : seq.clips)
+                if (o.audio && clip.timelineStart < o.end() && clip.end() > o.timelineStart) {
+                    under = &o;
+                    break;
+                }
+            if (under) {
+                // clip has audio under it already, skip it
+                continue;
+            }
+            targets->push_back({ s, clip.track, clip.id, clip.timelineStart, clip.duration,
+                                 media->resolvedPath() });
+        }
     }
 
     if (targets->empty()) {
