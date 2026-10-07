@@ -150,9 +150,10 @@ void FrameCache::request(const CacheKey& key, std::shared_ptr<Media> media, int6
     staged_.push_back({ key, std::move(media), srcFrame, priority });
 }
 
-void FrameCache::endRequests() {
+void FrameCache::endRequests(bool holdOnScreen) {
     {
         std::lock_guard<std::mutex> lk(mtx_);
+        bool onScreenPending = false;
         // The epoch is bumped here rather than in beginRequests() so it changes
         // together with the set it describes: a worker evicting in the gap between
         // the two would otherwise see an empty wanted set and be free to drop the
@@ -174,10 +175,27 @@ void FrameCache::endRequests() {
             // will have its result thrown away on arrival, so leaving the frame out
             // of the batch would mean nothing is decoding it at all (see inflight_).
             auto inf = inflight_.find(s.key);
-            if (inf != inflight_.end() && inf->second == generation_)
+            if (inf != inflight_.end() && inf->second == generation_) {
+                // An on-screen frame a prefetch read is already on: the hold
+                // adopts that read, so the rest of the pool waits for it as it
+                // would for a read started as on-screen.
+                if (holdOnScreen && s.priority <= 0 && !heldReads_.count(s.key)) {
+                    heldReads_[s.key] = 1;
+                    ++holdReads_;
+                    firstFrameHold_ = true;
+                }
                 continue;
+            }
+            if (s.priority <= 0)
+                onScreenPending = true;
             pending_.push_back(std::move(s));
         }
+        if (holdOnScreen && onScreenPending)
+            firstFrameHold_ = true;
+        // Nothing on screen left to wait for: drop a hold that no finishing read
+        // would otherwise release (its batch was replaced, or its read was doomed).
+        else if (firstFrameHold_ && holdReads_ == 0 && !onScreenPending)
+            firstFrameHold_ = false;
     }
     cv_.notify_all();
 }
@@ -355,9 +373,10 @@ void FrameCache::workerLoop() {
             busyVideos_.insert(job.key.media);
         uint64_t gen = generation_;
         const uint64_t mediaEpoch = mediaEpochLocked(job.key.media);
-        const bool held = firstFrameHold_ && job.priority <= 0;
-        if (held)
+        if (firstFrameHold_ && job.priority <= 0) {
+            ++heldReads_[job.key];
             ++holdReads_;
+        }
         accountFillLocked();
         ++busy_;
 
@@ -388,7 +407,10 @@ void FrameCache::workerLoop() {
             busyVideos_.erase(job.key.media);
             cv_.notify_all(); // wake workers blocked on this video's queued frames
         }
-        if (held) {
+        // Started held, or adopted by endRequests() while it ran.
+        if (auto h = heldReads_.find(job.key); h != heldReads_.end()) {
+            if (--h->second == 0)
+                heldReads_.erase(h);
             --holdReads_;
             // A doomed read (flushed by a project load) settles nothing: the
             // batch that replaced it has its own on-screen frame to wait for.

@@ -3630,7 +3630,11 @@ void App::submitCacheRequests() {
     }
     for (int d = 1; d <= behind; ++d)
         requestFrame(timeline_.playhead - (int64_t)d, ahead + d);
-    cache_->endRequests();
+    // Paused, a moved playhead is waiting on its frame alone, as at startup: the
+    // pool reads it before any of the look-ahead, rather than sharing the disk with
+    // it. (A playhead frame already resident arms nothing.) Not while playing: there
+    // the look-ahead is what keeps the next frames coming.
+    cache_->endRequests(!playing_);
 }
 
 // ---------------------------------------------------------------- rendering

@@ -48,7 +48,11 @@ public:
     // The media's decoder is opened lazily on a worker thread the first time one
     // of its frames is pulled, so a freshly-loaded project never blocks the UI.
     void request(const CacheKey& key, std::shared_ptr<Media> media, int64_t srcFrame, int priority);
-    void endRequests(); // publish the batch; drops all not-yet-started requests
+    // Publish the batch; drops all not-yet-started requests. `holdOnScreen`
+    // re-arms the hold the first frames get at startup (see firstFrameHold_): while
+    // the batch's on-screen frames (priority <= 0) are still to read, no worker
+    // starts a prefetch read, so a paused seek is not slowed by the fill around it.
+    void endRequests(bool holdOnScreen = false);
 
     // A media whose frames the workers could not read: the decoder wouldn't open,
     // or readFrame kept failing. Without this a source that opens but decodes to
@@ -150,9 +154,15 @@ private:
         auto it = mediaEpoch_.find(mediaId);
         return it == mediaEpoch_.end() ? 0 : it->second;
     }
-    // holding first frame
+    // While up, no prefetch read (priority > 0) starts as long as an on-screen read
+    // is in flight. Up from construction for the first frames, and re-armed by
+    // endRequests(true) for the on-screen frames of a paused seek.
     bool firstFrameHold_ = true;
     int holdReads_ = 0; // on-screen reads in flight while the hold is up
+    // Those reads by key, counted: the worker that finishes one releases its count.
+    // A key can be entered by endRequests() too, for an on-screen frame a prefetch
+    // read had already started on before the seek landed there.
+    std::unordered_map<CacheKey, int, CacheKeyHash> heldReads_;
     // fillRateCeiling(): time spent with every worker reading, and the reads that
     // finished in it, both halved each time the time passes kFillWindowNs.
     void accountFillLocked(); // at every change of busy_
