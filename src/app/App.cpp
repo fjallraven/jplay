@@ -1878,7 +1878,13 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
         else if (!compactTimeline_) setTimelineTool(TimelineTool::Razor);
         break;
     case SDLK_V:
-        if (ctrl) pasteClips();
+        if (ctrl) {
+            // Media paths on the system clipboard come in as sources, unless clips
+            // were copied inside jplay since the clipboard last changed.
+            if ((clipboard_.empty() || systemClipboardNewer_) && pasteSourcesFromClipboard())
+                break;
+            pasteClips();
+        }
         // Bare V selects the cursor tool; the sequence view-filter popup it used
         // to open moved onto Shift+V, which was already opening it too - the case
         // did not test shift.
@@ -2143,6 +2149,9 @@ void App::handleEvent(SDL_Event& e) {
         break;
     case SDL_EVENT_KEY_UP:
         onKeyUp(e.key);
+        break;
+    case SDL_EVENT_CLIPBOARD_UPDATE:
+        systemClipboardNewer_ = true;
         break;
     case SDL_EVENT_DROP_BEGIN:
         dropFirstFile_ = true; // start a new drop batch

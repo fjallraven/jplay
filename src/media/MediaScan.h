@@ -12,4 +12,8 @@ namespace MediaScan {
 // re-expands to the full sequence via ImageSeq::files).
 std::vector<std::string> collectDirectoryMedia(const std::filesystem::path& dir);
 
+// True when `path` has one of the video container extensions a folder scan
+// picks up (.mov, .mp4, .mxf, ...).
+bool isVideoPath(const std::string& path);
+
 } // namespace MediaScan

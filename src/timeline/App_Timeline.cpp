@@ -7,6 +7,7 @@
 #include "AppInternal.h"
 #include "AudioEngine.h" // master volume: App::setVolume / toggleMute
 #include "AudioSource.h"
+#include "ClipboardFiles.h"
 #include "MediaSource.h"
 #include "ExrSource.h"
 #include "ImageSeq.h"
@@ -4010,6 +4011,7 @@ void App::copySelectedClips() {
         return a.track != b.track ? a.track < b.track : a.timelineStart < b.timelineStart;
     });
     clipboard_ = std::move(buf);
+    systemClipboardNewer_ = false;
     setStatus(clipboard_.size() == 1 ? "COPIED CLIP"
                                      : "COPIED " + std::to_string(clipboard_.size()) + " CLIPS");
 }
@@ -4598,6 +4600,68 @@ void App::addMediaFolder(const std::string& dir) {
         }
     }
     setStatus("ADDED " + std::to_string(added) + " ITEM(S) FROM " + fileLabel(dir));
+}
+
+bool App::pasteSourcesFromClipboard() {
+    // Folders expand to the media they hold, as a folder drop does; anything that
+    // is not an image, image sequence or video is left out.
+    std::vector<std::string> paths;
+    for (const std::string& p : clipboardFilePaths()) {
+        std::error_code ec;
+        if (std::filesystem::is_directory(std::filesystem::u8path(p), ec)) {
+            for (std::string& m : MediaScan::collectDirectoryMedia(std::filesystem::u8path(p)))
+                if (!isAudioPath(m))
+                    paths.push_back(std::move(m));
+        } else if (ImageSeq::isSequencePath(p) || MediaScan::isVideoPath(p)) {
+            paths.push_back(p);
+        }
+    }
+    if (paths.empty())
+        return false;
+
+    if (launcherVisible()) {
+        // From the launcher: a new project with the pasted media on its timeline.
+        confirmDiscard("New Project", [this, paths] {
+            newProject();
+            hideLauncher_ = true;
+            addPastedSourcesToTimeline(paths);
+        });
+        return true;
+    }
+    if (!timeline_.hasClips()) {
+        addPastedSourcesToTimeline(paths);
+        return true;
+    }
+
+    // A project with work on its timeline: the paste must not disturb the cut, so
+    // the media goes to the SOURCES bin only, to be placed from there.
+    std::string first;
+    int added = 0;
+    for (const std::string& p : paths)
+        if (ensureMedia(p, mediaTypeForPath(p))) { // sets its own status on failure
+            if (added++ == 0)
+                first = p;
+        }
+    if (added == 0)
+        return true;
+    hostSnapshotDirty_ = true; // no clip was placed, so nothing else marks it
+    setStatus(added == 1 ? "SOURCE " + fileLabel(first) + " ADDED TO PROJECT"
+                         : std::to_string(added) + " SOURCES ADDED TO PROJECT");
+    return true;
+}
+
+void App::addPastedSourcesToTimeline(const std::vector<std::string>& paths) {
+    std::string first;
+    int added = 0;
+    for (const std::string& p : paths)
+        if (addMediaFile(p)) {
+            if (added++ == 0)
+                first = p;
+        }
+    if (added == 0)
+        return; // addMediaFileAt has already said why
+    setStatus(added == 1 ? "SOURCE " + fileLabel(first) + " ADDED TO TIMELINE"
+                         : std::to_string(added) + " SOURCES ADDED TO TIMELINE");
 }
 
 // A text drop rather than a file one: dragging a row out of a web app hands over

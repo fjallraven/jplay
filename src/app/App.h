@@ -1368,6 +1368,10 @@ private:
     // by (track, start); paste re-anchors the group at the playhead. Entries
     // whose media is no longer in the pool (new/other project) are skipped.
     std::vector<Clip> clipboard_;
+    // The system clipboard changed (SDL_EVENT_CLIPBOARD_UPDATE) since the last clip
+    // copy. Ctrl+V pastes whichever of the two was filled last, so a path copied
+    // after some clips wins, and clips copied after a path win back.
+    bool systemClipboardNewer_ = false;
 
     // Gap: empty span between two clips on one track. Hovered gaps draw a gray
     // dotted box; a clicked one is selected and Delete closes it (global ripple).
@@ -3424,6 +3428,13 @@ private:
     // adds a row).
     void copySelectedClips();
     void pasteClips();
+    // Ctrl+V with image / sequence / video paths on the system clipboard (files
+    // copied in the file manager, or path text). From the launcher it starts a new
+    // project and places them; on an empty timeline it places them; with clips on
+    // the timeline it only adds them to the SOURCES bin. Returns false, doing
+    // nothing, when the clipboard names no such media.
+    bool pasteSourcesFromClipboard();
+    void addPastedSourcesToTimeline(const std::vector<std::string>& paths);
     int firstFreeTrackFor(bool audio, int64_t start, int64_t duration) const;
     // Clip multi-selection helpers (selectedClipIds_ is the set, selectedClipId_ the primary).
     bool isClipSelected(int id) const;

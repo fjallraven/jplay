@@ -290,6 +290,7 @@ add_executable(jplay WIN32
     src/app/App_About.cpp
     src/ui/AppIcon.cpp
     src/io/RevealFile.cpp
+    src/io/ClipboardFiles.cpp
     src/ui/IconFont.cpp
     src/ui/TextFont.cpp
     src/media/ThumbnailCache.cpp

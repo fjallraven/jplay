@@ -63,6 +63,10 @@ bool naturalLess(const std::string& a, const std::string& b) {
 
 namespace MediaScan {
 
+bool isVideoPath(const std::string& path) {
+    return isVideoExt(lowerExt(fs::u8path(path)));
+}
+
 std::vector<std::string> collectDirectoryMedia(const fs::path& dir) {
     std::error_code ec;
     std::vector<std::string> videos, stills;
