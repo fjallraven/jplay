@@ -1180,6 +1180,8 @@ private:
     int         uiScaleListHover_ = -1;
     TextInput   cacheGbFld_;           // frame-cache size (GiB) editable field
     SDL_FRect   cacheGbFldBox_{};      // its box rect (set each frame in renderSettingsPanel)
+    SDL_FRect   cacheGbUpBox_{};       // spinner step-up half, right of the field
+    SDL_FRect   cacheGbDownBox_{};     // spinner step-down half
     float       cacheGb_ = 8.0f;       // current frame-cache budget in GiB
     TextInput   decodeThreadsFld_;     // frame-cache decode-worker count editable combo
     SDL_FRect   decodeThreadsFldBox_{};// its box rect (set each frame in renderSettingsPanel)

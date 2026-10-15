@@ -34,4 +34,10 @@ inline void drawCaretDown(SDL_Renderer* r, float cx, float cy) {
     drawLine(r, cx, cy + 3.0f, cx + 3.0f, cy);
 }
 
+// Its mirror, for the up half of a numeric spinner.
+inline void drawCaretUp(SDL_Renderer* r, float cx, float cy) {
+    drawLine(r, cx - 3.0f, cy, cx, cy - 3.0f);
+    drawLine(r, cx, cy - 3.0f, cx + 3.0f, cy);
+}
+
 } // namespace jplay

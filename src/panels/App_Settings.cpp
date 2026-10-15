@@ -412,6 +412,17 @@ bool App::settingsCacheHandleEvent(const SDL_Event& e) {
             return false;
         }
         float mx = e.button.x, my = e.button.y;
+        const bool up = inRect(cacheGbUpBox_, mx, my);
+        if (up || inRect(cacheGbDownBox_, mx, my)) {
+            const int f = focusedField();
+            if (f >= 0)
+                commit(f); // step from what was typed, not from the stale value
+            cacheGb_ = (float)std::clamp((double)cacheGb_ + (up ? 1.0 : -1.0), 0.25, 128.0);
+            if (cache_)
+                cache_->setMaxBytes((size_t)(cacheGb_ * (1024.0 * 1024.0 * 1024.0)));
+            writePrefs();
+            return true;
+        }
         for (int i = 0; i < kNumFlds; ++i) {
             if (!inRect(*boxes[i], mx, my))
                 continue;
@@ -629,6 +640,25 @@ void App::renderSettingsPanel() {
         const char* cacheLabel = "Playback Cache (GB):";
         SDL_FRect row = cutTop(body, kFieldH);
         SDL_FRect label = cutLeft(row, textFont_.measure(renderer_, cacheLabel) + kFpsLabelGap);
+        // Up/down spinner on the right: two stacked halves, each stepping 1 GB.
+        SDL_FRect spin = cutRight(row, kFpsCaretW);
+        cutRight(row, 2.0f);
+        cacheGbUpBox_   = { spin.x, spin.y, spin.w, spin.h * 0.5f };
+        cacheGbDownBox_ = { spin.x, spin.y + spin.h * 0.5f, spin.w, spin.h * 0.5f };
+        {
+            float mx = 0.0f, my = 0.0f;
+            SDL_GetMouseState(&mx, &my);
+            SDL_RenderCoordinatesFromWindow(renderer_, mx, my, &mx, &my);
+            const float cx = spin.x + spin.w * 0.5f;
+            for (const SDL_FRect* b : { &cacheGbUpBox_, &cacheGbDownBox_ })
+                if (inRect(*b, mx, my))
+                    jplay::drawRowHover(renderer_, *b);
+            setColor(renderer_, kToggleBorder);
+            jplay::drawRect(renderer_, &spin);
+            SDL_SetRenderDrawColor(renderer_, 160, 163, 172, 255);
+            jplay::drawCaretUp(renderer_, cx, cacheGbUpBox_.y + cacheGbUpBox_.h * 0.5f + 1.5f);
+            jplay::drawCaretDown(renderer_, cx, cacheGbDownBox_.y + cacheGbDownBox_.h * 0.5f - 1.5f);
+        }
         cacheGbFldBox_ = row;
         cacheGbFld_.setRect(cacheGbFldBox_);
         if (!cacheGbFld_.focused()) {
