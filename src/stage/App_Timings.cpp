@@ -51,8 +51,8 @@ const char* const kRateWidest[kRates] = { "000.0", "0000 (display)", "10 s+" };
 // The Y axis is milliseconds. Its top is snapped to a step of this ladder so it
 // does not twitch with every sample (a stall past the last runs off the top), and
 // each top has its own round gridline spacing.
-const double kScaleMs[] = { 25.0, 50.0, 100.0, 200.0, 400.0 };
-const double kGridStepMs[] = { 5.0, 10.0, 20.0, 50.0, 100.0 };
+const double kScaleMs[] = { 25.0, 50.0, 100.0, 200.0, 400.0, 1000.0, 2000.0, 5000.0, 10000.0 };
+const double kGridStepMs[] = { 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0 };
 
 // A measured rate as the info bar's fps readout shows it (see App::update): the
 // project rate itself when within 0.3 fps of it, otherwise rounded to a tenth.
@@ -531,7 +531,7 @@ void App::renderTimingsPanel() {
     SDL_FRect legend = cutBottom(body, lineH);
     gapBottom(body, 4.0f * dpiScale);
     SDL_FRect xLabels = cutBottom(body, lineH);
-    const float axisW = textFont_.measure(renderer_, "400 ms") + 6.0f;
+    const float axisW = textFont_.measure(renderer_, "10000 ms") + 6.0f;
     const float rightW = textFont_.measure(renderer_, "000.0 fps") + 6.0f;
     const float titleH = lineH + 2.0f * dpiScale;
     const float laneGap = 6.0f * dpiScale;
