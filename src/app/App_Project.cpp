@@ -2916,10 +2916,10 @@ void App::resetPathValueRequests() {
     ++pathTagGen_; // batches still resolving belong to the outgoing media set
 }
 
-// How many paths one chunk resolves. Small enough that an interactive describe
-// queued behind it waits a few hundred milliseconds rather than the whole pass,
-// large enough that the per-chunk GIL acquisition is noise beside the work.
-static constexpr size_t kPathTagChunk = 250;
+// How many paths one chunk resolves. On network storage a path can cost ~0.2 s,
+// so this keeps one chunk to a few seconds while the per-chunk GIL acquisition
+// stays noise beside the work.
+static constexpr size_t kPathTagChunk = 25;
 
 void App::submitPathValueChunk(const std::shared_ptr<PathTagPass>& pass, uint64_t gen) {
     const size_t begin = pass->next;
@@ -2931,11 +2931,13 @@ void App::submitPathValueChunk(const std::shared_ptr<PathTagPass>& pass, uint64_
     auto chunk = std::make_shared<std::vector<std::string>>(pass->paths.begin() + begin,
                                                             pass->paths.begin() + end);
     auto values = std::make_shared<std::vector<std::map<std::string, std::string>>>();
-    // pickerWork_ rather than work_: work_ is held while media plays, and pressing
-    // play right after an import would otherwise leave the clips unlabelled for as
-    // long as playback lasts — and the OCIO context variables come from these values
-    // (see OcioManager::setContextForMedia), so they are wanted most while playing.
-    pickerWork_.submit(
+    // Not work_: work_ is held while media plays, and pressing play right after an
+    // import would otherwise leave the clips unlabelled for as long as playback
+    // lasts — and the OCIO context variables come from these values (see
+    // OcioManager::setContextForMedia), so they are wanted most while playing. Not
+    // pickerWork_ either: on network storage a chunk takes seconds, and the
+    // Component Picker's describe would wait behind it.
+    pathValueWork_.submit(
         [chunk, values](const std::atomic<bool>&) { jplayGetPathValues(*chunk, *values); },
         [this, pass, gen, begin, values] {
             if (gen != pathTagGen_)

@@ -3672,6 +3672,13 @@ private:
     // callback (their only effect is OCIO's internal caches), so nothing drains it.
     WorkQueue ocioWarmWork_{ 1 };
 
+    // The naming convention's path values (requestPathValues). Its own thread
+    // rather than pickerWork_: get_path_values can take ~0.2 s per path on network
+    // storage, so even a modest chunk would hold the Component Picker's describe
+    // for seconds. Never paused, for the same reason as pickerWork_ -- the OCIO
+    // context comes from these values and is wanted most while playing.
+    WorkQueue pathValueWork_{ 1 };
+
     // Peak envelopes for the waveforms drawn inside audio clips, decoded on
     // work_ in the background.
     WaveformCache waveforms_;
@@ -3692,13 +3699,10 @@ private:
         std::vector<std::string> ids, paths; // parallel: media id and the path to parse
         size_t next = 0;                     // first entry not yet queued
     };
-    // Queue the next chunk of `pass` on pickerWork_, applying the previous one's
-    // values and queueing the one after from its completion. Chunked because that
-    // queue is single-threaded and also serves the Component Picker: one frame can
-    // ask for hundreds of media (a zoomed-out timeline, a grid of tiles), and as a
-    // single job they would all be resolved before the panel's describe was even
-    // started. Each chunk's completion runs on the main thread, so anything the user
-    // asked for while it ran is already ahead of the next chunk in the queue.
+    // Queue the next chunk of `pass` on pathValueWork_, applying the previous one's
+    // values and queueing the one after from its completion. Chunked so a pass's
+    // labels arrive progressively rather than all at once at the end, and so
+    // media asked for meanwhile (a new pass) is not stuck behind the whole thing.
     void submitPathValueChunk(const std::shared_ptr<PathTagPass>& pass, uint64_t gen);
     // Bumped when the media set is replaced wholesale (project load / new project);
     // chunks of an older project's batches drop their results rather than write them

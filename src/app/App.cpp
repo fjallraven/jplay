@@ -4584,6 +4584,7 @@ void App::run() {
         work_.drainCompletions();    // run finished tasks' callbacks on this thread
         pickerWork_.drainCompletions(); // apply finished picker queries on this thread
         openTargetWork_.drainCompletions(); // cache finished "Open Project" lookups
+        pathValueWork_.drainCompletions(); // apply naming-convention values to media
         pollPickerDecorations();     // apply whatever the labels/colors pass has merged so far
         drainSync();                 // apply host events / emit changes (sync review)
         drainControl();              // apply commands from the local control channel
