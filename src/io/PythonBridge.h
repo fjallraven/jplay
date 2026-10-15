@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Runtime queries into the callbacks jplay_init.py registered via
@@ -211,6 +212,19 @@ struct DropResolution {
 // completion, so the caller checks cancelled() itself before using the result.
 bool jplayResolveDropText(const std::string& text, const std::string& proxyMode,
                           DropResolution& out, ProgressReporter* progress = nullptr);
+
+// Ask Python what a Ctrl+V the host could not read as paths refers to (the
+// resolve_clipboard callback, shipped in jplay_clipboard.py): a node copied out
+// of Nuke or ComfyUI names its media inside a script or a JSON blob, and sites
+// add parsers of their own there. `content` is the clipboard's text flavours as
+// (MIME type, contents) — see clipboardTextContent. Fills `out` with the media,
+// files / sequence patterns / directories, all existing on disk.
+//
+// Returns false when Python is not ready, no callback is registered, it raised,
+// or no parser claimed the content. Parsing only, no network, so it is called on
+// the main thread.
+bool jplayResolveClipboard(const std::vector<std::pair<std::string, std::string>>& content,
+                           std::vector<std::string>& out);
 
 // Resolve the project document the media at `path` belongs to (the
 // get_project_path_from_media callback), for the "Show in Sequence" / "Open

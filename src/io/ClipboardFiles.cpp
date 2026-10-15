@@ -137,3 +137,30 @@ std::vector<std::string> clipboardFilePaths() {
     }
     return out;
 }
+
+std::vector<std::pair<std::string, std::string>> clipboardTextContent() {
+    std::vector<std::pair<std::string, std::string>> out;
+    if (SDL_HasClipboardText())
+        if (char* text = SDL_GetClipboardText()) {
+            out.emplace_back("text/plain", text);
+            SDL_free(text);
+        }
+    size_t count = 0;
+    char** types = SDL_GetClipboardMimeTypes(&count);
+    if (!types)
+        return out;
+    for (size_t i = 0; i < count; ++i) {
+        const std::string mime = types[i];
+        // Plain text came through SDL_GetClipboardText above, in whichever of
+        // its several spellings the source used.
+        if (mime.rfind("text/", 0) != 0 || mime.rfind("text/plain", 0) == 0)
+            continue;
+        size_t size = 0;
+        if (void* data = SDL_GetClipboardData(mime.c_str(), &size)) {
+            out.emplace_back(mime, std::string((const char*)data, size));
+            SDL_free(data);
+        }
+    }
+    SDL_free(types);
+    return out;
+}

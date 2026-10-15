@@ -659,6 +659,40 @@ bool jplayResolveDropText(const std::string& text, const std::string& proxyMode,
     }
 }
 
+bool jplayResolveClipboard(const std::vector<std::pair<std::string, std::string>>& content,
+                           std::vector<std::string>& out) {
+    if (!jplayPythonReady() || content.empty())
+        return false;
+    try {
+        py::gil_scoped_acquire gil;
+        const auto& registry = callbackRegistry();
+        auto it = registry.find("resolve_clipboard");
+        if (it == registry.end())
+            return false;
+        // resolve_clipboard({mime: text}) returns None when no parser claims the
+        // content, else [path, ...]. Clipboard bytes are whatever the source
+        // wrote, so they are decoded leniently rather than raising on bad UTF-8.
+        py::dict d;
+        for (const auto& [mime, text] : content)
+            d[py::str(mime)] = py::reinterpret_steal<py::str>(
+                PyUnicode_DecodeUTF8(text.data(), (Py_ssize_t)text.size(), "replace"));
+        py::object res = it->second(d);
+        if (res.is_none())
+            return false;
+        for (py::handle item : res)
+            out.push_back(item.cast<std::string>());
+        return !out.empty();
+    } catch (const py::error_already_set& e) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "[jplay] resolve_clipboard failed: %s", e.what());
+        return false;
+    } catch (const std::exception& e) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "[jplay] resolve_clipboard failed: %s", e.what());
+        return false;
+    }
+}
+
 bool jplayProjectPathFromMedia(const std::string& path, std::string& outPath) {
     if (!jplayPythonReady())
         return false;

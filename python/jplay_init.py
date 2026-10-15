@@ -23,3 +23,7 @@ if "jplay_naming_convention" not in sys.modules:
 # Claude Code plugin. Same customisation story: override a callback, don't edit
 # the module.
 import jplay_discovery  # noqa: F401,E402
+
+# Ctrl+V for clipboard content that is not a path list: Nuke and ComfyUI nodes
+# out of the box; sites add parsers with jplay_clipboard.register_parser.
+import jplay_clipboard  # noqa: F401,E402
