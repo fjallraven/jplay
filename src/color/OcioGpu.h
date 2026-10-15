@@ -73,10 +73,16 @@ public:
     // host->GPU copy, the larger half of the GPU's work for a frame, off the
     // refresh that has to present: that one is left with the draw alone, and has
     // the headroom to ride out the GPU dropping to a lower power state mid-play.
+    // A frame over kPreuploadBandBytes goes up in preuploadBands() bands of rows,
+    // one per call, so no refresh carries more of the bus than fits in it (a
+    // 5792x4854 half frame alone is ~16 ms of upload, over a 60 Hz refresh); the
+    // caller starts those on the refresh that shows the frame before. A render()
+    // of the frame before its last band sends only the rows not yet up.
     // No-op if `tag` is already uploaded. Returns false on any failure (the
     // render then uploads as usual).
     bool preupload(const void* pixels, InputFormat fmt, int width, int height, uint64_t tag);
     uint64_t preuploadedTag() const { return preTag_; }
+    static int preuploadBands(InputFormat fmt, int width, int height);
 
     // Render a scene-referred luminance heatmap of `linear` into `dstTexGL` — a
     // "true HDR" nit map computed BEFORE any display transform. Per pixel: apply
@@ -103,6 +109,17 @@ private:
     int      preW_ = 0, preH_ = 0, preFmt_ = -1;
     uint64_t preTag_ = 0;
     void swapInput_();
+    // A preupload part-way through its bands: the frame, the rows of preTex_ it
+    // has filled, and the ring slot holding its pixels (-1: sent from host
+    // memory). partTag_ 0: none. The slot is not written over while it is set:
+    // staging into it drops the partial instead.
+    static constexpr size_t kPreuploadBandBytes = 96u << 20;
+    uint64_t partTag_ = 0;
+    int      partRows_ = 0;
+    int      partSlot_ = -1;
+    void dropPartial_();
+    void uploadPreRows_(const void* pixels, InputFormat fmt, int width, int row0, int rows);
+    static void texFormat_(InputFormat fmt, int& internal, unsigned& format, unsigned& type);
     unsigned nitProg_ = 0;      // scene-linear nit-heatmap program (processor-independent)
     bool nitTried_ = false;     // nitProg_ build attempted (once only; see ensureNitProgram_)
     int nitExpLoc_ = -1, nitScaleLoc_ = -1; // "uExposure"/"uNitScale" in nitProg_

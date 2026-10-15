@@ -69,6 +69,7 @@ void App::drainSync() {
             playing_ = true;
             playDir_ = 1;
             playAcc_ = 0.0;
+            playHeldSec_ = 0.0;
             break;
         case syncreview::MsgType::Pause:
             playing_ = false;

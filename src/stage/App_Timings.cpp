@@ -39,30 +39,20 @@ const SDL_Color kGridLine = { 62, 64, 72, 255 };
 const SDL_Color kNoteText = { 104, 108, 120, 255 }; // a lane title's explanation
 const SDL_Color kRateLine = { 235, 238, 245, 255 };
 const SDL_Color kOffRateLine = { 222, 82, 82, 255 }; // the rate line off the project rate
-// The sustainable rate and the buffer: neutral ink rather than a hue, so neither
+// The capacity and the buffer: neutral ink rather than a hue, so neither
 // reads as one of the stages. Identity comes from the lane and the labels.
 const SDL_Color kSustainLine = { 160, 168, 190, 255 };
 
 // The legend's line keys after the stages, and each one's widest value.
 constexpr int kRates = 3;
-const char* const kRateLabel[kRates] = { "Shown", "Sustainable", "Ahead" };
-const char* const kRateWidest[kRates] = { "000.0", "0000 (display)", "10 s+" };
+const char* const kRateLabel[kRates] = { "Shown", "Capacity", "Ahead" };
+const char* const kRateWidest[kRates] = { "000.0, late", "0000 (display)", "10 s+" };
 
 // The Y axis is milliseconds. Its top is snapped to a step of this ladder so it
 // does not twitch with every sample (a stall past the last runs off the top), and
 // each top has its own round gridline spacing.
 const double kScaleMs[] = { 25.0, 50.0, 100.0, 200.0, 400.0, 1000.0, 2000.0, 5000.0, 10000.0 };
 const double kGridStepMs[] = { 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0 };
-
-// A measured rate as the info bar's fps readout shows it (see App::update): the
-// project rate itself when within 0.3 fps of it, otherwise rounded to a tenth.
-// The readout also holds its value until it moves a full tenth; a per-frame chart
-// has no "previous value" to hold, so that part is not repeated here.
-double snappedFps(double fps, double projectFps) {
-    if (projectFps > 0.0 && std::fabs(fps - projectFps) < 0.3)
-        return projectFps;
-    return std::round(fps * 10.0) / 10.0;
-}
 
 } // namespace
 
@@ -162,8 +152,6 @@ void App::timingTickBegin() {
     if (haveGpu && timingCount_ > 0) {
         TimingSample& s = timingSamples_[(size_t)((timingHead_ - 1 + kTimingSamples) % kTimingSamples)];
         s.gpuMs = (float)ns * 1e-6f;
-        if (s.sustainWanted)
-            setSustainFps(s);
     }
     if (gl && timingGpuSupport_ < 0) {
         int major = 0, minor = 0;
@@ -259,16 +247,6 @@ double App::readCostMs(double readMs, double readsPerFrame) {
     return std::max(readMs / workers, floorMs);
 }
 
-void App::setSustainFps(TimingSample& s) {
-    const double readCost = s.hasRead && s.fresh ? readCostMs(s.readMs(), 1.0) : 0.0;
-    const double dispCost = std::max(s.uiMs, s.gpuMs);
-    const double cost = std::max(readCost, dispCost);
-    if (cost > 0.0) {
-        s.sustainFps = (float)(1000.0 / cost);
-        s.readLimited = readCost > dispCost;
-    }
-}
-
 void App::commitTimingSample() {
     timingPendingValid_ = false;
     TimingSample s = timingPending_;
@@ -278,32 +256,9 @@ void App::commitTimingSample() {
     if (playing_ && timingLastShownNs_ != 0 && now - timingLastShownNs_ < 1000000000ull)
         s.intervalMs = (float)(now - timingLastShownNs_) * 1e-6f;
     timingLastShownNs_ = now;
-    // The shown rate at this frame (see TimingSample::rateMs). A single interval
-    // zigzags with the refresh cadence (24 fps on 60 Hz holds frames for 2 and 3
-    // refreshes in turn, 33 and 50 ms), which reads as trouble when it is not;
-    // averaged over an even run the cadence cancels, and what is left moves only
-    // for a frame really held or dropped. Only over a full window, unbroken: just
-    // after Play a part-filled one holds an odd count of 2- and 3-refresh
-    // intervals as often as an even one, so the line would zigzag either side of
-    // the rate (7 of them, 18 refreshes, read 23.3 fps) with every frame on time.
-    if (s.intervalMs > 0.0f && timingCount_ >= kTimingRateWindow - 1) {
-        double sum = s.intervalMs;
-        int n = 1;
-        for (; n < kTimingRateWindow; ++n) {
-            const float in = timingSamples_[(size_t)((timingHead_ - n + kTimingSamples) % kTimingSamples)].intervalMs;
-            if (in <= 0.0f)
-                break;
-            sum += in;
-        }
-        if (n == kTimingRateWindow)
-            s.rateMs = (float)(sum / n);
-    }
     if (playing_) {
-        // With a GPU time still to come, the rate waits for it (timingTickBegin):
-        // the CPU time alone would put the newest point far above where it settles.
-        s.sustainWanted = true;
-        if (!timingGpuPending_ && !timingReviewGpuPending_)
-            setSustainFps(s);
+        s.playing = true;
+        s.infoFps = (float)fpsShown_;
         s.aheadSec = (float)timingBufferedAheadSec();
     }
     timingSamples_[(size_t)timingHead_] = s;
@@ -400,23 +355,44 @@ void App::renderTimingsPanel() {
         const int oldest = (timingHead_ - timingCount_ + kTimingSamples) % kTimingSamples;
         return timingSamples_[(size_t)((oldest + i) % kTimingSamples)];
     };
-    // The shown rate at each frame, judged frame by frame against the play
-    // clock (see TimingSample::lateRefreshes): the project rate for a frame put up
-    // on the refresh it was due, else the rate its own late or skipping step
-    // played at. A mean over a window of intervals would carry one late frame for
-    // the whole window and then echo it the other way as the late interval left
-    // before the catch-up after it; this marks the frame it happened on and no
-    // other. 0 where there is none (paused, a step, just after Play).
-    const double period = refreshPeriodSec();
-    auto shownFps = [&](const TimingSample& s) -> double {
-        if (s.lateRefreshes < 0 || fps <= 0.0)
+    // The shown rate at each frame: what the info bar's readout said while it was
+    // up (TimingSample::infoFps), so hovering a frame reads what the viewer saw
+    // there. A frame late on its refresh or a skip is marked on the line rather
+    // than dipping it: its catch-up keeps the rate, which the readout reflects.
+    // 0 where there is none (paused, a step, just after Play).
+    auto shownFps = [&](const TimingSample& s) -> double { return s.playing ? s.infoFps : 0.0; };
+    auto onRate = [&](double v) { return fps <= 0.0 || std::fabs(v - fps) < 0.05; };
+    auto missed = [](const TimingSample& s) { return s.lateRefreshes > 0 || s.skippedFrames > 0; };
+    // The rate the pipeline could keep up at, as of sample i: the slower of the
+    // read side and the display side, averaged over the kTimingRateWindow played
+    // samples up to it. The read side sustains workers / read time (see
+    // readCostMs), the display side 1 / the UI tick's CPU or GPU time; they run
+    // side by side, so they are not added. Frames shown again from the cache read
+    // nothing, so the read side is costed per frame shown: the reads there were,
+    // over every frame. A per-frame figure would cost every fresh frame as if all
+    // of them needed a read, and drop well under a rate playback is holding.
+    auto capacityAt = [&](int i, bool& readLimited) -> double {
+        double readSum = 0.0, dispSum = 0.0;
+        int n = 0, reads = 0;
+        for (int j = i; j >= 0 && j > i - kTimingRateWindow; --j) {
+            const TimingSample& s = sampleAt(j);
+            if (!s.playing)
+                break;
+            dispSum += std::max(s.uiMs, s.gpuMs);
+            if (s.hasRead && s.fresh) {
+                readSum += s.readMs();
+                ++reads;
+            }
+            ++n;
+        }
+        if (n == 0)
             return 0.0;
-        if (s.lateRefreshes == 0 && s.skippedFrames == 0)
-            return fps;
-        const double spf = 1.0 / fps;
-        return snappedFps(1.0 / (spf * (1 + s.skippedFrames) + period * s.lateRefreshes), fps);
+        const double readMs = reads > 0 ? readCostMs(readSum / n, (double)reads / n) : 0.0;
+        const double dispMs = dispSum / n;
+        readLimited = readMs > dispMs;
+        const double cost = std::max(readMs, dispMs);
+        return cost > 0.0 ? 1000.0 / cost : 0.0;
     };
-    auto onRate = [&](double v) { return fps <= 0.0 || std::fabs(v - fps) < 1e-6; };
     auto aheadText = [&](float sec, char* buf, size_t n) {
         if (sec < 0.0f)
             SDL_snprintf(buf, n, "\xe2\x80\x94");
@@ -448,33 +424,13 @@ void App::renderTimingsPanel() {
     gapTop(body, 4.0f * dpiScale);
 
     // ---- summary: shown rate, what the pipeline could sustain, and the buffer ----
-    // The stages are not added (see setSustainFps): the read side sustains workers /
-    // read time, the display side 1 / the UI tick's CPU or GPU time, and the slower
-    // of the two is the estimate. Averaged over the last second or so of samples;
-    // headroom is that over the project rate.
+    // Capacity as capacityAt has it for the newest sample; headroom is that over
+    // the project rate.
     {
-        const int recent = std::min(timingCount_, kTimingRateWindow);
-        double readSum = 0.0, dispSum = 0.0;
-        int reads = 0;
-        for (int i = timingCount_ - recent; i < timingCount_; ++i) {
-            const TimingSample& s = sampleAt(i);
-            dispSum += std::max(s.uiMs, s.gpuMs);
-            if (s.hasRead && s.fresh) {
-                readSum += s.readMs();
-                ++reads;
-            }
-        }
         row = cutTop(body, lineH);
-        if (recent == 0) {
+        if (timingCount_ == 0) {
             drawText(row.x, row.y, kMutedText, "Waiting for frames...");
         } else {
-            // Frames shown again from the cache read nothing, so the read side is
-            // costed per frame shown: the reads there were, over every frame.
-            const double readMsPerFrame =
-                reads > 0 ? readCostMs(readSum / recent, (double)reads / recent) : 0.0;
-            const double dispMsPerFrame = dispSum / recent;
-            const bool readLimited = readMsPerFrame > dispMsPerFrame;
-            const double costMs = std::max(readMsPerFrame, dispMsPerFrame);
             const TimingSample& newest = sampleAt(timingCount_ - 1);
             std::string text = "Shown ";
             char buf[160];
@@ -486,7 +442,7 @@ void App::renderTimingsPanel() {
             text += buf;
             buf[0] = '\0';
             // Frames in the chart that missed their refresh, or were passed over:
-            // each one is a single red dip on the rate line below.
+            // each one is a red mark on the rate line below.
             int late = 0, skipped = 0;
             for (int i = 0; i < timingCount_; ++i) {
                 const TimingSample& s = sampleAt(i);
@@ -496,13 +452,14 @@ void App::renderTimingsPanel() {
             if (late > 0 || skipped > 0)
                 SDL_snprintf(buf, sizeof(buf), " (%d late, %d skipped in view)", late, skipped);
             text += buf;
-            if (costMs > 0.0) {
-                const double est = 1000.0 / costMs;
+            bool readLimited = false;
+            const double est = capacityAt(timingCount_ - 1, readLimited);
+            if (est > 0.0) {
                 if (fps > 0.0)
-                    SDL_snprintf(buf, sizeof(buf), "   Sustainable %.0f fps, %.0f\xc3\x97 headroom (%s-limited, %d workers",
+                    SDL_snprintf(buf, sizeof(buf), "   Capacity %.0f fps, %.1f\xc3\x97 headroom (%s-limited, %d workers",
                                  est, est / fps, readLimited ? "read" : "display", workers);
                 else
-                    SDL_snprintf(buf, sizeof(buf), "   Sustainable %.0f fps (%s-limited, %d workers",
+                    SDL_snprintf(buf, sizeof(buf), "   Capacity %.0f fps (%s-limited, %d workers",
                                  est, readLimited ? "read" : "display", workers);
                 text += buf;
                 // The pool's measured ceiling, or that it has not been seen full yet
@@ -544,7 +501,7 @@ void App::renderTimingsPanel() {
     const char* const laneTitle[3] = { "FRAME RATE", "WORK PER FRAME", "BUFFERED AHEAD" };
     char laneNote[3][128];
     SDL_snprintf(laneNote[0], sizeof(laneNote[0]),
-                 "shown, and what each frame's work could sustain; the gap is the headroom");
+                 "shown (as the info bar read it), and what recent work could keep up; red marks a late frame");
     SDL_snprintf(laneNote[1], sizeof(laneNote[1]),
                  "reads run %d at once, ahead of the playhead: a tall stack is not a late frame",
                  workers);
@@ -646,19 +603,26 @@ void App::renderTimingsPanel() {
 
     // ---- lane 1: frame rate ----
     // In multiples of the project rate on a doubling scale, from half of it (a
-    // frame held for two reads there) up past the highest sustainable rate, so the
+    // frame held for two reads there) up past the highest capacity, so the
     // project rate is one fixed gridline and headroom reads off as 2x, 4x, 8x.
     // The shown rate sits on 1x, white while it holds the project's, red where it
-    // does not (where the info bar's readout would read something else). Above it
-    // runs each frame's sustainable rate; the band between the two is filled, and
-    // turns red where a frame could not have been kept up with.
+    // does not; a frame that missed its refresh or was skipped is a red dot on it.
+    // The capacity runs dashed beside it: an estimate, not something that played,
+    // so it is muted, and falling under 1x is not marked as a fault on its own.
+    std::vector<double> capacity((size_t)timingCount_, 0.0);
+    std::vector<char> capacityRead((size_t)timingCount_, 0);
+    for (int i = 0; i < timingCount_; ++i) {
+        bool r = false;
+        capacity[(size_t)i] = capacityAt(i, r);
+        capacityRead[(size_t)i] = r ? 1 : 0;
+    }
     {
         const SDL_FRect& L = rateLane;
         const float bottom = L.y + L.h;
         double maxMul = 4.0;
         for (int i = 0; i < timingCount_; ++i)
             if (fps > 0.0)
-                maxMul = std::max(maxMul, (double)sampleAt(i).sustainFps / fps);
+                maxMul = std::max(maxMul, capacity[(size_t)i] / fps);
         const int topPow = std::clamp((int)std::ceil(std::log2(maxMul) - 1e-9), 2, 6);
         auto yOf = [&](double v) {
             const double t = fps > 0.0 ? (std::log2(v / fps) + 1.0) / (topPow + 1.0) : 0.0;
@@ -671,47 +635,62 @@ void App::renderTimingsPanel() {
             gridLine(L, std::round(yOf(fps * (1 << p))), l);
         }
         if (fps > 0.0) {
-            std::vector<SDL_FRect> band, shortfall;
+            // Headroom: the band between the project rate and a capacity above it.
+            std::vector<SDL_FRect> band;
             for (int i = 0; i < timingCount_; ++i) {
-                const float v = sampleAt(i).sustainFps;
-                if (v <= 0.0f)
+                const double v = capacity[(size_t)i];
+                if (v <= fps)
                     continue;
                 const float y1 = yOf(fps), y2 = yOf(v);
-                const float x = x0 + slotW * (float)i;
-                if (y2 < y1)
-                    band.push_back({ x, y2, slotW, y1 - y2 });
-                else if (y2 > y1)
-                    shortfall.push_back({ x, y1, slotW, y2 - y1 });
+                band.push_back({ x0 + slotW * (float)i, y2, slotW, y1 - y2 });
             }
             SDL_SetRenderDrawColor(renderer_, kSustainLine.r, kSustainLine.g, kSustainLine.b, 38);
             if (!band.empty())
                 SDL_RenderFillRects(renderer_, band.data(), (int)band.size());
-            SDL_SetRenderDrawColor(renderer_, kOffRateLine.r, kOffRateLine.g, kOffRateLine.b, 90);
-            if (!shortfall.empty())
-                SDL_RenderFillRects(renderer_, shortfall.data(), (int)shortfall.size());
-            drawSeries([](const TimingSample& s) { return (double)s.sustainFps; }, yOf,
-                       [](double) { return kSustainLine; });
+            // The capacity, dashed: 6 px on, 4 off along x, broken where a sample
+            // has none.
+            SDL_SetRenderDrawColor(renderer_, kSustainLine.r, kSustainLine.g, kSustainLine.b, 200);
+            for (int i = 1; i < timingCount_; ++i) {
+                const double a = capacity[(size_t)i - 1], b = capacity[(size_t)i];
+                if (a <= 0.0 || b <= 0.0)
+                    continue;
+                const float xa = slotMid(i - 1), xb = slotMid(i);
+                const float ya = yOf(a), yb = yOf(b);
+                for (float x = xa; x < xb; x += 1.0f) {
+                    if (std::fmod(x - cx, 10.0f) >= 6.0f)
+                        continue;
+                    const float xe = std::min(x + 1.0f, xb);
+                    const float t0 = (x - xa) / (xb - xa), t1 = (xe - xa) / (xb - xa);
+                    SDL_RenderLine(renderer_, x, std::round(ya + (yb - ya) * t0), xe,
+                                   std::round(ya + (yb - ya) * t1));
+                }
+            }
             drawSeries(shownFps, yOf,
                        [&](double v) { return onRate(v) ? kRateLine : kOffRateLine; });
+            // A frame that missed its refresh or was skipped: a dot on the line.
+            SDL_SetRenderDrawColor(renderer_, kOffRateLine.r, kOffRateLine.g, kOffRateLine.b, 255);
+            for (int i = 0; i < timingCount_; ++i) {
+                const TimingSample& s = sampleAt(i);
+                const double v = shownFps(s);
+                if (v <= 0.0 || !missed(s))
+                    continue;
+                const SDL_FRect dot = { slotMid(i) - 2.5f, std::round(yOf(v)) - 3.0f, 5.0f, 5.0f };
+                jplay::fillRect(renderer_, &dot);
+            }
         }
         if (readout && fps > 0.0) {
-            char buf[32];
-            float shownY = -1e9f;
             const double v = shownFps(*readout);
             if (v > 0.0) {
-                shownY = std::round(yOf(v));
-                const SDL_Color& c = onRate(v) ? kRateLine : kOffRateLine;
+                const float shownY = std::round(yOf(v));
+                const SDL_Color& c = onRate(v) && !missed(*readout) ? kRateLine : kOffRateLine;
                 if (hovering) { // mark the point being read out
                     SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
                     const SDL_FRect dot = { slotMid(shownIdx) - 3.0f, shownY - 3.5f, 6.0f, 6.0f };
                     jplay::fillRect(renderer_, &dot);
                 }
+                char buf[32];
                 SDL_snprintf(buf, sizeof(buf), "%.1f fps", v);
                 rightLabel(L, shownY, kValueText, buf);
-            }
-            if (readout->sustainFps > 0.0f) {
-                SDL_snprintf(buf, sizeof(buf), "%.0f fps", readout->sustainFps);
-                rightLabel(L, std::round(yOf(readout->sustainFps)), kMutedText, buf, shownY);
             }
         }
     }
@@ -906,7 +885,12 @@ void App::renderTimingsPanel() {
             if (x + need > legend.x + legend.w + 0.5f)
                 break;
             const SDL_Color& c = k == 0 ? kRateLine : kSustainLine;
-            if (k == 2) { // the buffer is an area: its key is a swatch
+            if (k == 1) { // the capacity is dashed: so is its key
+                SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, 200);
+                const float ly = std::round(legend.y + lineH * 0.5f);
+                SDL_RenderLine(renderer_, x, ly, x + sw * 0.4f, ly);
+                SDL_RenderLine(renderer_, x + sw * 0.65f, ly, x + sw, ly);
+            } else if (k == 2) { // the buffer is an area: its key is a swatch
                 const SDL_FRect swatch = { x, legend.y + (lineH - sw) * 0.5f, sw, sw };
                 SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, 110);
                 jplay::fillRect(renderer_, &swatch);
@@ -921,9 +905,10 @@ void App::renderTimingsPanel() {
             x += textFont_.measure(renderer_, kRateLabel[k]) + 4.0f;
             SDL_snprintf(buf, sizeof(buf), "\xe2\x80\x94");
             if (s && k == 0 && shownFps(*s) > 0.0)
-                SDL_snprintf(buf, sizeof(buf), "%.1f", shownFps(*s));
-            else if (s && k == 1 && s->sustainFps > 0.0f)
-                SDL_snprintf(buf, sizeof(buf), "%.0f (%s)", s->sustainFps, s->readLimited ? "read" : "display");
+                SDL_snprintf(buf, sizeof(buf), missed(*s) ? "%.1f, late" : "%.1f", shownFps(*s));
+            else if (s && k == 1 && capacity[(size_t)shownIdx] > 0.0)
+                SDL_snprintf(buf, sizeof(buf), "%.0f (%s)", capacity[(size_t)shownIdx],
+                             capacityRead[(size_t)shownIdx] ? "read" : "display");
             else if (s && k == 2)
                 aheadText(s->aheadSec, buf, sizeof(buf));
             drawText(x, legend.y, kValueText, buf);

@@ -1620,6 +1620,7 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
         if (wasPlaying && !playing_) {
             playing_ = true;
             playAcc_ = 0.0;
+            playHeldSec_ = 0.0;
             playDir_ = 1; // a PgDn jump back leaves the look-ahead pointing backward
         }
         break;
@@ -3287,6 +3288,7 @@ void App::update() {
     updateOutputMenu();   // rebuild the Output menu when displays/backends change (hotplug)
 
     if (!playing_ || timeline_.length() <= 0 || timeline_.fps <= 0.0) {
+        playHeldSec_ = 0.0;
         updateAudio(); // stopped: pause the audio device (or feed scrub grains)
         return;
     }
@@ -3341,6 +3343,7 @@ void App::update() {
             if (pm && !pm->openFailed()) {
                 CacheKey key{ clip->mediaId, clip->sourceOffset + (next - clip->timelineStart) };
                 if (!cache_->has(key)) {
+                    playHeldSec_ += playAcc_;
                     playAcc_ = 0.0;
                     playbackStalled_ = true;
                     break;
@@ -3355,9 +3358,13 @@ void App::update() {
     // left in the accumulator past the boundary it crossed, in whole refreshes.
     // On time that is under one (the 2-3 cadence leaves 0 or half a refresh); a
     // tick that missed a vsync leaves a whole one more. Frames passed over in the
-    // same tick never reached the screen at all.
+    // same tick never reached the screen at all. A frame held for loading is late
+    // by the hold as well: the clock restarted from 0 at each check that found it
+    // missing, so the time before those restarts is added back.
     if (advanced > 0) {
-        playLateRefreshes_ = period > 0.0 ? (int)std::floor((playAcc_ + 1e-7) / period) : 0;
+        const double lateSec = playAcc_ + playHeldSec_;
+        playHeldSec_ = 0.0;
+        playLateRefreshes_ = period > 0.0 ? (int)std::floor((lateSec + 1e-7) / period) : 0;
         playSkippedFrames_ = advanced - 1;
         playLateValid_ = true;
     }

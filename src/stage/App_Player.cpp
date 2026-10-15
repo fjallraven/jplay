@@ -1128,8 +1128,9 @@ std::string App::ocioInputCsLabel() {
 // OcioGpu's spare input texture, so the refresh that shows it has only the draw
 // left to do (see OcioGpu::preupload). Only the plain case: one clip, no
 // dissolve or fade, the GPU display transform on, already decoded. Anything else
-// leaves the next render to upload as it always has.
-void App::preuploadNextFrame() {
+// leaves the next render to upload as it always has. `bandedOnly`, on the
+// refresh that shows a frame: only a frame that goes up in bands is started.
+void App::preuploadNextFrame(bool bandedOnly) {
     if (!ocioGpu_.isReady() || !ocio_.isReady() || !ocio_.isEnabled() ||
         techMode_ == TechMode::Luminance)
         return;
@@ -1156,6 +1157,8 @@ void App::preuploadNextFrame() {
     const void* px = nullptr;
     OcioGpu::InputFormat fmt = OcioGpu::InputFormat::Rgba8;
     frameInput(*f, px, fmt);
+    if (bandedOnly && OcioGpu::preuploadBands(fmt, f->width, f->height) < 2)
+        return;
     if (px && ocioGpu_.preupload(px, fmt, f->width, f->height, tag))
         preuploadedFrame_ = std::move(f); // held so the tag (its address) stays its own
 }
@@ -1614,6 +1617,11 @@ void App::renderPlayer() {
                     }
                     timingPendingValid_ = true;
                 }
+                // A frame too big to upload in one refresh goes up in bands, and
+                // the 2-refresh step of 24 fps on 60 Hz leaves one idle refresh for
+                // them: the first band goes now, after this frame's draw.
+                if (newVisibleFrame && playing_ && !hdrPipeline_)
+                    preuploadNextFrame(/*bandedOnly=*/true);
             } else if (playing_ && !hdrPipeline_) {
                 preuploadNextFrame(); // nothing new on this refresh: get the next frame's upload done
             }

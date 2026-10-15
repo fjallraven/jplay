@@ -7,6 +7,7 @@
 #include <SDL3/SDL_opengl_glext.h>
 
 
+#include <algorithm>
 #include <cstdio>
 #include <utility>
 #include <string>
@@ -522,18 +523,25 @@ size_t OcioGpu::bytesPerPixel_(InputFormat fmt) {
     return 3 * sizeof(Imath::half);
 }
 
-void OcioGpu::uploadInput_(const void* pixels, InputFormat fmt, int width, int height) {
-    // The two integer formats are deliberately *not* the GL_SRGB8 variants: OCIO
-    // must see the stored code values, not a set GL decided to linearise behind
-    // its back.
-    GLint  internal = GL_RGB16F;
-    GLenum format = GL_RGB, type = GL_HALF_FLOAT;
-    const size_t bpp = bytesPerPixel_(fmt);
+// The two integer formats are deliberately *not* the GL_SRGB8 variants: OCIO
+// must see the stored code values, not a set GL decided to linearise behind
+// its back.
+void OcioGpu::texFormat_(InputFormat fmt, int& internal, unsigned& format, unsigned& type) {
+    internal = GL_RGB16F;
+    format = GL_RGB;
+    type = GL_HALF_FLOAT;
     switch (fmt) {
     case InputFormat::Rgba16: internal = GL_RGBA16; format = GL_RGBA; type = GL_UNSIGNED_SHORT; break;
     case InputFormat::Rgba8:  internal = GL_RGBA8;  format = GL_RGBA; type = GL_UNSIGNED_BYTE; break;
     case InputFormat::SceneLinearHalf: break;
     }
+}
+
+void OcioGpu::uploadInput_(const void* pixels, InputFormat fmt, int width, int height) {
+    GLint internal = 0;
+    GLenum format = 0, type = 0;
+    texFormat_(fmt, internal, format, type);
+    const size_t bpp = bytesPerPixel_(fmt);
 
     if (!inputTex_) p_glGenTextures(1, &inputTex_);
     p_glActiveTexture(GL_TEXTURE0);
@@ -598,6 +606,8 @@ void OcioGpu::uploadInput_(const void* pixels, InputFormat fmt, int width, int h
 int OcioGpu::stagePbo_(const void* pixels, size_t bytes) {
     const int slot = pboNext_;
     Pbo& b = pbos_[slot];
+    if (slot == partSlot_)
+        dropPartial_(); // its remaining rows would read this frame's pixels
 
     // The copy render() started before its GL work (beginStage_) -- for exactly
     // this frame, into exactly this slot: it has been running under the driver's
@@ -702,6 +712,8 @@ int OcioGpu::stagePbo_(const void* pixels, size_t bytes) {
 void OcioGpu::beginStage_(const void* pixels, size_t bytes) {
     if (!pboEnabled_ || stagingSlot_ >= 0)
         return;
+    if (pboNext_ == partSlot_)
+        dropPartial_();
     Pbo& b = pbos_[pboNext_];
     // Only a slot that needs no GL call to become writable: mapped for good, the
     // right size, and with its last DMA already waited out (armNextSlot_). Anything
@@ -737,36 +749,111 @@ void OcioGpu::swapInput_() {
     std::swap(inFmt_, preFmt_);
 }
 
+void OcioGpu::dropPartial_() {
+    partTag_ = 0;
+    partSlot_ = -1;
+    partRows_ = 0;
+}
+
+int OcioGpu::preuploadBands(InputFormat fmt, int width, int height) {
+    const size_t bytes = (size_t)width * height * bytesPerPixel_(fmt);
+    return std::max(1, (int)((bytes + kPreuploadBandBytes - 1) / kPreuploadBandBytes));
+}
+
+// Upload rows [row0, row0 + rows) of the frame preupload() staged into preTex_:
+// from its ring slot (an offset into the bound buffer), or from host memory when
+// it could not be staged. The slot's fence is moved up to this upload, the last
+// to read it so far. Caller has the pixel-store defaults set.
+void OcioGpu::uploadPreRows_(const void* pixels, InputFormat fmt, int width, int row0, int rows) {
+    GLint internal = 0;
+    GLenum format = 0, type = 0;
+    texFormat_(fmt, internal, format, type);
+    const size_t offset = (size_t)row0 * width * bytesPerPixel_(fmt);
+    GLint prevUnpack = 0;
+    p_glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &prevUnpack);
+    p_glActiveTexture(GL_TEXTURE0);
+    p_glBindTexture(GL_TEXTURE_2D, preTex_);
+    if (partSlot_ >= 0) {
+        Pbo& b = pbos_[partSlot_];
+        p_glBindBuffer(GL_PIXEL_UNPACK_BUFFER, b.id);
+        p_glTexSubImage2D(GL_TEXTURE_2D, 0, 0, row0, width, rows, format, type,
+                          (const void*)(uintptr_t)offset);
+        if (b.sync)
+            p_glDeleteSync((GLsync)b.sync);
+        b.sync = p_glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    } else {
+        p_glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        p_glTexSubImage2D(GL_TEXTURE_2D, 0, 0, row0, width, rows, format, type,
+                          (const uint8_t*)pixels + offset);
+    }
+    p_glBindBuffer(GL_PIXEL_UNPACK_BUFFER, (GLuint)prevUnpack);
+}
+
 bool OcioGpu::preupload(const void* pixels, InputFormat fmt, int width, int height, uint64_t tag) {
     if (!ready_ || !pixels || width <= 0 || height <= 0 || tag == 0)
         return false;
     if (tag == preTag_)
         return true;
-    preTag_ = 0;
+    const bool resume = tag == partTag_ && preW_ == width && preH_ == height && preFmt_ == (int)fmt;
+    if (!resume) {
+        preTag_ = 0;
+        dropPartial_();
+    }
     // A copy render() started (beginStage_) is for its own frame; this one stages
     // synchronously behind it, which stagePbo_ handles.
     SDL_FlushRenderer(renderer_);
-    GLint prevActiveTex = 0, prevTex2D = 0;
+    GLint prevActiveTex = 0, prevTex2D = 0, prevUnpack = 0;
     p_glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActiveTex);
     p_glActiveTexture(GL_TEXTURE0);
     p_glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex2D);
+    p_glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &prevUnpack);
     while (p_glGetError() != GL_NO_ERROR) {}
     p_glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     p_glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
     p_glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
     p_glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
 
-    // uploadInput_ fills inputTex_; point it at the spare for the call.
-    swapInput_();
-    uploadInput_(pixels, fmt, width, height);
-    swapInput_();
+    if (!resume) {
+        // The whole frame goes into one ring slot now (a CPU copy, not the bus),
+        // and the bands below each send their rows from it.
+        partSlot_ = pboEnabled_ ? stagePbo_(pixels, (size_t)width * height * bytesPerPixel_(fmt)) : -1;
+        p_glBindBuffer(GL_PIXEL_UNPACK_BUFFER, (GLuint)prevUnpack);
+        if (!preTex_)
+            p_glGenTextures(1, &preTex_);
+        if (width != preW_ || height != preH_ || (int)fmt != preFmt_) {
+            GLint internal = 0;
+            GLenum format = 0, type = 0;
+            texFormat_(fmt, internal, format, type);
+            p_glBindTexture(GL_TEXTURE_2D, preTex_);
+            p_glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+            p_glTexImage2D(GL_TEXTURE_2D, 0, internal, width, height, 0, format, type, nullptr);
+            p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            p_glBindBuffer(GL_PIXEL_UNPACK_BUFFER, (GLuint)prevUnpack);
+            preW_ = width;
+            preH_ = height;
+            preFmt_ = (int)fmt;
+        }
+        partTag_ = tag;
+        partRows_ = 0;
+    }
+    const int bands = preuploadBands(fmt, width, height);
+    const int rows = std::min((height + bands - 1) / bands, height - partRows_);
+    uploadPreRows_(pixels, fmt, width, partRows_, rows);
+    partRows_ += rows;
     const bool ok = p_glGetError() == GL_NO_ERROR;
+    if (!ok) {
+        dropPartial_();
+    } else if (partRows_ >= height) {
+        preTag_ = tag;
+        dropPartial_();
+    }
     armNextSlot_();
 
     p_glBindTexture(GL_TEXTURE_2D, (GLuint)prevTex2D);
     p_glActiveTexture((GLenum)prevActiveTex);
-    if (ok)
-        preTag_ = tag;
     return ok;
 }
 
@@ -775,9 +862,11 @@ bool OcioGpu::render(const void* pixels, InputFormat fmt, int width, int height,
     Program* prog = active_();
     if (!ready_ || !prog || !prog->id || !pixels || width <= 0 || height <= 0)
         return false;
-    // Uploaded ahead (preupload): draw from that texture, no upload this time.
-    const bool pre = tag != 0 && tag == preTag_ && preW_ == width && preH_ == height &&
-                     preFmt_ == (int)fmt;
+    // Uploaded ahead (preupload): draw from that texture, no upload this time. One
+    // still part-way through its bands has only the rows it did not reach to send.
+    const bool shape = preW_ == width && preH_ == height && preFmt_ == (int)fmt;
+    const bool part = tag != 0 && tag == partTag_ && shape;
+    const bool pre = (tag != 0 && tag == preTag_ && shape) || part;
     // An untagged render (a Layout tile) leaves the preupload for the program's
     // next frame alone; a tagged one either takes it or finds it stale (the frame
     // it was for was skipped).
@@ -818,6 +907,10 @@ bool OcioGpu::render(const void* pixels, InputFormat fmt, int width, int height,
     p_glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
     p_glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
 
+    if (part)
+        uploadPreRows_(pixels, fmt, width, partRows_, height - partRows_);
+    if (tag != 0)
+        dropPartial_();
     if (pre)
         swapInput_();
     else

@@ -497,6 +497,7 @@ void App::togglePlay() {
     if (transportLocked()) { spectatorLocked("CONTROL PLAYBACK"); return; } // host controls transport
     playing_ = !playing_;
     playAcc_ = 0.0;
+    playHeldSec_ = 0.0;
     if (playing_) {
         playDir_ = 1;
         // If the playhead sits outside the active in/out range, snap it to the
@@ -4604,9 +4605,14 @@ void App::addMediaFolder(const std::string& dir) {
 
 bool App::pasteSourcesFromClipboard() {
     // Folders expand to the media they hold, as a folder drop does; anything that
-    // is not an image, image sequence or video is left out.
+    // is not an image, image sequence or video is left out. Content that is not a
+    // path list (a node copied out of Nuke or ComfyUI) goes to Python's
+    // resolve_clipboard, whose parsers sites can extend.
+    std::vector<std::string> sources = clipboardFilePaths();
+    if (sources.empty())
+        jplayResolveClipboard(clipboardTextContent(), sources);
     std::vector<std::string> paths;
-    for (const std::string& p : clipboardFilePaths()) {
+    for (const std::string& p : sources) {
         std::error_code ec;
         if (std::filesystem::is_directory(std::filesystem::u8path(p), ec)) {
             for (std::string& m : MediaScan::collectDirectoryMedia(std::filesystem::u8path(p)))
@@ -4634,17 +4640,20 @@ bool App::pasteSourcesFromClipboard() {
     }
 
     // A project with work on its timeline: the paste must not disturb the cut, so
-    // the media goes to the SOURCES bin only, to be placed from there.
+    // the media goes to the SOURCES bin only, to be placed from there. The first
+    // item opens in the source view, as a bin double-click would, so the paste is
+    // seen without touching the cut.
     std::string first;
     int added = 0;
     for (const std::string& p : paths)
-        if (ensureMedia(p, mediaTypeForPath(p))) { // sets its own status on failure
+        if (auto media = ensureMedia(p, mediaTypeForPath(p))) { // sets its own status on failure
             if (added++ == 0)
-                first = p;
+                first = media->path();
         }
     if (added == 0)
         return true;
     hostSnapshotDirty_ = true; // no clip was placed, so nothing else marks it
+    openSourceView(first);
     setStatus(added == 1 ? "SOURCE " + fileLabel(first) + " ADDED TO PROJECT"
                          : std::to_string(added) + " SOURCES ADDED TO PROJECT");
     return true;

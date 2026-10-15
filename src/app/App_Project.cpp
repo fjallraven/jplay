@@ -2377,6 +2377,9 @@ void App::submitSharedProbe(SharedProjects::Entry entry,
                 pending->push_back(
                     SharedProject{ sharedEntry->code, sharedEntry->name, sharedEntry->path });
             if (--*outstanding == 0) {
+                // Probes finish in any order; sort by show code (as jplay_discovery does).
+                std::sort(pending->begin(), pending->end(),
+                          [](const SharedProject& a, const SharedProject& b) { return a.code < b.code; });
                 sharedProjects_ = std::move(*pending);
                 sharedScanInFlight_ = false;
             }

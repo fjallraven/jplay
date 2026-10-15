@@ -241,6 +241,9 @@ private:
     bool playLateValid_ = false;
     int playLateRefreshes_ = 0;
     int playSkippedFrames_ = 0;
+    // Time the frame due next has been held waiting to load, from the clock
+    // restarts it cost (see update), so it is reported late by the hold.
+    double playHeldSec_ = 0.0;
     Uint64 lastTickMs_ = 0;
     // The playback clock counts whole display refreshes, not the time between
     // ticks (see update); this is how far that count has drifted from real time,
@@ -1527,30 +1530,21 @@ private:
         // of the two. Neither is a stacked stage.
         float uiMs = 0.0f;
         float gpuMs = -1.0f;
-        // Taken while playing: has a sustainable rate (below), set once gpuMs is in.
-        bool sustainWanted = false;
+        bool playing = false;  // advanced by playback, not a step or a scrub
         bool hasRead = false;  // the read figures above are known
         bool fresh = false;    // first showing since that read (false: shown again from the cache)
         bool ioSplit = false;  // readIoMs measured apart from exrMs (see ReadTiming)
         // Time since the previous new frame reached the screen; 0 for the first
         // after a pause, which has nothing to measure against.
         float intervalMs = 0.0f;
-        // Mean of the last kTimingRateWindow intervals, this one included: the shown
-        // rate as a frame time. Taken when the sample is committed, while the
-        // intervals before it are still in the ring, so the oldest samples keep
-        // theirs once those scroll out. 0 until the window is full.
-        float rateMs = 0.0f;
+        // The info bar's fps readout (fpsShown_) while this frame was up: the
+        // panel's shown rate, so the two never disagree. 0 before it has one.
+        float infoFps = 0.0f;
         // Refreshes this frame reached the screen after the one it was due on (0 on
         // time), and frames passed over to get to it; -1 when not advanced by
         // playback (a step, a scrub, the first frame after Play).
         int lateRefreshes = -1;
         int skippedFrames = 0;
-        // The rate this frame's work could be kept up at: the slower of the read
-        // side (the worker pool reads in parallel, so workers / read time) and the
-        // UI tick's CPU or GPU time. A frame shown again from the cache had no read
-        // to pay for.
-        float sustainFps = 0.0f;
-        bool readLimited = false;  // the read side was the slower of the two
         // Frames already in the cache, in a row after this one in play order, as
         // seconds of playback when it was shown: what a run of slow reads can eat
         // into before a frame is held. Capped at kTimingAheadCapSec; -1 unknown.
@@ -1559,7 +1553,7 @@ private:
         float displayMs() const { return ocioMs + outputMs; }
     };
     static constexpr int kTimingSamples = 240; // 10 s at 24 fps
-    static constexpr int kTimingRateWindow = 24;
+    static constexpr int kTimingRateWindow = 24; // frames the capacity estimate averages over
     static constexpr double kTimingAheadCapSec = 10.0;
     // Like the pixel probe, it is a frame overlay rather than chrome: it stays up in
     // cinema mode, which is where full-screen playback is judged.
@@ -2732,9 +2726,8 @@ private:
     void timingReviewBegin();  // renderReviewWindow start: its CPU time and GPU timer
     void timingReviewEnd();    // just before its present: charged to the pending sample
     static SDL_GLContext glContextOf_(SDL_Renderer* r); // r's context, just after creating it
-    void setSustainFps(TimingSample& s); // see TimingSample::sustainFps
     double readCostMs(double readMs, double readsPerFrame); // read side per frame shown
-    void preuploadNextFrame(); // App_Player.cpp: next frame's OCIO input upload, on an idle refresh
+    void preuploadNextFrame(bool bandedOnly = false); // App_Player.cpp: next frame's OCIO input upload, on an idle refresh
     double timingBufferedAheadSec(); // see TimingSample::aheadSec
     void clearTimingSamples();
     void renderTimingsPanel(); // draw the chart (only when open)
