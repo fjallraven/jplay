@@ -8,6 +8,7 @@
 
 #include <SDL3/SDL_log.h>
 
+#include <algorithm>
 #include <cstdio>
 
 namespace py = pybind11;
@@ -258,7 +259,12 @@ bool jplayListProxyModes(std::vector<ProxyModeOption>& out) {
     }
 }
 
-bool jplayDescribePickers(const std::string& path, std::vector<PickerState>& out) {
+// The one describe_pickers call behind both public forms below: `keys` narrows the
+// answer to those pickers (media_info["keys"]), `pathOnly` asks for the cheap
+// path-and-index-only answer (media_info["path_only"]). `out` is trimmed to `keys`
+// in case the site's callback doesn't honour them.
+static bool callDescribePickers(const std::string& path, const std::vector<std::string>& keys,
+                                bool pathOnly, std::vector<PickerState>& out) {
     if (!jplayPythonReady())
         return false;
     try {
@@ -269,7 +275,22 @@ bool jplayDescribePickers(const std::string& path, std::vector<PickerState>& out
             return false;
         py::dict info;
         info["path"] = path;
+        if (!keys.empty()) {
+            py::list keyList;
+            for (const auto& key : keys)
+                keyList.append(key);
+            info["keys"] = keyList;
+        }
+        if (pathOnly)
+            info["path_only"] = true;
         parsePickerStates(it->second(info), out);
+        if (!keys.empty())
+            out.erase(std::remove_if(out.begin(), out.end(),
+                                     [&](const PickerState& state) {
+                                         return std::find(keys.begin(), keys.end(), state.key) ==
+                                                keys.end();
+                                     }),
+                      out.end());
         return true;
     } catch (const py::error_already_set& e) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[jplay] describe_pickers failed: %s", e.what());
@@ -278,6 +299,25 @@ bool jplayDescribePickers(const std::string& path, std::vector<PickerState>& out
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[jplay] describe_pickers failed: %s", e.what());
         return false;
     }
+}
+
+bool jplayDescribePickers(const std::string& path, std::vector<PickerState>& out,
+                          const std::vector<std::string>& keys) {
+    return callDescribePickers(path, keys, /*pathOnly=*/false, out);
+}
+
+bool jplayDescribePickerPathOnly(const std::string& path, const std::string& key,
+                                 PickerState& out) {
+    out = PickerState{};
+    std::vector<PickerState> states;
+    if (!callDescribePickers(path, { key }, /*pathOnly=*/true, states))
+        return false;
+    for (auto& state : states)
+        if (state.key == key) {
+            out = std::move(state);
+            break;
+        }
+    return true;
 }
 
 bool jplayHasDecoratePickers() {

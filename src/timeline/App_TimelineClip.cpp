@@ -784,66 +784,203 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
     if (metaPickers_.empty())
         return;
 
-    // Representative path = the first selectable clip's media; the rest ride along
-    // on the final commit. Skip clips with no media so a stray selection can't
-    // block the menu.
-    std::vector<int> valid;
-    std::string rep;
-    for (int id : clipIds) {
-        Clip* clip = timeline_.findClipById(id);
+    // Skip clips with no media so a stray selection can't block the menu.
+    std::vector<int> pickableClipIds;
+    std::vector<std::string> clipPaths;
+    for (int clipId : clipIds) {
+        Clip* clip = timeline_.findClipById(clipId);
         if (!clip || clip->mediaId.empty())
             continue;
         auto media = timeline_.findMediaById(clip->mediaId);
         if (!media)
             continue;
-        if (rep.empty())
-            rep = media->resolvedPath();
-        valid.push_back(id);
+        pickableClipIds.push_back(clipId);
+        clipPaths.push_back(media->resolvedPath());
     }
-    if (valid.empty() || rep.empty())
+    if (pickableClipIds.empty() || clipPaths.front().empty())
         return;
 
-    menuCascade_.clipIds = std::move(valid);
-    menuCascade_.repPath = std::move(rep);
+    // With several clips, the ones the first picker doesn't apply to are left out:
+    // a clip whose describe offers no first-picker options (a plate, an editorial
+    // sequence, anything that only exposes a version) has nothing for the pick to
+    // move along, so it would only come back as "no media" — or, worse, become the
+    // representative path and leave the menu with nothing to offer the rest. This
+    // has to be the describe's answer, not the path's regex values: a published/data
+    // path reads its department positionally, so an editorial sequence spells one
+    // (/editorial/sequences/editorial/) that no shot index knows.
+    //
+    // Only the first picker is asked about here (describe_pickers' `keys`): whether
+    // it applies, and what it offers, is all the filter and the merged column need,
+    // and gathering every other picker's options would cost an asset and a version
+    // directory scan per shot for an answer nobody reads. Path-only, too: the
+    // answer comes from the path and the cached shot index without opening each
+    // department's build descriptor, so the column can list a department a shot
+    // doesn't have — the commit's resolve finds that out for the one department
+    // picked and skips the clip with a warning. And only once per shot:
+    // the first picker's options are a property of where the path sits — sequence,
+    // shot, project — not of which department, asset or version it is on, so clips
+    // whose path values agree on everything but the picker keys share one query.
+    // Grouping falls back to the exact path when the values can't be read. The
+    // representative clip then gets the one full describe the menu is built from.
+    const std::string firstPickerKey = metaPickers_.front().key;
+    std::vector<size_t> groupOfClip(clipPaths.size(), 0);
+    std::vector<std::string> groupPaths;
+    if (pickableClipIds.size() > 1) {
+        std::vector<std::map<std::string, std::string>> pathValuesPerClip;
+        const bool haveValues = jplayGetPathValues(clipPaths, pathValuesPerClip) &&
+                                pathValuesPerClip.size() == clipPaths.size();
+        auto isPickerKey = [this](const std::string& valueKey) {
+            return pickerDisplayIndex(valueKey) >= 0;
+        };
+        std::map<std::string, size_t> groupByContext;
+        for (size_t clipIndex = 0; clipIndex < clipPaths.size(); ++clipIndex) {
+            std::string context;
+            if (haveValues) {
+                for (const auto& [valueKey, value] : pathValuesPerClip[clipIndex]) {
+                    if (isPickerKey(valueKey))
+                        continue;
+                    context += valueKey + '=' + value + '\n';
+                }
+            } else {
+                context = clipPaths[clipIndex];
+            }
+            auto [groupEntry, isNewGroup] = groupByContext.emplace(context, groupPaths.size());
+            if (isNewGroup)
+                groupPaths.push_back(clipPaths[clipIndex]);
+            groupOfClip[clipIndex] = groupEntry->second;
+        }
+    }
+
+    // Until the describes land the cascade carries the whole selection; the
+    // completion narrows it to the clips the first picker applies to.
+    menuCascade_.clipIds = pickableClipIds;
+    menuCascade_.repPath = clipPaths.front();
     menuCascade_.chain.clear();
+    menuCascade_.selectionStates.clear();
     // Labels and colors, whenever they arrive, go into the table in place — see
     // relabelClipPickerMenu. A decoration that lands after the menu was dismissed
     // must not put it back up, hence the isOpen() guard.
-    menuCascade_.decorateApply = [this](const std::vector<PickerState>& st) {
+    menuCascade_.decorateApply = [this](const std::vector<PickerState>& pickerStates) {
         if (clipMenu_.isOpen())
-            relabelClipPickerMenu(st);
+            relabelClipPickerMenu(pickerStates);
     };
     pickerMenuX_ = mx;
     pickerMenuY_ = my;
 
-    // The first describe runs on pickerWork_ like every click that follows, so a
-    // site whose describe_pickers reaches a database can't freeze the frame the
+    // The describes run on pickerWork_ like every click that follows, so a site
+    // whose describe_pickers reaches a database can't freeze the frame the
     // right-click lands on; the menu opens when the result does. `loading` stays
     // clear on purpose — it means "an open view is waiting", and cancelPickerIfClosed
     // would read a not-yet-open menu as a cancel and drop this very query. The
     // queryId guard alone is enough: a second right-click bumps it and supersedes
     // this one.
-    const uint64_t id = ++menuCascade_.queryId;
-    struct DescribeResult {
+    const uint64_t describeQueryId = ++menuCascade_.queryId;
+    struct FirstPickerCheck {
         bool ok = false;
-        std::vector<PickerState> states;
+        PickerState state; // the first picker's state; no options when it doesn't apply
+        bool applies() const { return ok && !state.options.empty(); }
     };
-    auto res = std::make_shared<DescribeResult>();
-    const std::string path = menuCascade_.repPath;
-    pickerWork_.submit(
-        [path, res](const std::atomic<bool>&) {
-            res->ok = jplayDescribePickers(path, res->states);
-        },
-        [this, id, res] {
-            if (id != menuCascade_.queryId) // superseded by a newer open
+    struct MenuDescribe {
+        std::vector<FirstPickerCheck> groupChecks;   // one per groupPaths entry
+        size_t representativeClip = 0;               // index into pickableClipIds
+        bool representativeOk = false;
+        std::vector<PickerState> representativeStates; // full describe, every picker
+    };
+    auto menuDescribe = std::make_shared<MenuDescribe>();
+    menuDescribe->groupChecks.resize(groupPaths.size());
+
+    // The first-picker check per group, then the representative's full describe.
+    auto describeForMenu = [groupPaths, groupOfClip, clipPaths, firstPickerKey,
+                            menuDescribe](const std::atomic<bool>& stopRequested) {
+        const size_t groupCount = groupPaths.size();
+        for (size_t groupIndex = 0; groupIndex < groupCount; ++groupIndex) {
+            if (stopRequested)
                 return;
-            if (!res->ok)
-                return;
-            rebuildClipPickerMenu(res->states, /*navigating=*/false);
-            // The annotations follow separately, so the columns are up as soon as
-            // the option lists are known.
-            startPickerDecorate(menuCascade_, res->states);
-        });
+            auto& groupCheck = menuDescribe->groupChecks[groupIndex];
+            groupCheck.ok = jplayDescribePickerPathOnly(groupPaths[groupIndex], firstPickerKey,
+                                                        groupCheck.state);
+        }
+        // The representative is the first clip the first picker applies to — the
+        // whole selection's first clip when it applies to none (or there is one).
+        for (size_t clipIndex = 0; clipIndex < clipPaths.size() && groupCount > 0; ++clipIndex)
+            if (menuDescribe->groupChecks[groupOfClip[clipIndex]].applies()) {
+                menuDescribe->representativeClip = clipIndex;
+                break;
+            }
+        if (stopRequested)
+            return;
+        menuDescribe->representativeOk =
+            jplayDescribePickers(clipPaths[menuDescribe->representativeClip],
+                                 menuDescribe->representativeStates);
+    };
+
+    auto openMenu = [this, describeQueryId, menuDescribe, groupOfClip, pickableClipIds,
+                     clipPaths, firstPickerKey] {
+        if (describeQueryId != menuCascade_.queryId) // superseded by a newer open
+            return;
+        if (!menuDescribe->representativeOk)
+            return;
+        const size_t representativeClip = menuDescribe->representativeClip;
+        const auto& groupChecks = menuDescribe->groupChecks;
+
+        std::vector<int> appliedClipIds;
+        if (!groupChecks.empty()) {
+            for (size_t clipIndex = 0; clipIndex < pickableClipIds.size(); ++clipIndex) {
+                if (!groupChecks[groupOfClip[clipIndex]].applies()) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                                "Picker: ignoring clip %d - no %s picker for %s",
+                                pickableClipIds[clipIndex], firstPickerKey.c_str(),
+                                clipPaths[clipIndex].c_str());
+                    continue;
+                }
+                appliedClipIds.push_back(pickableClipIds[clipIndex]);
+            }
+        }
+        // Nothing the first picker applies to (or a single clip): keep the
+        // selection as it was, so the menu behaves exactly as it did before.
+        if (appliedClipIds.empty())
+            appliedClipIds = pickableClipIds;
+
+        // Every first-picker option the applied clips' shots offer: the menu lists
+        // the lot, and a clip whose shot lacks the picked one is skipped with a
+        // warning at commit. The representative's own list goes first so its order
+        // (and currentIndex) leads; the other shots append what's new.
+        std::vector<PickerState> selectionStates;
+        if (appliedClipIds.size() > 1) {
+            PickerState merged;
+            merged.key = firstPickerKey;
+            for (const auto& state : menuDescribe->representativeStates)
+                if (state.key == firstPickerKey)
+                    merged = state;
+            std::vector<size_t> mergedGroups;
+            for (size_t clipIndex = 0; clipIndex < pickableClipIds.size(); ++clipIndex) {
+                const size_t groupIndex = groupOfClip[clipIndex];
+                const auto& groupCheck = groupChecks[groupIndex];
+                if (!groupCheck.applies() ||
+                    std::find(mergedGroups.begin(), mergedGroups.end(), groupIndex) !=
+                        mergedGroups.end())
+                    continue;
+                mergedGroups.push_back(groupIndex);
+                for (const auto& option : groupCheck.state.options)
+                    if (std::none_of(merged.options.begin(), merged.options.end(),
+                                     [&](const PickerOption& known) {
+                                         return known.value == option.value;
+                                     }))
+                        merged.options.push_back(option);
+            }
+            if (!merged.options.empty())
+                selectionStates.push_back(std::move(merged));
+        }
+        menuCascade_.selectionStates = std::move(selectionStates);
+        menuCascade_.clipIds = std::move(appliedClipIds);
+        menuCascade_.repPath = clipPaths[representativeClip];
+        rebuildClipPickerMenu(menuDescribe->representativeStates, /*navigating=*/false);
+        // The annotations follow separately, so the columns are up as soon as
+        // the option lists are known.
+        startPickerDecorate(menuCascade_, menuDescribe->representativeStates);
+    };
+
+    pickerWork_.submit(describeForMenu, openMenu);
 }
 
 // The values `key` currently takes across `clipIds`, deduplicated and in
@@ -958,9 +1095,33 @@ std::vector<App::PickerColumn> App::buildPickerColumns(const std::vector<PickerS
     // picking from it moves the whole selection onto one of the values already in
     // play. Empty for a single clip (the panel's case, and a lone right-click),
     // which leaves the described list exactly as it was.
+    //
+    // Where the cascade gathered every selected shot's options (selectionStates,
+    // filled by openClipPickerMenu), the column lists all of them instead: a clip
+    // whose shot lacks the picked value is skipped with a warning at commit. Labels
+    // come from `states` where it has the value, so decorations still land.
     std::vector<PickerOption> selOpts;
-    if (c.clipIds.size() > 1 && commitIdx >= 0)
-        selOpts = selectionPickerValues(metaPickers_[commitIdx].key, c.clipIds);
+    int selChecked = c.chain.empty() ? 0 : -1;
+    if (c.clipIds.size() > 1 && commitIdx >= 0) {
+        const std::string& commitKey = metaPickers_[commitIdx].key;
+        auto selectionState = std::find_if(c.selectionStates.begin(), c.selectionStates.end(),
+                                           [&](const PickerState& st) {
+                                               return st.key == commitKey && !st.options.empty();
+                                           });
+        if (selectionState != c.selectionStates.end()) {
+            selOpts = selectionState->options;
+            if (const PickerState* described = stateFor(commitKey))
+                for (PickerOption& option : selOpts)
+                    for (const PickerOption& decorated : described->options)
+                        if (decorated.value == option.value) {
+                            option = decorated;
+                            break;
+                        }
+            selChecked = c.chain.empty() ? selectionState->currentIndex : -1;
+        } else {
+            selOpts = selectionPickerValues(commitKey, c.clipIds);
+        }
+    }
 
     // The "active" picker is the next real choice after the last navigated one.
     // Normally that's navIdx+1, but a forced picker there (0 or 1 option — its value
@@ -1008,11 +1169,10 @@ std::vector<App::PickerColumn> App::buildPickerColumns(const std::vector<PickerS
         // nothing — the other selected clips' values are the list either way.
         if (isCommit && !selOpts.empty()) {
             col.options = selOpts;
-            // Index 0 is the representative clip's value (it leads the selection),
-            // which is the same thing the described list's currentIndex marks. A
-            // navigated chain re-resolved that path, so the mark stops meaning
-            // anything then — exactly as clearChecks has it below.
-            col.checkedIdx = c.chain.empty() ? 0 : -1;
+            // The representative clip's value (selChecked above). A navigated chain
+            // re-resolved that path, so the mark stops meaning anything then —
+            // exactly as clearChecks has it below.
+            col.checkedIdx = selChecked;
             cols.push_back(std::move(col));
             continue;
         }
@@ -1187,7 +1347,7 @@ std::string topOfPicker(const std::string& path, const std::string& key) {
     if (key.empty() || path.empty())
         return path;
     std::vector<PickerState> states;
-    if (!jplayDescribePickers(path, states))
+    if (!jplayDescribePickers(path, states, { key })) // that picker's options only
         return path;
     for (const auto& s : states) {
         if (s.key != key || s.options.empty())
@@ -1456,8 +1616,7 @@ void App::startPickerCommit(PickerCascade& c, const std::string& key, const std:
             if (!r.ok || (r.missed && sameAsNow)) {
                 ++missing;
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                            "Picker: %s=%s did not resolve for clip %d - nothing loaded, "
-                            "still on %s",
+                            "Picker: %s %s not available for clip %d - skipped, still on %s",
                             key.c_str(), value.c_str(), r.clipId, r.from.c_str());
                 continue;
             }

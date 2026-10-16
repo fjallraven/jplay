@@ -1089,13 +1089,21 @@ def describe_pickers(media_info):
     "badge_color"} in its place, and a
     decorate_pickers callback can annotate an option list afterwards; core does
     neither. See jplay_naming_convention.py for both.
+
+    An optional media_info["keys"] (a list of picker keys) limits the answer to
+    those pickers, and skips gathering the others' options altogether — the host
+    passes it when all it needs to know is whether one picker applies (a
+    multi-clip right-click asks only about the first picker, once per shot).
     """
     path = media_info.get("path")
     if not path:
         return []
+    keys = media_info.get("keys")
     a = _analyze(path)
     out = []
     for p in _PICKERS:
+        if keys and p["key"] not in keys:
+            continue
         if _eff_kind(a, p) == "dir":
             idx, opts = _dir_picker_options(a, p["key"])
         else:

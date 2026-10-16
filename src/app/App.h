@@ -2083,6 +2083,10 @@ private:
         std::vector<std::pair<std::string, std::string>> chain; // (key,value) picks so far, in display order
         uint64_t queryId = 0;
         bool loading = false;       // a query is in flight (the menu shows LOADING; the panel just waits)
+        // With several clips: per picker, every option any selected clip's shot
+        // offers, merged from each shot's describe (the representative's own list
+        // first, so its currentIndex still marks its value). Empty for one clip.
+        std::vector<PickerState> selectionStates;
         // The decoration in flight for this cascade, at most one. Held here and by
         // the worker; dropping this end is the cancel. decorateQueryId is the
         // queryId the decoration belongs to — once the cascade's own id moves past

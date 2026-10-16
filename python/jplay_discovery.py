@@ -211,36 +211,42 @@ def _shared_projects():
     Deliberately does NOT stat the resolved OTIO paths. jplay checks them on a
     work-queue thread under a wall-clock budget because std::filesystem::exists
     can hang forever on a dead mount; a synchronous stat here would hang the
-    caller instead. Entries are candidates — reaching one is what confirms it."""
-    cfg = _read_conf(_preferences_paths())
-    ini = cfg.get("shared_projects", "projects_ini_config", fallback="").strip()
-    tmpl = cfg.get("shared_projects", "project_otio_path", fallback="").strip()
-    if not ini or not tmpl or not os.path.isfile(ini):
+    caller instead. Entries are candidates — reaching one is what confirms it.
+    Sorted by project code."""
+    preferences = _read_conf(_preferences_paths())
+    projects_ini_path = preferences.get(
+        "shared_projects", "projects_ini_config", fallback="").strip()
+    otio_path_template = preferences.get(
+        "shared_projects", "project_otio_path", fallback="").strip()
+    if (not projects_ini_path or not otio_path_template
+            or not os.path.isfile(projects_ini_path)):
         return []
-    out = []
+    shared_projects = []
     try:
-        with open(ini, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line[0] in "#;[" or "," not in line:
+        with open(projects_ini_path, "r", encoding="utf-8",
+                  errors="replace") as projects_ini_file:
+            for ini_line in projects_ini_file:
+                ini_line = ini_line.strip()
+                if not ini_line or ini_line[0] in "#;[" or "," not in ini_line:
                     continue
-                code, name = (x.strip() for x in line.split(",", 1))
-                if not code:
+                project_code, project_name = (
+                    field.strip() for field in ini_line.split(",", 1))
+                if not project_code:
                     continue
-                otio = tmpl.replace("{project}", code)
-                out.append({
-                    "name": name or code,
-                    "code": code,
-                    "root": os.path.dirname(otio),
+                otio_path = otio_path_template.replace("{project}", project_code)
+                shared_projects.append({
+                    "name": project_name or project_code,
+                    "code": project_code,
+                    "root": os.path.dirname(otio_path),
                     "project_file": "",
-                    "otio": otio,
+                    "otio": otio_path,
                     "id": "",
                     "last_opened": 0,
                     "source": "shared",
                 })
-    except OSError as e:
-        _dbg(f"cannot read {ini!r}: {e}")
-    return out
+    except OSError as read_error:
+        _dbg(f"cannot read {projects_ini_path!r}: {read_error}")
+    return shared_projects
 
 
 def list_projects():

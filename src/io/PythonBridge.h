@@ -73,7 +73,24 @@ void jplayClearPathCaches();
 // "badge_color" are "#RRGGBB" (the leading # optional) or an (r, g, b) tuple of
 // 0-255 ints; None, a missing key or an unparseable value all mean "the view's
 // own color", as does pure black.
-bool jplayDescribePickers(const std::string& path, std::vector<PickerState>& out);
+//
+// A non-empty `keys` asks for those pickers only (passed as media_info["keys"]),
+// so the callback can skip gathering every other picker's options — a whole
+// directory scan each. A callback that ignores it still answers; `out` is trimmed
+// to `keys` either way.
+bool jplayDescribePickers(const std::string& path, std::vector<PickerState>& out,
+                          const std::vector<std::string>& keys = {});
+
+// Whether picker `key` applies to `path`, answered from the path and
+// session-cached indexes alone (describe_pickers with media_info["path_only"]):
+// no per-option file reads, so it is cheap enough to ask once per shot of a large
+// selection. The options are what a cheap check can't rule out — a value listed
+// here may still not exist, which the resolve then reports — so this is for
+// deciding whether a picker applies, not for showing a menu from. `out` is that
+// picker's state, or left empty (no key, no options) when it doesn't apply.
+// Returns false only when the call itself failed.
+bool jplayDescribePickerPathOnly(const std::string& path, const std::string& key,
+                                 PickerState& out);
 
 // Whether a decorate_pickers callback exists at all, so a caller can skip the
 // worker hop when no site registered one. Answered once and cached: the

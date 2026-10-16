@@ -262,7 +262,8 @@ void App::newProject() {
     nextSeqId_  = 1;
     nextShotId_ = 1;
     nextTransitionId_ = 1;
-    selectedTransitionId_ = -1;
+    // Clip ids restart at 1, so a stale selection would land on the new project's clips.
+    clearClipSelection(); // also drops the dissolve selection
     activeSequenceIdx_ = 0;
     viewHistory_.clear();      // the scopes it names belong to the outgoing project
     // Fresh project → the default colour-management mode, which is the one
@@ -1692,6 +1693,7 @@ void App::finishLoad() {
     // timeline (deleting the last clip) must not bring it back over the user's
     // work. newProject() clears the flag again.
     hideLauncher_ = true;
+    clearClipSelection(); // the outgoing project's ids may name clips in this one
     // A .jpproj load matches a file on disk, so it starts clean. An import or a
     // directory build does not: it is unsaved work by construction (both leave
     // projectHasPath_ false), so it must start dirty. 0 is the "matches nothing"
