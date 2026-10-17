@@ -2018,6 +2018,13 @@ void App::handleEvent(SDL_Event& e) {
     // Export dialog blocks all other input while open.
     if (exportDialog_.isOpen()) {
         exportDialog_.handleEvent(e, window_);
+        // Open on the success view: load the export like an Import Media pick
+        // (processPendingDialogs places it at the playhead).
+        std::string opened = exportDialog_.takeOpenRequest();
+        if (!opened.empty()) {
+            std::lock_guard<std::mutex> lock(dialogMutex_);
+            pendingMediaPaths_.push_back(std::move(opened));
+        }
         return;
     }
     // Missing Source modal blocks all other input while open.

@@ -74,6 +74,10 @@ public:
     // true = event consumed (host should stop processing it).
     bool handleEvent(const SDL_Event& e, SDL_Window* win);
 
+    // The exported file the success view's Open button asked the host to load
+    // (the first frame for a sequence), or empty. One-shot: cleared on read.
+    std::string takeOpenRequest() { std::string p; p.swap(openRequest_); return p; }
+
     // Render the modal overlay. Call last in the host's render pass.
     void render(SDL_Renderer* r, TextFont* font, float winW, float winH);
 
@@ -120,6 +124,19 @@ private:
 
     Button browseBtn_, exportBtn_, cancelBtn_;
 
+    // ── Success view ─────────────────────────────────────────────────────
+    // A finished export replaces the form with a small "Export Successful"
+    // popup (see enterSuccessView). Copy Path and Show in File Explorer leave it
+    // up; Open, Close (or Escape / Enter) dismiss it.
+    bool        showSuccess_ = false;
+    std::string successPath_;   // what Copy Path copies: the file, or the sequence's folder
+    std::string revealPath_;    // what Show in File Explorer selects: the file, or the first frame
+    std::vector<std::string> successDetails_; // settings summary under the name (format, codec, ...)
+    std::string successNote_;   // feedback line under the details ("Path copied.")
+    std::string openRequest_;   // set by Open, collected by the host (takeOpenRequest)
+    Button      openBtn_, copyPathBtn_, revealBtn_, successCloseBtn_;
+    SDL_FRect   successRect_{};
+
     // ── Layout rects (recomputed each render) ────────────────────────────
     SDL_FRect dialogRect_{};
     SDL_FRect progressBarOuter_{};
@@ -133,6 +150,8 @@ private:
     std::string         exportStatusMsg_;      // guarded by statusMutex_
     std::atomic<bool>   exportDone_{ false };
     std::atomic<bool>   exportError_{ false };
+    std::string         exportedPath_;         // guarded by statusMutex_; set on success
+    std::string         exportedRevealPath_;   // guarded by statusMutex_; set on success
 
     // ── Pending browse path (SDL dialog callback → main thread) ──────────
     std::mutex  browseMutex_;
@@ -155,6 +174,15 @@ private:
     void refreshAudioOptions();
 
     void setStatusMsg(const std::string& s);
+    // Worker side of a successful export: record what was written, for the
+    // success view to show, copy and reveal.
+    void setExportedPath(const std::string& path, const std::string& revealPath);
+    // Swap the form for the success view once the worker has finished without
+    // error. Called from both handleEvent and render, since the export can end
+    // while no events arrive.
+    void enterSuccessViewIfDone();
+    bool handleSuccessEvent(const SDL_Event& e, SDL_Window* win);
+    void renderSuccess(SDL_Renderer* r, TextFont* font, float winW, float winH);
     std::string getStatusMsg() const;
 
     // Cut the dialog's rows off `body` in order, storing each widget's rect, and

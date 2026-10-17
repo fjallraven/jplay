@@ -4,6 +4,7 @@
 #include "SkinColors.h"
 #include "VideoSource.h"
 #include "ImageSeq.h"
+#include "RevealFile.h"
 
 #include <unordered_map>
 
@@ -256,6 +257,9 @@ void ExportDialog::open(Mode mode, int64_t timelineLen,
     exportError_ = false;
     exportProgress_ = 0;
     setStatusMsg("");
+    setExportedPath("", "");
+    showSuccess_ = false;
+    successNote_.clear();
 
     mode_        = mode;
     timelineLen_ = timelineLen;
@@ -400,6 +404,64 @@ std::string ExportDialog::getStatusMsg() const {
     return exportStatusMsg_;
 }
 
+void ExportDialog::setExportedPath(const std::string& path, const std::string& revealPath) {
+    std::lock_guard<std::mutex> lk(statusMutex_);
+    exportedPath_       = path;
+    exportedRevealPath_ = revealPath;
+}
+
+void ExportDialog::enterSuccessViewIfDone() {
+    if (showSuccess_ || exporting_ || !exportDone_ || exportError_) return;
+    if (exportThread_.joinable()) exportThread_.join(); // finished; just reap it
+    {
+        std::lock_guard<std::mutex> lk(statusMutex_);
+        successPath_ = exportedPath_;
+        revealPath_  = exportedRevealPath_;
+    }
+    // A pre-flight error sets exportDone_ with exportError_, so reaching here
+    // without a path would mean a worker forgot to record one: keep the form.
+    if (successPath_.empty()) return;
+    showSuccess_ = true;
+    successNote_.clear();
+
+    // Summarise what was written. The form is locked while the export runs, so
+    // the combos and range fields still hold the settings it used.
+    successDetails_.clear();
+    int64_t startFrame, endFrame;
+    exportRange(startFrame, endFrame);
+    const int64_t count = endFrame - startFrame + 1;
+    char buf[160];
+    std::string res;
+    if (srcW_ > 0 && srcH_ > 0) {
+        SDL_snprintf(buf, sizeof(buf), "%dx%d, ", srcW_, srcH_);
+        res = buf;
+    }
+    SDL_snprintf(buf, sizeof(buf), "%.3g fps, %lld frame%s (%lld-%lld)",
+                 fps_, (long long)count, count == 1 ? "" : "s",
+                 (long long)startFrame, (long long)endFrame);
+    const std::string timing = buf;
+
+    if (mode_ == Mode::Movie) {
+        successDetails_.push_back(containerCombo_.value() + ", " + codecCombo_.value()
+                                  + ", " + qualityCombo_.value());
+        const bool audio = movieAudioCombo_.selected() == 0
+                        && AudioMixdown::hasAudio(audioSegs_, startFrame, endFrame);
+        successDetails_.push_back(res + timing);
+        successDetails_.push_back(audio ? "Audio: Included" : "Audio: None");
+    } else if (mode_ == Mode::Audio) {
+        successDetails_.push_back(audioFormatCombo_.value() + ", " + audioVariantCombo_.value()
+                                  + ", " + sampleRateCombo_.value());
+        SDL_snprintf(buf, sizeof(buf), "%.2f s, ", fps_ > 0.0 ? count / fps_ : 0.0);
+        successDetails_.push_back(buf + timing);
+    } else {
+        successDetails_.push_back(formatCombo_.value());
+        successDetails_.push_back(res + timing);
+    }
+    pathInput_.setFocus(false);
+    startInput_.setFocus(false);
+    endInput_.setFocus(false);
+}
+
 // ─── Browse dialog callback ──────────────────────────────────────────────────
 
 void SDLCALL ExportDialog::onBrowseChosen(void* userdata, const char* const* filelist, int) {
@@ -423,6 +485,9 @@ bool ExportDialog::handleEvent(const SDL_Event& e, SDL_Window* win) {
             pendingBrowsePath_.clear();
         }
     }
+
+    enterSuccessViewIfDone();
+    if (showSuccess_) return handleSuccessEvent(e, win);
 
     // If export just finished, allow re-click on Cancel to close.
     if (exportDone_ && !exporting_) {
@@ -599,6 +664,8 @@ float ExportDialog::layoutRows(SDL_Renderer* r, TextFont* font, SDL_FRect body) 
 
 void ExportDialog::render(SDL_Renderer* r, TextFont* font, float winW, float winH) {
     if (!open_ || !font) return;
+    enterSuccessViewIfDone();
+    if (showSuccess_) { renderSuccess(r, font, winW, winH); return; }
 
     const float scale = dpiScale;
     const float dw = 460.f * scale;
@@ -970,6 +1037,7 @@ void ExportDialog::runMovieExport(int64_t startFrame, int64_t endFrame) {
     } else {
         exportProgress_ = 100;
         setStatusMsg("Done! Saved to: " + fs::path(outPath).filename().string());
+        setExportedPath(outPath, outPath);
     }
     exportDone_ = true;
 }
@@ -1094,6 +1162,7 @@ void ExportDialog::runAudioExport(int64_t startFrame, int64_t endFrame) {
     } else {
         exportProgress_ = 100;
         setStatusMsg("Done! Saved to: " + fs::path(outPath).filename().string());
+        setExportedPath(outPath, outPath);
     }
 }
 
@@ -1281,6 +1350,138 @@ void ExportDialog::runImageExport(int64_t startFrame, int64_t endFrame) {
     } else {
         exportProgress_ = 100;
         setStatusMsg("Done! " + std::to_string(total) + " frames written.");
+        // The sequence is named by its printf-style pattern (what Nuke, ffmpeg
+        // and OIIO read); reveal opens the folder on the first frame.
+        const std::string ext = isPng ? "png" : "exr";
+        char first[64];
+        SDL_snprintf(first, sizeof(first), "frame_%06lld.%s",
+                     (long long)startFrame, ext.c_str());
+        setExportedPath((fs::path(dir) / ("frame_%06d." + ext)).string(),
+                        (fs::path(dir) / first).string());
     }
     exportDone_ = true;
+}
+
+// ─── Success view ────────────────────────────────────────────────────────────
+
+bool ExportDialog::handleSuccessEvent(const SDL_Event& e, SDL_Window* win) {
+    if (e.type == SDL_EVENT_KEY_DOWN
+        && (e.key.key == SDLK_ESCAPE || e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER)) {
+        close(win);
+        return true;
+    }
+    if (openBtn_.handleEvent(e)) {
+        openRequest_ = revealPath_;
+        close(win);
+        return true;
+    }
+    if (copyPathBtn_.handleEvent(e)) {
+        SDL_SetClipboardText(successPath_.c_str());
+        successNote_ = "Path copied to clipboard.";
+        return true;
+    }
+    if (revealBtn_.handleEvent(e)) {
+        successNote_ = revealInFileManager(revealPath_) ? ""
+                                                        : "Could not open File Explorer.";
+        return true;
+    }
+    if (successCloseBtn_.handleEvent(e)) {
+        close(win);
+        return true;
+    }
+    return true; // modal: block everything else
+}
+
+void ExportDialog::renderSuccess(SDL_Renderer* r, TextFont* font, float winW, float winH) {
+    const float scale = dpiScale;
+    const float padX = 16.f * scale;
+    const float padY = 14.f * scale;
+    const float rowH = 22.f * scale;
+    const float gap  =  8.f * scale;
+    const float titleH = rowH + padY;
+    const float glyphH = font->lineHeight();
+
+    // A folder path may end in a separator, which leaves filename() empty.
+    fs::path p = fs::path(successPath_);
+    std::string name = p.filename().string();
+    if (name.empty()) name = p.parent_path().filename().string();
+    if (name.empty()) name = successPath_;
+
+    const char* kOpen   = "Open";
+    const char* kCopy   = "Copy Path";
+    const char* kReveal = "Show in File Explorer";
+    const char* kClose  = "Close";
+    auto btnW = [&](const char* l) {
+        return std::max(80.f * scale, font->measure(r, l) + 20.f * scale);
+    };
+    const float wOpen = btnW(kOpen), wCopy = btnW(kCopy), wReveal = btnW(kReveal),
+                wClose = btnW(kClose);
+    const float buttonsW = wOpen + wCopy + wReveal + wClose + 3.f * gap;
+
+    // Wide enough for the buttons and the name, but never wider than the window.
+    float contentW = std::max({ 360.f * scale, buttonsW, font->measure(r, name.c_str()) });
+    for (const std::string& d : successDetails_)
+        contentW = std::max(contentW, font->measure(r, d.c_str()));
+    float dw = contentW + 2.f * padX;
+    dw = std::min(dw, std::max(winW - 2.f * padX, buttonsW + 2.f * padX));
+    const float detailsH = successDetails_.size() * glyphH;
+    const float dh = titleH + padY + rowH + detailsH + gap + rowH + gap * 1.5f + rowH + padY;
+
+    SDL_FRect full = { 0.f, 0.f, winW, winH };
+    successRect_ = center(full, dw, dh);
+    successRect_.x = std::round(successRect_.x);
+    successRect_.y = std::round(successRect_.y);
+
+    setColor(r, kOverlay);
+    jplay::fillRect(r, &full);
+    setColor(r, kDialogBg);
+    jplay::fillRect(r, &successRect_);
+    setColor(r, kBorder);
+    jplay::drawRect(r, &successRect_);
+
+    SDL_FRect body = successRect_;
+    SDL_FRect titleBar = cutTop(body, titleH);
+    body = inset(body, padX, padY);
+
+    setColor(r, kTitleBg);
+    jplay::fillRect(r, &titleBar);
+    setColor(r, kSeparator);
+    jplay::drawLine(r, titleBar.x, titleBar.y + titleBar.h,
+                      titleBar.x + titleBar.w, titleBar.y + titleBar.h);
+    {
+        SDL_FRect slot = centerV(titleBar, glyphH);
+        font->draw(r, slot.x + padX, slot.y, kTitleText, "Export Successful");
+    }
+
+    SDL_FRect row = cutTop(body, rowH);
+    font->draw(r, row.x, centerV(row, glyphH).y, kSuccess, name.c_str());
+    for (const std::string& d : successDetails_) {
+        row = cutTop(body, glyphH);
+        font->draw(r, row.x, row.y, kLabel, d.c_str());
+    }
+    gapTop(body, gap);
+
+    row = cutTop(body, rowH);
+    if (!successNote_.empty())
+        font->draw(r, row.x, centerV(row, glyphH).y, kLabel, successNote_.c_str());
+    gapTop(body, gap * 1.5f);
+
+    // Buttons right-aligned, Close outermost.
+    row = cutTop(body, rowH);
+    successCloseBtn_.setRect(cutRight(row, wClose));
+    successCloseBtn_.setLabel(kClose);
+    gapRight(row, gap);
+    revealBtn_.setRect(cutRight(row, wReveal));
+    revealBtn_.setLabel(kReveal);
+    gapRight(row, gap);
+    copyPathBtn_.setRect(cutRight(row, wCopy));
+    copyPathBtn_.setLabel(kCopy);
+    gapRight(row, gap);
+    openBtn_.setRect(cutRight(row, wOpen));
+    openBtn_.setLabel(kOpen);
+
+    openBtn_.render(r, font);
+    copyPathBtn_.render(r, font);
+    revealBtn_.render(r, font);
+    successCloseBtn_.render(r, font);
 }
