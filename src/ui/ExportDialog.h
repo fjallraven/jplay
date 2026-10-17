@@ -4,6 +4,7 @@
 #include "TextFont.h"
 #include "Timeline.h"     // ClipType
 #include "OcioManager.h"  // OcioManager::CpuTransform
+#include "AudioMixdown.h"
 
 #include <SDL3/SDL.h>
 
@@ -14,13 +15,14 @@
 #include <thread>
 #include <vector>
 
-// Modal export dialog for "Export Movie" and "Export Image Sequence".
+// Modal export dialog for "Export Movie", "Export Image Sequence" and
+// "Export Audio".
 // The host feeds it events before other handlers and renders it last so it
 // overlays everything. Export runs on a background thread; the host supplies a
 // snapshot of per-frame source info before starting.
 class ExportDialog {
 public:
-    enum class Mode { Movie, ImageSequence };
+    enum class Mode { Movie, ImageSequence, Audio };
 
     // Per-frame source info built by the host on the main thread.
     struct FrameSource {
@@ -63,6 +65,12 @@ public:
         colorXf_ = std::move(t);
     }
 
+    // The timeline's audio mix, for Audio mode and for the movie's soundtrack.
+    // Built by the host on the main thread (App::exportAudioSegments); the
+    // encoder thread renders it through an AudioMixdown. Call after open(): an
+    // empty mix defaults the movie's Audio option to None.
+    void setAudioSegments(std::vector<AudioMixdown::Segment> segs);
+
     // true = event consumed (host should stop processing it).
     bool handleEvent(const SDL_Event& e, SDL_Window* win);
 
@@ -86,6 +94,7 @@ private:
     // Per-frame snapshot (set by host before export).
     std::vector<FrameSource> frames_;
     std::map<std::string, OcioManager::CpuTransform> colorXf_; // see setColorTransforms
+    std::vector<AudioMixdown::Segment> audioSegs_;              // see setAudioSegments
 
     // The display-referred bytes to write for one decoded frame: the frame through
     // its media's colour transform, or its own 8-bit buffer when it has none.
@@ -99,9 +108,15 @@ private:
     TextInput startInput_, endInput_;
 
     // Movie-only
-    Combobox containerCombo_, codecCombo_, qualityCombo_;
+    Combobox containerCombo_, codecCombo_, qualityCombo_, movieAudioCombo_;
     // Image-only
     Combobox formatCombo_;
+    // Audio-only. The variant combo is bit depth for PCM/lossless formats and
+    // bitrate for lossy ones; both it and the sample rates are rebuilt from the
+    // format whenever the format changes (see refreshAudioOptions).
+    Combobox audioFormatCombo_, audioVariantCombo_, sampleRateCombo_;
+    std::vector<int> audioFormats_; // indices into the format table ffmpeg can encode
+    int shownAudioFormat_ = -1;     // audioFormatCombo_ selection the options match
 
     Button browseBtn_, exportBtn_, cancelBtn_;
 
@@ -128,6 +143,16 @@ private:
     void startExport();
     void runMovieExport(int64_t startFrame, int64_t endFrame);
     void runImageExport(int64_t startFrame, int64_t endFrame);
+    void runAudioExport(int64_t startFrame, int64_t endFrame);
+
+    // Render the mix over [startFrame, endFrame] to a headerless f32le stereo
+    // file at kMovieAudioRate, for the movie encoder to read as its second
+    // input. Reports progress as it goes; false on cancel or a write error.
+    bool renderAudioTemp(int64_t startFrame, int64_t endFrame, const std::string& path);
+
+    // The combos the current mode shows, top to bottom.
+    std::vector<Combobox*> modeCombos();
+    void refreshAudioOptions();
 
     void setStatusMsg(const std::string& s);
     std::string getStatusMsg() const;
@@ -145,5 +170,6 @@ private:
     // Bundled ffmpeg beside the executable if present, else the bare name for
     // PATH lookup. ffmpegCmd() is the same thing quoted for a popen() string.
     static std::string ffmpegPath();
+    static constexpr int kMovieAudioRate = 48000;
     static std::string ffmpegCmd();
 };

@@ -301,6 +301,7 @@ add_executable(jplay WIN32
     src/media/VideoSource.cpp
     src/media/AudioSource.cpp
     src/media/AudioEngine.cpp
+    src/media/AudioMixdown.cpp
     src/media/WaveformCache.cpp
     src/media/Frame.cpp
     src/media/ExrSource.cpp

@@ -982,10 +982,12 @@ void App::buildMenu() {
             return any;
         };
         int exportSub = menuBar_.addSubmenu(file, "Export");
-        menuBar_.addItem(exportSub, "Export Movie...",
+        menuBar_.addItem(exportSub, "Export Video...",
                          [this] { openExportMovie(); }, hasClips);
         menuBar_.addItem(exportSub, "Export Image Sequence...",
                          [this] { openExportImageSequence(); }, hasClips);
+        menuBar_.addItem(exportSub, "Export Audio...",
+                         [this] { openExportAudio(); }, hasClips);
         menuBar_.addItem(exportSub, "Export OTIO...",
                          [this] { exportOtio(); }, hasClips);
     }
@@ -3394,13 +3396,17 @@ double App::refreshPeriodSec() const {
 // what lets the engine index it by a channel's decode position and land each gain
 // value on the samples it belongs to. dB -> linear happens here so the engine
 // stays a mixer and knows nothing about curves.
-static void bakeClipGain(const Clip& c, int64_t srcFrame, double fps,
-                         AudioEngine::FeedItem& item) {
+//
+// The export mixdown bakes the same envelope over a whole clip instead
+// (aheadSec = the clip's length), which is why the target is any item carrying
+// the three envelope fields rather than a FeedItem alone.
+template <class Item>
+static void bakeClipGain(const Clip& c, int64_t srcFrame, double fps, Item& item,
+                         double aheadSec = 2.0) {
     if (c.volume.isDefault() || fps <= 0.0)
         return; // unity: leave the envelope empty so the mixer skips it entirely
-    constexpr double kGainAheadSec = 2.0;
     constexpr double kGainHz = 100.0;
-    const int n = (int)(kGainAheadSec * kGainHz) + 1;
+    const int n = (int)(aheadSec * kGainHz) + 1;
     item.gainStartSec = (double)srcFrame / fps;
     item.gainHz = kGainHz;
     item.gain.resize((size_t)n);
@@ -3456,6 +3462,66 @@ void App::updateAudio() {
         forEachViewClip(feedAudioClip);
     }
     audio_->update(active, scrub, playbackStalled_, items);
+}
+
+// The whole timeline's audio as updateAudio would feed it frame by frame, laid
+// out as segments for the offline export mixdown: the program clip's embedded
+// audio, merged into one segment per run of contiguous source frames from one
+// file (the seamless id -1 channel), plus one segment per enabled audio clip
+// with its volume curve baked over its full length.
+std::vector<AudioMixdown::Segment> App::exportAudioSegments() const {
+    std::vector<AudioMixdown::Segment> out;
+    if (timeline_.fps <= 0.0)
+        return out;
+
+    const int64_t len = timeline_.length();
+    std::string runPath;
+    int64_t runNextSrc = 0; // source frame that would continue the open run
+    bool inRun = false;
+    for (int64_t frame = 0; frame < len; ++frame) {
+        const Clip* clip = getTopMostClipAtFrame(frame);
+        std::shared_ptr<Media> pm;
+        if (clip && !clip->mediaId.empty())
+            pm = timeline_.findMediaById(clip->mediaId);
+        if (!pm || pm->type() != ClipType::Video || pm->openFailed()) {
+            inRun = false;
+            continue;
+        }
+        const int64_t srcFrame = clip->sourceOffset + (frame - clip->timelineStart);
+        std::string path = pm->resolvedPath();
+        if (inRun && path == runPath && srcFrame == runNextSrc) {
+            out.back().tlEnd = frame + 1;
+        } else {
+            const double mfps = pm->info().fps > 0.0 ? pm->info().fps : timeline_.fps;
+            AudioMixdown::Segment seg;
+            seg.path = path;
+            seg.tlStart = frame;
+            seg.tlEnd = frame + 1;
+            seg.srcStartSec = (double)srcFrame / mfps;
+            out.push_back(std::move(seg));
+            runPath = std::move(path);
+            inRun = true;
+        }
+        runNextSrc = srcFrame + 1;
+    }
+
+    const double fps = timeline_.fps;
+    forEachViewClip([&](const Clip& ac) {
+        if (!ac.audio || timeline_.clipDisabled(ac) || ac.end() <= ac.timelineStart)
+            return;
+        auto pm = timeline_.findMediaById(ac.mediaId);
+        if (!pm || pm->openFailed())
+            return;
+        AudioMixdown::Segment seg;
+        seg.path = pm->path();
+        seg.tlStart = ac.timelineStart;
+        seg.tlEnd = ac.end();
+        seg.srcStartSec = (double)ac.sourceOffset / fps;
+        bakeClipGain(ac, ac.sourceOffset, fps, seg,
+                     (double)(ac.end() - ac.timelineStart) / fps + 1.0);
+        out.push_back(std::move(seg));
+    });
+    return out;
 }
 
 void App::submitCacheRequests() {

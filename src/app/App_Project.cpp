@@ -3622,6 +3622,7 @@ void App::openExportMovie() {
     buildFrameSnapshot(timeline_, [this](int64_t f) { return getTopMostClipAtFrame(f); }, frames);
     exportDialog_.setFrames(std::move(frames));
     exportDialog_.setColorTransforms(exportColorTransforms());
+    exportDialog_.setAudioSegments(exportAudioSegments());
 }
 
 void App::openExportImageSequence() {
@@ -3647,6 +3648,13 @@ void App::openExportImageSequence() {
     buildFrameSnapshot(timeline_, [this](int64_t f) { return getTopMostClipAtFrame(f); }, frames);
     exportDialog_.setFrames(std::move(frames));
     exportDialog_.setColorTransforms(exportColorTransforms());
+}
+
+void App::openExportAudio() {
+    exportDialog_.open(ExportDialog::Mode::Audio,
+                       timeline_.length(), timeline_.inPoint, timeline_.outPoint,
+                       timeline_.fps, 0, 0, window_);
+    exportDialog_.setAudioSegments(exportAudioSegments());
 }
 
 void App::onOpenChosen(void* userdata, const char* const* filelist, int) {

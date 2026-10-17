@@ -50,19 +50,97 @@ inline void setColor(SDL_Renderer* r, SDL_Color c) {
     SDL_SetRenderDrawColor(r, c.r, c.g, c.b, c.a);
 }
 
+// ---- audio export formats
+// One entry per choice in the Format combo. `encoder` is what ffmpeg -encoders
+// must list for the entry to be offered; each variant is a bit depth (PCM and
+// lossless) or a bitrate (lossy) and carries the encoder arguments it stands for.
+struct AudioVariant { const char* label; const char* args; };
+struct AudioFormatDef {
+    const char* label;
+    const char* ext;
+    const char* encoder;
+    bool lossy;    // variants are bitrates, not bit depths
+    bool only48k;  // libopus takes 48 kHz and lower, none of the other choices
+    std::vector<AudioVariant> variants;
+    int defaultVariant;
+};
+
+const std::vector<AudioFormatDef>& audioFormatTable() {
+    static const std::vector<AudioFormatDef> kTable = {
+        { "WAV", "wav", "pcm_s16le", false, false, {
+            { "16-bit",       "-c:a pcm_s16le" },
+            { "24-bit",       "-c:a pcm_s24le" },
+            { "32-bit float", "-c:a pcm_f32le" } }, 1 },
+        { "AIFF", "aiff", "pcm_s16be", false, false, {
+            { "16-bit", "-c:a pcm_s16be" },
+            { "24-bit", "-c:a pcm_s24be" } }, 1 },
+        { "FLAC", "flac", "flac", false, false, {
+            { "16-bit", "-c:a flac -sample_fmt s16" },
+            { "24-bit", "-c:a flac -sample_fmt s32 -bits_per_raw_sample 24" } }, 1 },
+        { "ALAC (M4A)", "m4a", "alac", false, false, {
+            { "16-bit", "-c:a alac -sample_fmt s16p" },
+            { "24-bit", "-c:a alac -sample_fmt s32p -bits_per_raw_sample 24" } }, 1 },
+        { "AAC (M4A)", "m4a", "aac", true, false, {
+            { "128 kbps", "-c:a aac -b:a 128k" },
+            { "192 kbps", "-c:a aac -b:a 192k" },
+            { "256 kbps", "-c:a aac -b:a 256k" },
+            { "320 kbps", "-c:a aac -b:a 320k" } }, 2 },
+        { "MP3", "mp3", "libmp3lame", true, false, {
+            { "128 kbps", "-c:a libmp3lame -b:a 128k" },
+            { "192 kbps", "-c:a libmp3lame -b:a 192k" },
+            { "256 kbps", "-c:a libmp3lame -b:a 256k" },
+            { "320 kbps", "-c:a libmp3lame -b:a 320k" } }, 3 },
+        { "Opus", "opus", "libopus", true, true, {
+            { "64 kbps",  "-c:a libopus -b:a 64k" },
+            { "96 kbps",  "-c:a libopus -b:a 96k" },
+            { "128 kbps", "-c:a libopus -b:a 128k" },
+            { "192 kbps", "-c:a libopus -b:a 192k" },
+            { "256 kbps", "-c:a libopus -b:a 256k" } }, 2 },
+    };
+    return kTable;
+}
+
+struct SampleRateDef { const char* label; int hz; };
+constexpr SampleRateDef kSampleRates[] = {
+    { "44.1 kHz", 44100 }, { "48 kHz", 48000 }, { "96 kHz", 96000 },
+};
+
+// The movie's soundtrack codec, chosen from the container (and, for MOV, the
+// video codec) rather than offered as another combo: AAC wherever it is the
+// norm, PCM where the container or an intermediate codec calls for it. MXF
+// only takes PCM.
+std::string movieAudioArgs(const std::string& fmtId, const std::string& codecId) {
+    const bool intermediate = codecId == "prores_ks" || codecId == "prores" || codecId == "dnxhd";
+    if (fmtId == "mxf" || (fmtId == "mov" && intermediate))
+        return "-c:a pcm_s24le";
+    if (fmtId == "avi")
+        return "-c:a pcm_s16le";
+    return "-c:a aac -b:a 256k";
+}
+
 } // namespace
 
 // ─── Platform pipe helpers ───────────────────────────────────────────────────
 #ifdef _WIN32
-#  define PPOPEN  _popen
 #  define PPCLOSE _pclose
 #else
-#  define PPOPEN  popen
 #  define PPCLOSE pclose
 #endif
 
+// _popen runs the string through `cmd /c`, which strips the first and last quote
+// of any command that starts with one and holds more than one quoted token -- a
+// quoted ffmpeg path followed by a quoted output path comes out mangled and never
+// runs. One extra pair around the whole string is what that stripping removes.
+static FILE* pipeOpen(const std::string& cmd, const char* mode) {
+#ifdef _WIN32
+    return _popen(("\"" + cmd + "\"").c_str(), mode);
+#else
+    return popen(cmd.c_str(), mode);
+#endif
+}
+
 static std::string runAndCapture(const std::string& cmd) {
-    FILE* pipe = PPOPEN(cmd.c_str(), "r");
+    FILE* pipe = pipeOpen(cmd, "r");
     if (!pipe) return {};
     std::string out;
     char buf[256];
@@ -219,6 +297,29 @@ void ExportDialog::open(Mode mode, int64_t timelineLen,
         codecCombo_.setOptions(cLabels, 0);
 
         qualityCombo_.setOptions({ "High (CRF 18)", "Medium (CRF 23)", "Low (CRF 28)" }, 1);
+        movieAudioCombo_.setOptions({ "Include", "None" }, 0);
+    } else if (mode == Mode::Audio) {
+        // Offer the formats this ffmpeg build can encode. The listing pads each
+        // encoder name with spaces, which keeps "aac" from matching "libfdk_aac".
+        const std::string enc = runAndCapture(ffmpegCmd() + " -encoders -v quiet 2>&1");
+        const auto& table = audioFormatTable();
+        audioFormats_.clear();
+        std::vector<std::string> labels;
+        for (size_t i = 0; i < table.size(); ++i) {
+            if (enc.find(std::string(" ") + table[i].encoder + " ") == std::string::npos)
+                continue;
+            audioFormats_.push_back((int)i);
+            labels.push_back(table[i].label);
+        }
+        if (audioFormats_.empty()) {
+            // No ffmpeg (or no listing): show WAV so the dialog is not empty;
+            // Export then reports the missing ffmpeg.
+            audioFormats_.push_back(0);
+            labels.push_back(table[0].label);
+        }
+        audioFormatCombo_.setOptions(labels, 0);
+        shownAudioFormat_ = -1;
+        refreshAudioOptions();
     } else {
         formatCombo_.setOptions({ "EXR (Half Float)", "PNG" }, 0);
     }
@@ -234,6 +335,58 @@ void ExportDialog::close(SDL_Window* win) {
     startInput_.setFocus(false);
     endInput_.setFocus(false);
     SDL_StopTextInput(win);
+}
+
+void ExportDialog::setAudioSegments(std::vector<AudioMixdown::Segment> segs) {
+    audioSegs_ = std::move(segs);
+    if (mode_ == Mode::Movie)
+        movieAudioCombo_.setOptions({ "Include", "None" }, audioSegs_.empty() ? 1 : 0);
+}
+
+std::vector<Combobox*> ExportDialog::modeCombos() {
+    switch (mode_) {
+    case Mode::Movie:
+        return { &containerCombo_, &codecCombo_, &qualityCombo_, &movieAudioCombo_ };
+    case Mode::Audio:
+        return { &audioFormatCombo_, &audioVariantCombo_, &sampleRateCombo_ };
+    default:
+        return { &formatCombo_ };
+    }
+}
+
+// Rebuild the bit depth / bitrate and sample rate choices for the selected
+// format, once per format change. The sample rate carries over when the new
+// format offers it, so flipping formats does not quietly reset it.
+void ExportDialog::refreshAudioOptions() {
+    if (mode_ != Mode::Audio)
+        return;
+    const int sel = audioFormatCombo_.selected();
+    if (sel == shownAudioFormat_)
+        return;
+    shownAudioFormat_ = sel;
+    if (sel < 0 || sel >= (int)audioFormats_.size()) {
+        audioVariantCombo_.setOptions({});
+        return;
+    }
+    const AudioFormatDef& def = audioFormatTable()[audioFormats_[sel]];
+    std::vector<std::string> variants;
+    for (const AudioVariant& v : def.variants)
+        variants.push_back(v.label);
+    audioVariantCombo_.setOptions(variants, def.defaultVariant);
+
+    const std::string prevRate = sampleRateCombo_.empty() ? std::string() : sampleRateCombo_.value();
+    std::vector<std::string> rates;
+    int rateSel = -1;
+    for (const SampleRateDef& sr : kSampleRates) {
+        if (def.only48k && sr.hz != 48000)
+            continue;
+        if (prevRate == sr.label)
+            rateSel = (int)rates.size();
+        rates.push_back(sr.label);
+    }
+    if (rateSel < 0) // first fill, or the old rate is not on offer: 48 kHz
+        rateSel = def.only48k ? 0 : 1;
+    sampleRateCombo_.setOptions(rates, rateSel);
 }
 
 // ─── Status helpers ──────────────────────────────────────────────────────────
@@ -293,6 +446,16 @@ bool ExportDialog::handleEvent(const SDL_Event& e, SDL_Window* win) {
         close(win); return true;
     }
 
+    // An open list sits over the rows below it, so it alone sees the event:
+    // otherwise a click on one of its rows would also land on the widget beneath.
+    for (Combobox* c : modeCombos()) {
+        if (c->isOpen()) {
+            c->handleEvent(e);
+            refreshAudioOptions();
+            return true;
+        }
+    }
+
     // Focus management for text inputs on click.
     if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT) {
         float mx = e.button.x, my = e.button.y;
@@ -321,19 +484,22 @@ bool ExportDialog::handleEvent(const SDL_Event& e, SDL_Window* win) {
             };
             SDL_ShowSaveFileDialog(&ExportDialog::onBrowseChosen, this, win,
                                    kFilters, SDL_arraysize(kFilters), nullptr);
+        } else if (mode_ == Mode::Audio) {
+            static const SDL_DialogFileFilter kFilters[] = {
+                { "Audio files", "wav;aiff;aif;flac;m4a;mp3;opus" },
+                { "All files",   "*" },
+            };
+            SDL_ShowSaveFileDialog(&ExportDialog::onBrowseChosen, this, win,
+                                   kFilters, SDL_arraysize(kFilters), nullptr);
         } else {
             SDL_ShowOpenFolderDialog(&ExportDialog::onBrowseChosen, this, win, nullptr, false);
         }
         return true;
     }
 
-    if (mode_ == Mode::Movie) {
-        consumed |= containerCombo_.handleEvent(e);
-        consumed |= codecCombo_.handleEvent(e);
-        consumed |= qualityCombo_.handleEvent(e);
-    } else {
-        consumed |= formatCombo_.handleEvent(e);
-    }
+    for (Combobox* c : modeCombos())
+        consumed |= c->handleEvent(e);
+    refreshAudioOptions();
 
     if (exportBtn_.handleEvent(e)) {
         startExport();
@@ -395,7 +561,12 @@ float ExportDialog::layoutRows(SDL_Renderer* r, TextFont* font, SDL_FRect body) 
     if (mode_ == Mode::Movie) {
         comboRow(containerCombo_, comboW); gapTop(body, gap);
         comboRow(codecCombo_, comboW);     gapTop(body, gap);
-        comboRow(qualityCombo_, comboW);   gapTop(body, gap * 1.5f);
+        comboRow(qualityCombo_, comboW);   gapTop(body, gap);
+        comboRow(movieAudioCombo_, comboW * .6f); gapTop(body, gap * 1.5f);
+    } else if (mode_ == Mode::Audio) {
+        comboRow(audioFormatCombo_, comboW);        gapTop(body, gap);
+        comboRow(audioVariantCombo_, comboW * .6f); gapTop(body, gap);
+        comboRow(sampleRateCombo_, comboW * .6f);   gapTop(body, gap * 1.5f);
     } else {
         comboRow(formatCombo_, comboW * .6f);
         gapTop(body, gap * 1.5f);
@@ -472,8 +643,9 @@ void ExportDialog::render(SDL_Renderer* r, TextFont* font, float winW, float win
 
     float glyphH = font->lineHeight();
     {
-        const char* title = (mode_ == Mode::Movie) ? "Export Movie"
-                                                   : "Export Image Sequence";
+        const char* title = mode_ == Mode::Movie ? "Export Movie"
+                          : mode_ == Mode::Audio ? "Export Audio"
+                                                 : "Export Image Sequence";
         SDL_FRect slot = centerV(titleBar, glyphH);
         font->draw(r, slot.x + padX, slot.y, kTitleText, title);
     }
@@ -488,7 +660,7 @@ void ExportDialog::render(SDL_Renderer* r, TextFont* font, float winW, float win
     };
 
     // Path
-    const char* pathLabel = (mode_ == Mode::Movie) ? "Output File:" : "Output Dir:";
+    const char* pathLabel = (mode_ == Mode::ImageSequence) ? "Output Dir:" : "Output File:";
     drawLabel(pathInput_.rect(), pathLabel);
     pathInput_.render(r, font);
     browseBtn_.render(r, font);
@@ -520,16 +692,22 @@ void ExportDialog::render(SDL_Renderer* r, TextFont* font, float winW, float win
 
     // Format section.
     if (mode_ == Mode::Movie) {
-        drawLabel(containerCombo_.rect(), "Container:");
-        drawLabel(codecCombo_.rect(),     "Codec:");
-        drawLabel(qualityCombo_.rect(),   "Quality:");
-        containerCombo_.render(r, font);
-        codecCombo_.render(r, font);
-        qualityCombo_.render(r, font);
+        drawLabel(containerCombo_.rect(),  "Container:");
+        drawLabel(codecCombo_.rect(),      "Codec:");
+        drawLabel(qualityCombo_.rect(),    "Quality:");
+        drawLabel(movieAudioCombo_.rect(), "Audio:");
+    } else if (mode_ == Mode::Audio) {
+        const int sel = audioFormatCombo_.selected();
+        const bool lossy = sel >= 0 && sel < (int)audioFormats_.size()
+                        && audioFormatTable()[audioFormats_[sel]].lossy;
+        drawLabel(audioFormatCombo_.rect(),  "Format:");
+        drawLabel(audioVariantCombo_.rect(), lossy ? "Bitrate:" : "Bit Depth:");
+        drawLabel(sampleRateCombo_.rect(),   "Sample Rate:");
     } else {
         drawLabel(formatCombo_.rect(), "Format:");
-        formatCombo_.render(r, font);
     }
+    for (Combobox* c : modeCombos())
+        c->render(r, font);
 
     // Progress bar.
     if (exporting_ || exportDone_) {
@@ -556,13 +734,8 @@ void ExportDialog::render(SDL_Renderer* r, TextFont* font, float winW, float win
     if (!exportDone_) exportBtn_.render(r, font);
 
     // Open dropdown lists rendered last so they overlay all other widgets.
-    if (mode_ == Mode::Movie) {
-        containerCombo_.renderDropdown(r, font);
-        codecCombo_.renderDropdown(r, font);
-        qualityCombo_.renderDropdown(r, font);
-    } else {
-        formatCombo_.renderDropdown(r, font);
-    }
+    for (Combobox* c : modeCombos())
+        c->renderDropdown(r, font);
 }
 
 // ─── Export range helpers ─────────────────────────────────────────────────────
@@ -589,7 +762,7 @@ void ExportDialog::startExport() {
         exportError_ = true;
         return;
     }
-    if (!ffmpegAvailable() && mode_ == Mode::Movie) {
+    if (!ffmpegAvailable() && mode_ != Mode::ImageSequence) {
         setStatusMsg("ffmpeg not found on PATH.");
         exportDone_ = true;
         exportError_ = true;
@@ -616,8 +789,14 @@ void ExportDialog::startExport() {
     exportThread_ = std::thread([this, startFrame, endFrame] {
         if (mode_ == Mode::Movie)
             runMovieExport(startFrame, endFrame);
+        else if (mode_ == Mode::Audio)
+            runAudioExport(startFrame, endFrame);
         else
             runImageExport(startFrame, endFrame);
+        // Every way out is done, the early error returns included: without this
+        // their status message never shows, since the bar and status line only
+        // draw once the export is running or done.
+        exportDone_ = true;
         exporting_ = false;
     });
 }
@@ -694,6 +873,24 @@ void ExportDialog::runMovieExport(int64_t startFrame, int64_t endFrame) {
         exportError_ = true; return;
     }
 
+    // The soundtrack is mixed down first, to a temp file ffmpeg reads as a second
+    // input: the frames already have the one stdin pipe there is.
+    std::string audioTmp;
+    if (movieAudioCombo_.selected() == 0
+        && AudioMixdown::hasAudio(audioSegs_, startFrame, endFrame)) {
+        std::error_code ec;
+        fs::path tmpDir = fs::temp_directory_path(ec);
+        if (ec) tmpDir = fs::path(outPath).parent_path();
+        char name[64];
+        SDL_snprintf(name, sizeof(name), "jplay_export_%llx.f32",
+                     (unsigned long long)SDL_GetTicksNS());
+        audioTmp = (tmpDir / name).string();
+        if (!renderAudioTemp(startFrame, endFrame, audioTmp)) {
+            fs::remove(audioTmp, ec);
+            return;
+        }
+    }
+
     // Build ffmpeg command reading raw RGBA from stdin.
     std::ostringstream cmd;
     cmd << ffmpegCmd()
@@ -701,6 +898,9 @@ void ExportDialog::runMovieExport(int64_t startFrame, int64_t endFrame) {
         << " -video_size " << outW << "x" << outH
         << " -framerate " << fps_
         << " -i pipe:0";
+    if (!audioTmp.empty())
+        cmd << " -f f32le -ar " << kMovieAudioRate << " -ac 2 -i \"" << audioTmp << "\""
+            << " -map 0:v -map 1:a";
 
     if (codecId == "prores_ks" || codecId == "prores") {
         // ProRes uses -profile:v instead of -crf (quality → proxy/lt/std/hq)
@@ -713,6 +913,8 @@ void ExportDialog::runMovieExport(int64_t startFrame, int64_t endFrame) {
     // Ensure YUV420 compatibility for most players (h264/h265).
     if (codecId == "libx264" || codecId == "libx265" || codecId == "mpeg4")
         cmd << " -vf format=yuv420p";
+    if (!audioTmp.empty())
+        cmd << " " << movieAudioArgs(fmtId, codecId);
 
     cmd << " \"" << outPath << "\"";
 
@@ -723,8 +925,10 @@ void ExportDialog::runMovieExport(int64_t startFrame, int64_t endFrame) {
     cmd << " 2>/dev/null";
 #endif
 
-    FILE* pipe = PPOPEN(cmd.str().c_str(), "wb");
+    FILE* pipe = pipeOpen(cmd.str(), "wb");
     if (!pipe) {
+        std::error_code ec;
+        if (!audioTmp.empty()) fs::remove(audioTmp, ec);
         setStatusMsg("Failed to launch ffmpeg. Is it on PATH?");
         exportError_ = true; return;
     }
@@ -755,6 +959,10 @@ void ExportDialog::runMovieExport(int64_t startFrame, int64_t endFrame) {
     }
 
     PPCLOSE(pipe);
+    if (!audioTmp.empty()) {
+        std::error_code ec;
+        fs::remove(audioTmp, ec);
+    }
 
     if (cancelExport_) {
         setStatusMsg("Cancelled.");
@@ -764,6 +972,129 @@ void ExportDialog::runMovieExport(int64_t startFrame, int64_t endFrame) {
         setStatusMsg("Done! Saved to: " + fs::path(outPath).filename().string());
     }
     exportDone_ = true;
+}
+
+bool ExportDialog::renderAudioTemp(int64_t startFrame, int64_t endFrame,
+                                   const std::string& path) {
+    FILE* f = nullptr;
+#ifdef _WIN32
+    _wfopen_s(&f, fs::path(path).wstring().c_str(), L"wb");
+#else
+    f = fopen(path.c_str(), "wb");
+#endif
+    if (!f) {
+        setStatusMsg("Cannot write temp audio file.");
+        exportError_ = true;
+        return false;
+    }
+    AudioMixdown mix(audioSegs_, fps_, kMovieAudioRate);
+    mix.begin(startFrame, endFrame);
+    const int64_t total = std::max<int64_t>(mix.totalFrames(), 1);
+    constexpr int kChunk = 8192;
+    std::vector<float> buf((size_t)kChunk * 2);
+    bool ok = true;
+    for (;;) {
+        if (cancelExport_) { ok = false; break; }
+        const int n = mix.render(buf.data(), kChunk);
+        if (n <= 0)
+            break;
+        if (fwrite(buf.data(), sizeof(float) * 2, (size_t)n, f) != (size_t)n) {
+            setStatusMsg("Temp audio write failed (disk full?).");
+            exportError_ = true;
+            ok = false;
+            break;
+        }
+        const int prog = (int)(mix.renderedFrames() * 100 / total);
+        exportProgress_ = prog;
+        setStatusMsg("Mixing audio... " + std::to_string(prog) + "%");
+    }
+    fclose(f);
+    if (cancelExport_) {
+        setStatusMsg("Cancelled.");
+        exportError_ = true;
+    }
+    exportProgress_ = 0;
+    return ok;
+}
+
+// ─── Audio export ────────────────────────────────────────────────────────────
+
+void ExportDialog::runAudioExport(int64_t startFrame, int64_t endFrame) {
+    const int sel = audioFormatCombo_.selected();
+    if (sel < 0 || sel >= (int)audioFormats_.size()) {
+        setStatusMsg("No audio format selected.");
+        exportError_ = true; return;
+    }
+    const AudioFormatDef& def = audioFormatTable()[audioFormats_[sel]];
+    const int variant = std::clamp(audioVariantCombo_.selected(), 0, (int)def.variants.size() - 1);
+    int rate = 48000;
+    for (const SampleRateDef& sr : kSampleRates)
+        if (!sampleRateCombo_.empty() && sampleRateCombo_.value() == sr.label)
+            rate = sr.hz;
+    if (def.only48k)
+        rate = 48000;
+
+    if (!AudioMixdown::hasAudio(audioSegs_, startFrame, endFrame)) {
+        setStatusMsg("No audio in the export range.");
+        exportError_ = true; return;
+    }
+
+    std::string outPath = pathInput_.text();
+    if (fs::path(outPath).extension().string().empty())
+        outPath += std::string(".") + def.ext;
+
+    // Mixed at the output rate, so ffmpeg only encodes.
+    std::ostringstream cmd;
+    cmd << ffmpegCmd()
+        << " -y -f f32le -ar " << rate << " -ac 2 -i pipe:0"
+        << " " << def.variants[(size_t)variant].args
+        << " \"" << outPath << "\""
+#ifdef _WIN32
+        << " 2>nul";
+#else
+        << " 2>/dev/null";
+#endif
+
+    FILE* pipe = pipeOpen(cmd.str(), "wb");
+    if (!pipe) {
+        setStatusMsg("Failed to launch ffmpeg. Is it on PATH?");
+        exportError_ = true; return;
+    }
+
+    AudioMixdown mix(audioSegs_, fps_, rate);
+    mix.begin(startFrame, endFrame);
+    const int64_t total = std::max<int64_t>(mix.totalFrames(), 1);
+    constexpr int kChunk = 8192;
+    std::vector<float> buf((size_t)kChunk * 2);
+    bool pipeBroke = false;
+    for (;;) {
+        if (cancelExport_) break;
+        const int n = mix.render(buf.data(), kChunk);
+        if (n <= 0)
+            break;
+        if (fwrite(buf.data(), sizeof(float) * 2, (size_t)n, pipe) != (size_t)n) {
+            pipeBroke = true; // ffmpeg exited early; its exit code says why
+            break;
+        }
+        const int64_t done = mix.renderedFrames();
+        exportProgress_ = (int)(done * 100 / total);
+        char msg[64];
+        SDL_snprintf(msg, sizeof(msg), "%.1f / %.1f s",
+                     (double)done / rate, (double)total / rate);
+        setStatusMsg(msg);
+    }
+
+    const int rc = PPCLOSE(pipe);
+    if (cancelExport_) {
+        setStatusMsg("Cancelled.");
+        exportError_ = true;
+    } else if (rc != 0 || pipeBroke) {
+        setStatusMsg("ffmpeg failed (exit code " + std::to_string(rc) + ").");
+        exportError_ = true;
+    } else {
+        exportProgress_ = 100;
+        setStatusMsg("Done! Saved to: " + fs::path(outPath).filename().string());
+    }
 }
 
 // ─── Image sequence export ───────────────────────────────────────────────────
@@ -928,7 +1259,7 @@ void ExportDialog::runImageExport(int64_t startFrame, int64_t endFrame) {
 #else
                 << " 2>/dev/null";
 #endif
-            FILE* pipe = PPOPEN(cmd.str().c_str(), "wb");
+            FILE* pipe = pipeOpen(cmd.str(), "wb");
             if (pipe) {
                 fwrite(pixels, 1, (size_t)fw * fh * 4, pipe);
                 PPCLOSE(pipe);

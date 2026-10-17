@@ -1682,6 +1682,11 @@ private:
     // colour management is off, which exports the decoded frames untouched.
     std::map<std::string, OcioManager::CpuTransform> exportColorTransforms();
 
+    // The timeline's audio mix as segments for the export mixdown (see
+    // ExportDialog::setAudioSegments): the same sources updateAudio feeds the live
+    // mixer, snapshotted on the main thread for the encoder thread to render.
+    std::vector<AudioMixdown::Segment> exportAudioSegments() const;
+
     // The tiles in the Overview grid and the SOURCES bin, the timeline's hover
     // preview and the launcher's project tile all show the frame's own 8-bit
     // encoding — an EXR's scene-linear halves through the sRGB curve (baked by
@@ -2595,6 +2600,7 @@ private:
     void buildSequenceMenuRows();
     void openExportMovie();
     void openExportImageSequence();
+    void openExportAudio();
     void processPendingDialogs();
     static void SDLCALL onOpenChosen(void* userdata, const char* const* filelist, int filter);
     static void SDLCALL onSaveChosen(void* userdata, const char* const* filelist, int filter);
