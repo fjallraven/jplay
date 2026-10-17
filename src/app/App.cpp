@@ -772,6 +772,7 @@ bool App::init(int argc, char** argv) {
         clipToolboxMenu_.setTextFont(&textFont_);
         fitMenu_.setTextFont(&textFont_);
         trackMenu_.setTextFont(&textFont_);
+        rulerMenu_.setTextFont(&textFont_);
         peSortMenu_.setTextFont(&textFont_);
         peMediaMenu_.setTextFont(&textFont_);
         peSeqColorMenu_.setTextFont(&textFont_);
@@ -2045,6 +2046,8 @@ void App::handleEvent(SDL_Event& e) {
         return;
     if (trackMenu_.handleEvent(e))
         return;
+    if (rulerMenu_.handleEvent(e))
+        return;
     if (peSortMenu_.handleEvent(e))
         return;
     if (peMediaMenu_.handleEvent(e))
@@ -2503,7 +2506,11 @@ void App::handleEvent(SDL_Event& e) {
             break;
         }
         if (e.button.button == SDL_BUTTON_RIGHT) {
-            handleTimelineRightClick(mx, my);
+            // The ruler / scrub band (the hover-preview zone) has its own menu.
+            if (mx >= headerX_ && my < tracksTop_)
+                openRulerMenu(mx, my);
+            else
+                handleTimelineRightClick(mx, my);
             break;
         }
         if (e.button.button != SDL_BUTTON_LEFT)
@@ -3885,6 +3892,7 @@ bool App::pointOverOpenMenu(float x, float y) const {
         return true;
     return clipMenu_.pointInPopup(x, y) || clipToolboxMenu_.pointInPopup(x, y) ||
            fitMenu_.pointInPopup(x, y) || trackMenu_.pointInPopup(x, y) ||
+           rulerMenu_.pointInPopup(x, y) ||
            peSortMenu_.pointInPopup(x, y) || peMediaMenu_.pointInPopup(x, y) ||
            peSeqColorMenu_.pointInPopup(x, y) || appIconMenu_.pointInPopup(x, y);
 }
@@ -4393,6 +4401,7 @@ void App::render() {
     clipToolboxMenu_.render(renderer_);                        // info-bar toolbox popup, top-most
     fitMenu_.render(renderer_);                                // info-bar zoom-fit popup, top-most
     trackMenu_.render(renderer_);                              // track-header burger popup, top-most
+    rulerMenu_.render(renderer_);                              // ruler right-click export popup, top-most
     peSortMenu_.render(renderer_);                             // SOURCES bin sort-order popup, top-most
     peMediaMenu_.render(renderer_);                            // SOURCES bin right-click popup, top-most
     peSeqColorMenu_.render(renderer_);                         // sequence color palette popup, top-most

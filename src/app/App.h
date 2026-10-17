@@ -2135,6 +2135,10 @@ private:
     // enable/disable toggle and its remove.
     ContextMenu trackMenu_;
 
+    // Ruler right-click popup: the export entries (video / image sequence /
+    // audio), opened at the cursor. See openRulerMenu.
+    ContextMenu rulerMenu_;
+
     // "Clip Range" header on the clip right-click popup: a ruler showing the cut
     // range within the full source, editable in/out fields, and the two range
     // presets. -1 when the popup has no range section (a clip whose media is
@@ -2495,6 +2499,7 @@ private:
     // Right-click on a timeline clip: the clip-actions menu for the clip under
     // (mx,my), or — with Ctrl held — clipMenu_ listing its applicable pickers.
     void handleTimelineRightClick(float mx, float my);
+    void openRulerMenu(float mx, float my);
     // Shared tail of both: select the clip if it isn't already in the selection,
     // then open the clip-actions popup — or, with Ctrl held, its picker menu.
     void openClipRightClickMenu(const Clip& clip, float mx, float my, bool growDown = false);
@@ -2757,7 +2762,7 @@ private:
     }
     bool anyContextMenuOpen() const {             // is any cursor-anchored popup currently showing?
         return clipMenu_.isOpen() || clipToolboxMenu_.isOpen() || fitMenu_.isOpen() ||
-               peSortMenu_.isOpen() ||
+               rulerMenu_.isOpen() || peSortMenu_.isOpen() ||
                peMediaMenu_.isOpen() || peSeqColorMenu_.isOpen() || appIconMenu_.isOpen();
     }
     void openOcioDisplayMenu();                   // toggle the display-space popup
