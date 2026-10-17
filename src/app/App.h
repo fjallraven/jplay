@@ -302,8 +302,8 @@ private:
     bool scrubbing_ = false;
     // Shift+drag on the ruler paints the playback range instead of scrubbing: the
     // press anchors the in point and the drag trails the out point, leaving the
-    // playhead alone. A press-release that never moved clears the range, so the
-    // gesture undoes itself rather than leaving a one-frame loop behind.
+    // playhead alone. A press-release that never moved sets just the nearer end
+    // instead (see rulerRangeEdit).
     bool rangeDragging_ = false;
     bool rangeDragMoved_ = false;
     int64_t rangeDragAnchor_ = 0;
@@ -3311,6 +3311,11 @@ private:
     SDL_FRect reviewDstRect() const;                      // mirrored dst rect in review-window space
     void setPlayhead(int64_t f);
     int64_t scrubFrame(double x) const; // x -> frame, snapping to clip starts when snapPlayhead_
+    // Shift+click on the ruler moves one end of the playback range to frame f:
+    // the in point when f is at or before the range's start, the out point when
+    // at or after its end, otherwise whichever end is nearer. Returns true for the
+    // in point; lo/hi receive the range the click would leave behind.
+    bool rulerRangeEdit(int64_t f, int64_t& lo, int64_t& hi) const;
     void followPlayhead();
 
     // Transport

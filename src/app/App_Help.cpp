@@ -68,6 +68,8 @@ void App::renderHelpPanel() {
         { "Home / End",    "Go to in / out point" },
         { "[ ]",           "Set playback in / out point" },
         { "Shift + [ ]",     "Clear playback in / out point" },
+        { "Shift + click ruler", "Set nearer in / out point" },
+        { "Shift + drag ruler",  "Paint in / out range" },
         { "X",             "Set range to clip under playhead" },
         { "Shift + X / \\",  "Clear in / out range" },
     };

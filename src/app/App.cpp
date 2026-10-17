@@ -2839,12 +2839,18 @@ void App::handleEvent(SDL_Event& e) {
             dragPressWasSelected_ = false;
             scrubbing_ = false;
             if (rangeDragging_) {
-                // A shift+click that never moved clears the range rather than
-                // marking a one-frame loop; a real drag has already written it.
+                // A shift+click that never moved sets the nearer end of the range
+                // (the hover preview showed which); a real drag has already
+                // written the whole range.
                 if (!rangeDragMoved_) {
-                    timeline_.inPoint = 0;
-                    timeline_.outPoint = -1;
-                    setStatus("IN/OUT CLEARED");
+                    int64_t lo = 0, hi = 0;
+                    if (rulerRangeEdit(rangeDragAnchor_, lo, hi)) {
+                        timeline_.inPoint = lo;
+                        setStatus("IN POINT: " + std::to_string(lo));
+                    } else {
+                        timeline_.outPoint = hi;
+                        setStatus("OUT POINT: " + std::to_string(hi));
+                    }
                 } else {
                     setStatus("RANGE: " + std::to_string(timeline_.inPoint) + " - " +
                               std::to_string(timeline_.outPoint));

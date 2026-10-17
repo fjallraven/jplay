@@ -474,6 +474,13 @@ int64_t App::scrubFrame(double x) const {
     return best;
 }
 
+bool App::rulerRangeEdit(int64_t f, int64_t& lo, int64_t& hi) const {
+    playbackRange(lo, hi);
+    const bool in = f <= lo || (f < hi && f - lo <= hi - f);
+    (in ? lo : hi) = f;
+    return in;
+}
+
 void App::setPlayhead(int64_t f) {
     int64_t last = std::max<int64_t>(timeline_.length() - 1, 0);
     int64_t lo = 0;
@@ -1112,6 +1119,21 @@ void App::renderTimeline() {
         setColor(renderer_, kInOutRange);
         jplay::drawLine(renderer_, ix, rulerRect_.y, ix, rulerRect_.y + kRulerH - 1);
         jplay::drawLine(renderer_, ox, rulerRect_.y, ox, rulerRect_.y + kRulerH - 1);
+
+        // Shift held over the ruler: ghost the range a click would leave, with
+        // the end it would move drawn bright, so the click is never a guess.
+        if (tlHoverActive_ && (SDL_GetModState() & SDL_KMOD_SHIFT)) {
+            int64_t pLo = 0, pHi = 0;
+            bool editIn = rulerRangeEdit(std::max<int64_t>(0, scrubFrame(tlHoverX_)), pLo, pHi);
+            float pix = (float)frameToX((double)pLo);
+            float pox = (float)frameToX((double)pHi + 1.0);
+            SDL_FRect ghost = { pix, rulerRect_.y, std::max(pox - pix, 1.0f), kRulerH };
+            SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 28);
+            jplay::fillRect(renderer_, &ghost);
+            SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 230);
+            float ex = editIn ? pix : pox;
+            jplay::drawLine(renderer_, ex, rulerRect_.y, ex, rulerRect_.y + kRulerH - 1);
+        }
     }
 
     // The media pool is a map keyed by a string id, and every loop below asks it
@@ -2160,7 +2182,8 @@ void App::renderTimeline() {
     SDL_SetRenderClipRect(renderer_, &contentClip); // back to the ruler-to-tracks band
 
     // ---- hover preview: faint playhead handle where a click would land
-    if (tlHoverActive_ && length > 0) {
+    // Not while shift is held: that click edits the range, not the playhead.
+    if (tlHoverActive_ && length > 0 && !(SDL_GetModState() & SDL_KMOD_SHIFT)) {
         int64_t hf = std::clamp<int64_t>(scrubFrame(tlHoverX_),
                                          dispOffset,
                                          std::max<int64_t>(seqEndFrame - 1, dispOffset));
