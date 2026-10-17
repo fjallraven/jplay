@@ -1563,10 +1563,12 @@ void App::onKeyDown(const SDL_KeyboardEvent& k) {
     case SDLK_LEFT:
         playing_ = false;
         setPlayhead(timeline_.playhead - (shift ? 10 : 1));
+        keyScrubUntilMs_ = SDL_GetTicks() + kKeyScrubMs;
         break;
     case SDLK_RIGHT:
         playing_ = false;
         setPlayhead(timeline_.playhead + (shift ? 10 : 1));
+        keyScrubUntilMs_ = SDL_GetTicks() + kKeyScrubMs;
         break;
     case SDLK_HOME:
         setPlayhead(timeline_.inPoint);
@@ -3439,8 +3441,10 @@ void App::updateAudio() {
         return;
     bool haveTimeline = timeline_.length() > 0 && timeline_.fps > 0.0;
     bool active = playing_ && haveTimeline;
-    // Scrubbing feed: only while stopped, dragging the ruler, and the feature is on.
-    bool scrub = audioScrub_ && scrubbing_ && !playing_ && haveTimeline;
+    // Scrubbing feed: only while stopped, dragging the ruler or just after an
+    // arrow-key step, and the feature is on.
+    bool keyStep = SDL_GetTicks() < keyScrubUntilMs_;
+    bool scrub = audioScrub_ && (scrubbing_ || keyStep) && !playing_ && haveTimeline;
     std::vector<AudioEngine::FeedItem> items;
     if (active || scrub) {
         // Embedded audio of the program (topmost video) clip. id -1 keeps this

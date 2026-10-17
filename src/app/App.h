@@ -1863,9 +1863,13 @@ private:
     // Show a small thumbnail above the ruler hover indicator (pause only).
     bool showFramePreview_ = true;
 
-    // Play short audio grains at the playhead while scrubbing the ruler. Off by
-    // default; persisted in user prefs.
+    // Play short audio grains at the playhead while scrubbing the ruler or
+    // stepping with the arrow keys. Off by default; persisted in user prefs.
     bool audioScrub_ = false;
+    // An arrow-key step keeps the scrub feed on this long, so its grain (60 ms)
+    // plays out instead of being paused on the next tick; held keys repeat it.
+    static constexpr Uint64 kKeyScrubMs = 100;
+    Uint64 keyScrubUntilMs_ = 0;
 
     // Draw the embedded audio track's waveform inside a video clip on the
     // timeline. Off by default; persisted in user prefs. Deliberately narrow: it
