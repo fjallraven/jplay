@@ -62,6 +62,13 @@ void AudioEngine::setVolume(float v) {
         SDL_SetAudioStreamGain(stream_, volume_);
 }
 
+void AudioEngine::releaseSources() {
+    closeChannels();
+    wasActive_ = false; // the next update() re-cues from scratch
+    if (stream_)
+        SDL_PauseAudioStreamDevice(stream_);
+}
+
 void AudioEngine::closeChannels() {
     channels_.clear();
     if (stream_)

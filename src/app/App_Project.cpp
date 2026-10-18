@@ -5,6 +5,7 @@
 
 #include "App.h"
 #include "AppInternal.h"
+#include "AudioEngine.h"
 
 #include "ImageSeq.h"
 #include "Layout.h"
@@ -252,10 +253,22 @@ void App::saveProject() {
     updateWindowTitle();
 }
 
+// Let go of every open handle on the outgoing project's media, so its files can be
+// edited or deleted once the project is put away (Windows refuses both while a
+// handle is open). Dropping timeline_.media frees the video/EXR decoders; these
+// are the other holders: the audio mixer keeps its channels' decoders open after
+// playback stops, and a running thumbnail pass holds its Media until cancelled.
+void App::releaseProjectMedia() {
+    if (audio_) audio_->releaseSources();
+    thumbs_.stop();
+    sourceThumbs_.stop();
+}
+
 void App::newProject() {
     work_.reset(); // shut down background jobs from the previous project
     joinRefresh();
     resetPathValueRequests();
+    releaseProjectMedia();
     timeline_ = Timeline{};
     undoStack_.clear();
     nextClipId_ = 1;
@@ -334,6 +347,7 @@ void App::loadProject(const std::string& path, bool shared) {
         setStatus("LOAD FAILED: " + err, 5000);
         return; // failure leaves projectPath_/projectHasPath_ as they were
     }
+    releaseProjectMedia(); // the outgoing project's decoders, not the new timeline's
     // A shared project is brought in as a copy: the studio's file is never made
     // the current one, so Save prompts for a location (as it does for a shared
     // .otio) and the copy takes a fresh id on that first save.
@@ -394,6 +408,7 @@ void App::loadOtio(const std::string& path, bool shared) {
         setStatus("OTIO IMPORT FAILED: " + err, 5000);
         return;
     }
+    releaseProjectMedia();
     timeline_ = std::move(tl);
     undoStack_.clear();
     nextClipId_ = nextId;
@@ -606,6 +621,7 @@ void App::finishCreateFromDirectory(const std::string& root, Timeline& tl,
     work_.reset(); // shut down background jobs from the previous project
     joinRefresh();
 
+    releaseProjectMedia();
     timeline_ = std::move(tl);
     undoStack_.clear();
     nextClipId_ = nextId;

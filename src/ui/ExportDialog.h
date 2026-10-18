@@ -87,6 +87,11 @@ public:
     static std::vector<FormatInfo> queryContainerFormats();
     static bool ffmpegAvailable();
 
+    // Run the ffmpeg probes (-version / -encoders / -formats) on a background
+    // thread so the first open() finds them cached. Each probe spawns a process
+    // (hundreds of ms on Windows); the results cannot change mid-session.
+    static void prefetchFfmpegInfo();
+
 private:
     bool   open_ = false;
     Mode   mode_ = Mode::Movie;

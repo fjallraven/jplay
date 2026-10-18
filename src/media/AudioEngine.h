@@ -65,6 +65,11 @@ public:
     // and drops all channels so the next update() re-cues to the playhead.
     void setDevice(SDL_AudioDeviceID dev);
 
+    // Close every channel's decoder. Channels otherwise stay open after playback
+    // stops (so resuming is instant), which keeps their files locked on Windows;
+    // a project close calls this so the media can be edited or deleted.
+    void releaseSources();
+
 private:
     // One decoder channel, keyed by FeedItem::id.
     struct Channel {

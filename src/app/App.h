@@ -3600,6 +3600,7 @@ private:
     static void SDLCALL onRelocateChosen(void* userdata, const char* const* filelist, int filter);
     void newProject(); // clear timeline + forget any saved-file association
     void closeProject(); // clear timeline and return to the launcher
+    void releaseProjectMedia(); // close decoders the outgoing project left open (file locks)
     // Name the window after what the player shows (see windowTitleText). Called
     // every render, since an image sequence's title follows the playhead frame by
     // frame; the OS and the title bar are only touched when the text changes.

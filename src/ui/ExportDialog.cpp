@@ -23,8 +23,10 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <future>
 #include <sstream>
 #include <string>
+#include <thread>
 
 namespace fs = std::filesystem;
 using namespace jplay;
@@ -183,9 +185,39 @@ std::string ExportDialog::ffmpegCmd() {
     return "\"" + ffmpegPath() + "\"";
 }
 
+// The raw probe output, captured once per session: the binary is resolved once
+// (ffmpegPath) and cannot change under us, while each probe is a process launch
+// that cost the dialog a visible stall on every open. The three run in parallel;
+// a caller arriving while prefetchFfmpegInfo() is still at it waits on the same
+// static initialisation instead of launching its own.
+namespace {
+struct FfmpegInfo {
+    std::string version;
+    std::string encoders;
+    std::string formats;
+};
+
+// `exe` is always ExportDialog::ffmpegCmd(), itself fixed for the session.
+const FfmpegInfo& ffmpegInfo(const std::string& exe) {
+    static const FfmpegInfo info = [&exe] {
+        auto probe = [&exe](const char* args) {
+            return std::async(std::launch::async, [cmd = exe + args] { return runAndCapture(cmd); });
+        };
+        auto version  = probe(" -version 2>&1");
+        auto encoders = probe(" -encoders -v quiet 2>&1");
+        auto formats  = probe(" -formats -v quiet 2>&1");
+        return FfmpegInfo{ version.get(), encoders.get(), formats.get() };
+    }();
+    return info;
+}
+} // namespace
+
+void ExportDialog::prefetchFfmpegInfo() {
+    std::thread([exe = ffmpegCmd()] { ffmpegInfo(exe); }).detach();
+}
+
 bool ExportDialog::ffmpegAvailable() {
-    std::string out = runAndCapture(ffmpegCmd() + " -version 2>&1");
-    return out.find("ffmpeg version") != std::string::npos;
+    return ffmpegInfo(ffmpegCmd()).version.find("ffmpeg version") != std::string::npos;
 }
 
 std::vector<ExportDialog::CodecInfo> ExportDialog::queryVideoEncoders() {
@@ -202,7 +234,7 @@ std::vector<ExportDialog::CodecInfo> ExportDialog::queryVideoEncoders() {
         {"mpeg4",     "MPEG-4"},
     }};
 
-    std::string out = runAndCapture(ffmpegCmd() + " -encoders -v quiet 2>&1");
+    const std::string& out = ffmpegInfo(ffmpegCmd()).encoders;
     std::vector<CodecInfo> result;
     for (const auto& [id, label] : kWanted) {
         if (out.find(id) != std::string::npos)
@@ -221,7 +253,7 @@ std::vector<ExportDialog::FormatInfo> ExportDialog::queryContainerFormats() {
         {"mxf",      "MXF"},
     }};
 
-    std::string out = runAndCapture(ffmpegCmd() + " -formats -v quiet 2>&1");
+    const std::string& out = ffmpegInfo(ffmpegCmd()).formats;
     std::vector<FormatInfo> result;
     for (const auto& [id, label] : kWanted) {
         if (out.find(id) != std::string::npos)
@@ -305,7 +337,7 @@ void ExportDialog::open(Mode mode, int64_t timelineLen,
     } else if (mode == Mode::Audio) {
         // Offer the formats this ffmpeg build can encode. The listing pads each
         // encoder name with spaces, which keeps "aac" from matching "libfdk_aac".
-        const std::string enc = runAndCapture(ffmpegCmd() + " -encoders -v quiet 2>&1");
+        const std::string& enc = ffmpegInfo(ffmpegCmd()).encoders;
         const auto& table = audioFormatTable();
         audioFormats_.clear();
         std::vector<std::string> labels;
