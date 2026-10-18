@@ -501,12 +501,12 @@ void App::renderTimingsPanel() {
     const char* const laneTitle[3] = { "FRAME RATE", "WORK PER FRAME", "BUFFERED AHEAD" };
     char laneNote[3][128];
     SDL_snprintf(laneNote[0], sizeof(laneNote[0]),
-                 "shown (as the info bar read it), and what recent work could keep up; red marks a late frame");
+                 "playback speed vs. what loading could sustain");
     SDL_snprintf(laneNote[1], sizeof(laneNote[1]),
-                 "reads run %d at once, ahead of the playhead: a tall stack is not a late frame",
+                 "time to load each frame; %d load at once, so tall bars are not late frames",
                  workers);
     SDL_snprintf(laneNote[2], sizeof(laneNote[2]),
-                 "frames already read past the one shown; at zero a frame is held");
+                 "frames loaded and waiting; at zero playback stalls");
     {
         const float share[3] = { 0.36f, 0.42f, 0.22f };
         float y = body.y;
