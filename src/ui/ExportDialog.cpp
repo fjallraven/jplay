@@ -17,6 +17,14 @@
 #include <SDL3/SDL_dialog.h>
 #include <SDL3/SDL_filesystem.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -24,9 +32,9 @@
 #include <cstring>
 #include <filesystem>
 #include <future>
+#include <mutex>
 #include <sstream>
 #include <string>
-#include <thread>
 
 namespace fs = std::filesystem;
 using namespace jplay;
@@ -125,22 +133,94 @@ std::string movieAudioArgs(const std::string& fmtId, const std::string& codecId)
 
 // ─── Platform pipe helpers ───────────────────────────────────────────────────
 #ifdef _WIN32
-#  define PPCLOSE _pclose
+// A stand-in for _popen/_pclose. _popen starts `cmd /c` with a console of its
+// own, and jplay is a GUI app with none to share, so every ffmpeg run flashed a
+// console window. This starts the same `cmd /c` (the commands rely on its 2>&1 /
+// 2>nul redirection) with CREATE_NO_WINDOW, and hands back a FILE* on our end of
+// the pipe like _popen does. The process handle is kept per FILE* so PPCLOSE can
+// wait for it and return the exit code, as _pclose does.
+namespace {
+std::mutex g_pipeProcsMtx;
+std::unordered_map<FILE*, HANDLE> g_pipeProcs;
+} // namespace
+
+// cmd /c strips the first and last quote of any command that starts with one and
+// holds more than one quoted token -- a quoted ffmpeg path followed by a quoted
+// output path comes out mangled and never runs. One extra pair around the whole
+// string is what that stripping removes.
+static FILE* pipeOpen(const std::string& cmd, const char* mode) {
+    const bool reading = mode[0] == 'r';
+    const bool binary  = std::strchr(mode, 'b') != nullptr;
+
+    SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+    HANDLE rd = nullptr, wr = nullptr;
+    if (!CreatePipe(&rd, &wr, &sa, 0))
+        return nullptr;
+    HANDLE ours   = reading ? rd : wr;
+    HANDLE theirs = reading ? wr : rd;
+    SetHandleInformation(ours, HANDLE_FLAG_INHERIT, 0); // the child gets only its end
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput  = reading ? GetStdHandle(STD_INPUT_HANDLE) : theirs;
+    si.hStdOutput = reading ? theirs : GetStdHandle(STD_OUTPUT_HANDLE);
+    si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
+
+    // Commands are UTF-8 (paths from SDL); the wide API keeps non-ASCII paths intact.
+    std::string line = "cmd.exe /d /s /c \"" + cmd + "\"";
+    std::wstring wline(MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, nullptr, 0), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, wline.data(), (int)wline.size());
+
+    PROCESS_INFORMATION pi{};
+    const BOOL ok = CreateProcessW(nullptr, wline.data(), nullptr, nullptr, TRUE,
+                                   CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    CloseHandle(theirs);
+    if (!ok) {
+        CloseHandle(ours);
+        return nullptr;
+    }
+    CloseHandle(pi.hThread);
+
+    const int fd = _open_osfhandle((intptr_t)ours,
+                                   (reading ? _O_RDONLY : _O_WRONLY) | (binary ? _O_BINARY : _O_TEXT));
+    FILE* f = fd >= 0 ? _fdopen(fd, mode) : nullptr;
+    if (!f) {
+        if (fd >= 0) _close(fd); else CloseHandle(ours);
+        WaitForSingleObject(pi.hProcess, INFINITE); // stdin/stdout closed: it exits
+        CloseHandle(pi.hProcess);
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lk(g_pipeProcsMtx);
+    g_pipeProcs[f] = pi.hProcess;
+    return f;
+}
+
+static int pipeClose(FILE* f) {
+    HANDLE proc = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_pipeProcsMtx);
+        if (auto it = g_pipeProcs.find(f); it != g_pipeProcs.end()) {
+            proc = it->second;
+            g_pipeProcs.erase(it);
+        }
+    }
+    std::fclose(f); // EOF on the child's stdin (or our end of its stdout)
+    if (!proc)
+        return -1;
+    DWORD code = (DWORD)-1;
+    WaitForSingleObject(proc, INFINITE);
+    GetExitCodeProcess(proc, &code);
+    CloseHandle(proc);
+    return (int)code;
+}
+#  define PPCLOSE pipeClose
 #else
 #  define PPCLOSE pclose
-#endif
-
-// _popen runs the string through `cmd /c`, which strips the first and last quote
-// of any command that starts with one and holds more than one quoted token -- a
-// quoted ffmpeg path followed by a quoted output path comes out mangled and never
-// runs. One extra pair around the whole string is what that stripping removes.
 static FILE* pipeOpen(const std::string& cmd, const char* mode) {
-#ifdef _WIN32
-    return _popen(("\"" + cmd + "\"").c_str(), mode);
-#else
     return popen(cmd.c_str(), mode);
-#endif
 }
+#endif
 
 static std::string runAndCapture(const std::string& cmd) {
     FILE* pipe = pipeOpen(cmd, "r");
@@ -187,9 +267,9 @@ std::string ExportDialog::ffmpegCmd() {
 
 // The raw probe output, captured once per session: the binary is resolved once
 // (ffmpegPath) and cannot change under us, while each probe is a process launch
-// that cost the dialog a visible stall on every open. The three run in parallel;
-// a caller arriving while prefetchFfmpegInfo() is still at it waits on the same
-// static initialisation instead of launching its own.
+// that cost the dialog a visible stall on every open. Probed on the first open
+// (not at startup, so a session that never exports never runs ffmpeg), with the
+// three in parallel.
 namespace {
 struct FfmpegInfo {
     std::string version;
@@ -211,10 +291,6 @@ const FfmpegInfo& ffmpegInfo(const std::string& exe) {
     return info;
 }
 } // namespace
-
-void ExportDialog::prefetchFfmpegInfo() {
-    std::thread([exe = ffmpegCmd()] { ffmpegInfo(exe); }).detach();
-}
 
 bool ExportDialog::ffmpegAvailable() {
     return ffmpegInfo(ffmpegCmd()).version.find("ffmpeg version") != std::string::npos;
@@ -678,16 +754,15 @@ float ExportDialog::layoutRows(SDL_Renderer* r, TextFont* font, SDL_FRect body) 
         progressBarOuter_ = {};
     }
 
-    // Bottom buttons, right-aligned. This is the last row: the dialog ends one
-    // bottom pad below it.
+    // Bottom buttons: Close/Cancel on the left, Export on the right. This is the
+    // last row: the dialog ends one bottom pad below it.
     const float btnW = 80.f * scale;
     row = cutTop(body, rowH);
+    cancelBtn_.setRect(cutLeft(row, btnW));
+    cancelBtn_.setLabel(exporting_ ? "Cancel" : "Close");
     exportBtn_.setRect(cutRight(row, btnW));
     exportBtn_.setLabel("Export");
     exportBtn_.setEnabled(!exporting_ && !exportDone_);
-    gapRight(row, gap);
-    cancelBtn_.setRect(cutRight(row, btnW));
-    cancelBtn_.setLabel(exporting_ ? "Cancel" : "Close");
 
     return body.y - top;
 }
@@ -1498,11 +1573,10 @@ void ExportDialog::renderSuccess(SDL_Renderer* r, TextFont* font, float winW, fl
         font->draw(r, row.x, centerV(row, glyphH).y, kLabel, successNote_.c_str());
     gapTop(body, gap * 1.5f);
 
-    // Buttons right-aligned, Close outermost.
+    // Close on the left, the action buttons right-aligned.
     row = cutTop(body, rowH);
-    successCloseBtn_.setRect(cutRight(row, wClose));
+    successCloseBtn_.setRect(cutLeft(row, wClose));
     successCloseBtn_.setLabel(kClose);
-    gapRight(row, gap);
     revealBtn_.setRect(cutRight(row, wReveal));
     revealBtn_.setLabel(kReveal);
     gapRight(row, gap);

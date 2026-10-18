@@ -890,8 +890,6 @@ bool App::init(int argc, char** argv) {
         sessionPortFld_.setText(std::to_string(syncPort_));
     }
     updateWindowTitle();
-    // Off-thread: the Export dialog's ffmpeg probes are ready before it is first opened.
-    ExportDialog::prefetchFfmpegInfo();
     if (jplayDebugLogging())
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  [startup] init() total: %.1f ms", elapsedMs());
     lastTickMs_ = SDL_GetTicks();
