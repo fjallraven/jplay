@@ -4730,8 +4730,9 @@ void App::onDropText(const std::string& text, float x, float y) {
     if (!jplayPythonReady())
         return;
     // The payload is the only record of what was dragged in, and it is far too
-    // long for the progress dialog, so it goes to the log instead.
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[drop] text payload: %s", text.c_str());
+    // long for the progress dialog, so it goes to the debug log instead.
+    if (jplayDebugLogging())
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[drop] text payload: %s", text.c_str());
     resolveDropTarget(x, y, dropInsertTrack_, dropInsertFrame_);
 
     // What the media would be decoded as, so the callback can hand back the

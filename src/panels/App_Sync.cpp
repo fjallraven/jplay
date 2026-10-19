@@ -351,15 +351,17 @@ void App::refreshHostSnapshot() {
     if (syncSession_.role() != syncreview::Role::Host) {
         return;
     }
-    int clipCount = 0;
-    timeline_.forEachClip([&](const Clip&) { ++clipCount; });
     std::string buf, err;
     if (Project::saveBuffer(buf, timeline_, projectId_, err, viewState())) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "[sync] refreshHostSnapshot: broadcasting %zu bytes "
-                    "(media:%zu seqs:%zu clips:%d viewSeq:%d peers:%d)",
-                    buf.size(), timeline_.media.size(), timeline_.sequences.size(),
-                    clipCount, viewSeqIdx_, syncSession_.peerCount());
+        if (jplayDebugLogging()) {
+            int clipCount = 0;
+            timeline_.forEachClip([&](const Clip&) { ++clipCount; });
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "[sync] refreshHostSnapshot: broadcasting %zu bytes "
+                        "(media:%zu seqs:%zu clips:%d viewSeq:%d peers:%d)",
+                        buf.size(), timeline_.media.size(), timeline_.sequences.size(),
+                        clipCount, viewSeqIdx_, syncSession_.peerCount());
+        }
         syncSession_.broadcastProject(buf);
     } else {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
@@ -371,8 +373,9 @@ void App::refreshHostSnapshot() {
 // over TCP). Mirrors loadProject() but from a byte buffer and with no on-disk
 // association — the received copy is transient.
 void App::loadProjectFromBuffer(const std::string& bytes) {
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "[sync] loadProjectFromBuffer: received %zu bytes", bytes.size());
+    if (jplayDebugLogging())
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "[sync] loadProjectFromBuffer: received %zu bytes", bytes.size());
     work_.reset();
     joinRefresh();
 
@@ -386,13 +389,15 @@ void App::loadProjectFromBuffer(const std::string& bytes) {
         setStatus("SESSION PROJECT LOAD FAILED: " + err, 5000);
         return;
     }
-    int clipCount = 0;
-    tl.forEachClip([&](const Clip&) { ++clipCount; });
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "[sync] loadProjectFromBuffer: parsed OK "
-                "(media:%zu seqs:%zu clips:%d shots:%zu savedViewSeq:%d savedViewProj:%d)",
-                tl.media.size(), tl.sequences.size(), clipCount, tl.shots.size(),
-                savedView.seqIdx, savedView.projId);
+    if (jplayDebugLogging()) {
+        int clipCount = 0;
+        tl.forEachClip([&](const Clip&) { ++clipCount; });
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "[sync] loadProjectFromBuffer: parsed OK "
+                    "(media:%zu seqs:%zu clips:%d shots:%zu savedViewSeq:%d savedViewProj:%d)",
+                    tl.media.size(), tl.sequences.size(), clipCount, tl.shots.size(),
+                    savedView.seqIdx, savedView.projId);
+    }
     timeline_ = std::move(tl);
     undoStack_.clear();
     nextClipId_ = nc;

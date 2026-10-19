@@ -2,6 +2,7 @@
 
 #include "ContextMenu.h"
 #include "ControlServer.h"
+#include "DebugLog.h"
 #include "Dropdown.h"
 #include "ExportDialog.h"
 #include "FrameCache.h"

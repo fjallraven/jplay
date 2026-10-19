@@ -535,10 +535,11 @@ void App::createProjectFromDirectory(const std::string& root) {
                 for (auto& kv : vals)
                     media->setMetaValue(kv.first, std::move(kv.second));
                 int64_t frames = std::max<int64_t>(media->info().frameCount, 1);
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                            "[create-from-dir] opened %s: %lld frames, seq=\"%s\", shot=\"%s\"",
-                            ds.path.c_str(), (long long)frames,
-                            ds.sequence.c_str(), media->name().c_str());
+                if (jplayDebugLogging())
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                                "[create-from-dir] opened %s: %lld frames, seq=\"%s\", shot=\"%s\"",
+                                ds.path.c_str(), (long long)frames,
+                                ds.sequence.c_str(), media->name().c_str());
                 tl.media[media->id()] = media;
 
                 // A change of sequence name starts a new Sequence (entries arrive
@@ -812,7 +813,7 @@ void App::showInSequence() {
         if (jplayGetPathContext(openedPath, ctxScene, ctxShot, ctxDept)) {
             if (sceneName.empty() && !ctxScene.empty())  { sceneName  = ctxScene;  media->setMetaValue("scene", ctxScene); }
             if (shotName.empty() && !ctxShot.empty()) { shotName = ctxShot; media->setMetaValue("shot", ctxShot); }
-        } else {
+        } else if (jplayDebugLogging()) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "[jplay] Show in Sequence: path context lookup failed for \"%s\"", openedPath.c_str());
         }
@@ -862,10 +863,11 @@ void App::showInSequence() {
             if (i != owner && timeline_.sequenceHasScene(timeline_.sequences[i], sceneName))
                 found = i;
         if (found < 0) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                        "[jplay] Show in Sequence: no existing sequence for sequence \"%s\" / "
-                        "scene \"%s\"; will resolve OTIO",
-                        sequenceName.c_str(), sceneName.c_str());
+            if (jplayDebugLogging())
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                            "[jplay] Show in Sequence: no existing sequence for sequence \"%s\" / "
+                            "scene \"%s\"; will resolve OTIO",
+                            sequenceName.c_str(), sceneName.c_str());
             return false;
         }
         scopeToSequence(found);
@@ -895,10 +897,11 @@ void App::showInSequence() {
                                                 tgtStart, tgtStart + tgtDur - 1));
             }
         }
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "[jplay] Show in Sequence: matched existing sequence[%d] name=\"%s\" for "
-                    "scene \"%s\" (matchedShot=%s)",
-                    found, seq.name.c_str(), sceneName.c_str(), match ? "yes" : "no");
+        if (jplayDebugLogging())
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "[jplay] Show in Sequence: matched existing sequence[%d] name=\"%s\" for "
+                        "scene \"%s\" (matchedShot=%s)",
+                        found, seq.name.c_str(), sceneName.c_str(), match ? "yes" : "no");
         setStatus("SHOWING SEQUENCE \"" + shownName + "\"");
         return true;
     };
@@ -1048,11 +1051,11 @@ bool App::loadedProjectDocForMedia(const std::string& mediaPath, std::string& ou
         consider(projectPath_);
     for (const SourceProject& proj : timeline_.projects)
         consider(proj.path);
-    if (!outPath.empty())
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-                     "[jplay] No project document derived for \"%s\"; falling back to the "
-                     "open project \"%s\"",
-                     mediaPath.c_str(), outPath.c_str());
+    if (!outPath.empty() && jplayDebugLogging())
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "[jplay] No project document derived for \"%s\"; falling back to the "
+                    "open project \"%s\"",
+                    mediaPath.c_str(), outPath.c_str());
     return !outPath.empty();
 }
 
@@ -1111,9 +1114,10 @@ void App::resolveOpenTargets(bool allowResolve) {
                 // and these paths are UTF-8.
                 std::string projPath;
                 if (!jplayProjectPathFromMedia(path, projPath)) {
-                    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-                                 "[jplay] No project document for \"%s\"; nothing to open from it",
-                                 path.c_str());
+                    if (jplayDebugLogging())
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                                    "[jplay] No project document for \"%s\"; nothing to open from it",
+                                    path.c_str());
                     return;
                 }
                 OpenTarget& t = res->target;
@@ -1292,7 +1296,7 @@ void App::captureViewAnchor(std::string& shotName, std::string& mediaPath, int64
     if (jplayGetPathContext(mediaPath, ctxScene, ctxShot, ctxDept) && !ctxShot.empty()) {
         shotName = ctxShot;
         media->setMetaValue("shot", ctxShot);
-    } else {
+    } else if (jplayDebugLogging()) {
         // Only the path match is left; a target on another version won't be found.
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "[jplay] view anchor: no shot resolved for \"%s\"", mediaPath.c_str());

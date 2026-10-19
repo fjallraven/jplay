@@ -1,6 +1,6 @@
 #include "OcioManager.h"
 
-#include "HdrColorPass.h" // jplayDebugLogging
+#include "DebugLog.h"
 #include "Preferences.h"
 
 #include <SDL3/SDL_log.h>

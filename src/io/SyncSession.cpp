@@ -1,4 +1,5 @@
 #include "SyncSession.h"
+#include "DebugLog.h"
 #include "Preferences.h"
 
 // All platform/socket code is confined to this translation unit; SyncSession.h
@@ -389,9 +390,10 @@ void Session::Impl::hostLoop() {
                     std::lock_guard<std::mutex> lk(mtx);
                     snap = projectSnapshot;
                 }
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                            "[sync] host: peer connected, pushing snapshot of %zu bytes%s",
-                            snap.size(), snap.empty() ? " (EMPTY — nothing to send!)" : "");
+                if (jplayDebugLogging())
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                                "[sync] host: peer connected, pushing snapshot of %zu bytes%s",
+                                snap.size(), snap.empty() ? " (EMPTY — nothing to send!)" : "");
                 bool ok = true;
                 if (!snap.empty())
                     ok = sendFrame(c, MsgType::Project, snap.data(),
@@ -449,7 +451,7 @@ void Session::Impl::recvLoop() {
         std::string payload;
         if (!recvFrame(clientSock, type, payload))
             break;
-        if (type == MsgType::Project)
+        if (type == MsgType::Project && jplayDebugLogging())
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "[sync] spectator: received Project frame, %zu bytes",
                         payload.size());
@@ -718,9 +720,10 @@ void Session::setProjectSnapshot(const std::string& bytes) {
 
 void Session::broadcastProject(const std::string& bytes) {
     setProjectSnapshot(bytes);
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "[sync] broadcastProject: %zu bytes to %d peer(s)", bytes.size(),
-                peerCount());
+    if (jplayDebugLogging())
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "[sync] broadcastProject: %zu bytes to %d peer(s)", bytes.size(),
+                    peerCount());
     d_->broadcast(MsgType::Project, bytes.data(), (uint32_t)bytes.size());
 }
 

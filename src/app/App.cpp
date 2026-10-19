@@ -822,11 +822,11 @@ bool App::init(int argc, char** argv) {
     else if (ocio_.isEnabled() && !ocio_.isReady())
         ocio_.init(samplePath); // project/OTIO: samplePath only exists now
                                 // (already loaded when the project itself asked for OCIO)
-    if (ocio_.isReady()) {
+    if (ocio_.isReady() && jplayDebugLogging()) {
         const char* ocioEnv = std::getenv("OCIO");
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "OCIO config: %s (from %s)",
-                     ocioEnv && ocioEnv[0] ? ocioEnv : "built-in CG config",
-                     ocioEnv && ocioEnv[0] ? "$OCIO / preferences" : "fallback");
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "OCIO config: %s (from %s)",
+                    ocioEnv && ocioEnv[0] ? ocioEnv : "built-in CG config",
+                    ocioEnv && ocioEnv[0] ? "$OCIO / preferences" : "fallback");
     }
     ocioGpu_.init(renderer_); // GPU path; init() returns false on non-GL backends (then CPU is used)
     // gradeGpu_ is built lazily on the first graded/tech-check frame (see
@@ -834,10 +834,11 @@ bool App::init(int argc, char** argv) {
     // outside the renderer, and most sessions never grade.
     hdrColorPass_.init(renderer_); // HDR color pass (SDL_GPU backend only; no-op otherwise)
     // On the SDL_GPU (HDR) backend OCIO runs via hdrColorPass_, not the GL path.
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "OCIO transform: %s",
-                 ocioGpu_.isReady()      ? "GPU (GL)"
-                 : hdrColorPass_.isReady() ? "GPU (SDL_GPU / HDR)"
-                                           : "CPU");
+    if (jplayDebugLogging())
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "OCIO transform: %s",
+                    ocioGpu_.isReady()      ? "GPU (GL)"
+                    : hdrColorPass_.isReady() ? "GPU (SDL_GPU / HDR)"
+                                              : "CPU");
     output_.init(renderer_);   // external video output (NDI/SDI); readback needs the GL backend
     if (hdrPipeline_)
         output_.setExternalFeed(true); // SDL_GPU path reads back the float program + feeds submitFrame itself

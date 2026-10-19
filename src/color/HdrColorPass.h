@@ -1,10 +1,10 @@
 #pragma once
 
+#include "DebugLog.h"
 #include "Grade.h"
 
 #include <OpenColorIO/OpenColorIO.h>
 
-#include <atomic>
 #include <string>
 #include <vector>
 
@@ -30,30 +30,6 @@ struct SDL_GPUSampler;
 // into SDL_GPU's fragment descriptor set 2 (bindings 1..N; binding 0 is the drawn
 // program texture) via OCIO's setDescriptorSetIndex. The generated GLSL is compiled
 // to SPIR-V with shaderc at runtime.
-
-// The Settings panel's "Debug Logging" checkbox, as a process-wide flag.
-//
-// The HDR / OCIO / display-state diagnostics (swapchain composition support, the
-// per-frame routing decision, colour-pass shader builds, review-window HDR
-// negotiation) are verbose and only wanted while investigating a colour or output
-// problem, so they are logged only when this is on. Genuine failures — shader
-// compile errors, a null processor, a renderer that could not be created — stay
-// unconditional at warning/error level.
-//
-// It lives here, rather than in a header of its own, because this is the lowest
-// header shared by everything that logs on the HDR path (App.h includes it, and so
-// does HdrColorPass.cpp). Written from the main thread, read wherever logging
-// happens, hence the atomic.
-inline std::atomic<bool>& jplayDebugLogFlag() {
-    static std::atomic<bool> enabled{ false };
-    return enabled;
-}
-inline bool jplayDebugLogging() {
-    return jplayDebugLogFlag().load(std::memory_order_relaxed);
-}
-inline void jplaySetDebugLogging(bool enabled) {
-    jplayDebugLogFlag().store(enabled, std::memory_order_relaxed);
-}
 
 class HdrColorPass {
 public:

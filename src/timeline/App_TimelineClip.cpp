@@ -927,10 +927,11 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
         if (!groupChecks.empty()) {
             for (size_t clipIndex = 0; clipIndex < pickableClipIds.size(); ++clipIndex) {
                 if (!groupChecks[groupOfClip[clipIndex]].applies()) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                                "Picker: ignoring clip %d - no %s picker for %s",
-                                pickableClipIds[clipIndex], firstPickerKey.c_str(),
-                                clipPaths[clipIndex].c_str());
+                    if (jplayDebugLogging())
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                                    "Picker: ignoring clip %d - no %s picker for %s",
+                                    pickableClipIds[clipIndex], firstPickerKey.c_str(),
+                                    clipPaths[clipIndex].c_str());
                     continue;
                 }
                 appliedClipIds.push_back(pickableClipIds[clipIndex]);
