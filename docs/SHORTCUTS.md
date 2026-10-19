@@ -80,7 +80,7 @@ overlay. Any click dismisses it.
 | Middle-drag | Pan the zoomed frame |
 | Wheel | Zoom about the cursor |
 | Right-click | Clip menu for the clip on screen |
-| Drag (Draw panel open) | Draw a freehand stroke — see [draw tool](DRAW_TOOL.md) |
+| Drag (Annotate panel open) | Draw a freehand stroke — see [annotate tool](ANNOTATE_TOOL.md) |
 
 In **Overview** (`F3`) the wheel scrolls the grid instead, `Ctrl` + wheel
 resizes its tiles, middle-drag scrolls it, a click jumps the playhead to that

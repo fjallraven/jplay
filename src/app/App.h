@@ -655,7 +655,7 @@ private:
     float annotLastSX_ = 0, annotLastSY_ = 0;      // last sample (screen px), for velocity
     uint64_t annotLastT_ = 0;        // last sample time (ms)
     float annotSmoothHw_ = 0;        // smoothed screen half-width (px)
-    // Draw-tool panel: shown left of the frame while the Draw pane is open. Holds a
+    // Annotate-tool panel: shown left of the frame while the Annotate pane is open. Holds a
     // Clear button, a Pencil Size slider (a multiplier on the speed-based width),
     // and a hue wheel that sets the global stroke color for all markup.
     float pencilSizeMul_ = 1.0f;                   // Pencil Size: multiplies the pressure-sim width
@@ -664,13 +664,13 @@ private:
     // Default is white (lightness 1) to match prior markup.
     float pencilHue_ = 0.0f;         // 0..360 degrees
     float pencilLight_ = 1.0f;       // 0..1 (1 = white center, 0 = black edge)
-    SDL_FRect drawPanelRect_{};      // whole panel column (set in layout; 0 width when hidden)
-    SDL_FRect drawClearRect_{};      // Clear button hit region
-    SDL_FRect drawSizeRect_{};       // Pencil Size slider hit region
-    SDL_FRect drawHueRect_{};        // color wheel hit region (square bounding box)
-    bool drawDragSize_ = false;      // dragging the size slider
-    bool drawDragWheel_ = false;     // dragging inside the color wheel
-    bool hoveredDrawClear_ = false;
+    SDL_FRect annotatePanelRect_{};      // whole panel column (set in layout; 0 width when hidden)
+    SDL_FRect annotateClearRect_{};      // Clear button hit region
+    SDL_FRect annotateSizeRect_{};       // Pencil Size slider hit region
+    SDL_FRect annotateHueRect_{};        // color wheel hit region (square bounding box)
+    bool annotateDragSize_ = false;      // dragging the size slider
+    bool annotateDragWheel_ = false;     // dragging inside the color wheel
+    bool hoveredAnnotateClear_ = false;
     bool pencilOverFrame_ = false;   // pencil mode on and cursor over the frame: show crosshair
     float headerX_ = 0;     // left edge of the timeline content (after the track gutter)
     float contentW_ = 0;    // width of the timeline content area
@@ -761,7 +761,7 @@ private:
         kPanelClipSource,
         kPanelGrade,
         kPanelTech,
-        kPanelDraw,
+        kPanelAnnotate,
         kPanelSync,
         kPanelSettings,
         kPanelBuiltinCount,
@@ -3259,8 +3259,8 @@ private:
     void renderAnnotations();                             // draw pencil strokes over the frame
     void annotationGeometry(const SDL_FRect& dst, std::vector<SDL_Vertex>& verts,
                             std::vector<int>& idx) const; // stroke geometry for a dst rect
-    void renderDrawPanel();                               // draw-tool column, left of the frame (pencil mode)
-    bool drawPanelHandlePress(float mx, float my);        // Clear/size/hue press; true if consumed
+    void renderAnnotatePanel();                               // annotate-tool column, left of the frame (pencil mode)
+    bool annotatePanelHandlePress(float mx, float my);        // Clear/size/hue press; true if consumed
     void pencilColorRGB(float& r, float& g, float& b) const; // current stroke color, 0..1
     void annotBeginStroke(float sx, float sy);            // start a stroke at a screen point
     void annotAppendPoint(float sx, float sy);            // extend the in-progress stroke

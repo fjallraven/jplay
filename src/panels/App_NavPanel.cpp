@@ -116,19 +116,19 @@ void App::registerLeftPanels() {
     };
     leftPanels_.push_back(tech);
 
-    jplay::LeftPanelDesc draw;
-    draw.id = "draw";
-    draw.label = "Draw";
-    draw.icon = iconCp(ICON_MDI_BRUSH);
-    draw.render = [this] { renderDrawPanel(); };
-    // The draw pane's widgets are click-only (Clear / size / hue), and the
+    jplay::LeftPanelDesc annotate;
+    annotate.id = "annotate";
+    annotate.label = "Annotate";
+    annotate.icon = iconCp(ICON_MDI_BRUSH);
+    annotate.render = [this] { renderAnnotatePanel(); };
+    // The annotate pane's widgets are click-only (Clear / size / hue), and the
     // press handler wants the cursor, not the event.
-    draw.handleEvent = [this](const SDL_Event& e) {
+    annotate.handleEvent = [this](const SDL_Event& e) {
         if (e.type != SDL_EVENT_MOUSE_BUTTON_DOWN || e.button.button != SDL_BUTTON_LEFT)
             return false;
-        return drawPanelHandlePress(e.button.x, e.button.y);
+        return annotatePanelHandlePress(e.button.x, e.button.y);
     };
-    leftPanels_.push_back(draw);
+    leftPanels_.push_back(annotate);
 
     jplay::LeftPanelDesc sync;
     sync.id = "sync-review";

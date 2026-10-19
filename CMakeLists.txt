@@ -273,7 +273,7 @@ add_executable(jplay WIN32
     src/app/App_Layout.cpp
     src/stage/App_Inspector.cpp
     src/panels/App_Grade.cpp
-    src/panels/App_Draw.cpp
+    src/panels/App_Annotate.cpp
     src/topbar/App_TopBar.cpp
     src/stage/App_Letterbox.cpp
     src/topbar/App_Ocio.cpp

@@ -1,14 +1,14 @@
-# Draw tool
+# Annotate tool
 
 Freehand pencil markup over the frame, for review notes.
 
 ## Using it
 
-Open the **Draw** panel from the icon strip down the left edge (or
-**View ▸ Panels ▸ Draw**). 
+Open the **Annotate** panel from the icon strip down the left edge (or
+**View ▸ Panels ▸ Annotate**). 
 
 Holding `E` takes the left button back for the exposure/gamma scrub, so checking
-exposure does not mean leaving the draw tool.
+exposure does not mean leaving the annotate tool.
 
 ## Where markup lives
 

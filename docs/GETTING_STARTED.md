@@ -134,5 +134,5 @@ set is wider than what jplay links against.
 - [Mouse and keyboard shortcuts](SHORTCUTS.md)
 - [Colour management](COLOUR_MANAGEMENT.md) · [Colour tools](COLOR_TOOLS.md)
 - [Proxy modes](PROXY_MODES.md) · [Presentation mode](PRESENTATION_MODE.md)
-- [Draw tool](DRAW_TOOL.md) · [Sync session](SYNC_SESSION.md)
+- [Annotate tool](ANNOTATE_TOOL.md) · [Sync session](SYNC_SESSION.md)
 - [Config files](CONFIG_FILES.md) · [Python](PYTHON.md)

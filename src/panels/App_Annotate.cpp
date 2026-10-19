@@ -1,4 +1,4 @@
-// Draw-tool (pencil) panel: a mutually-exclusive left pane (like Overview / Grade),
+// Annotate-tool (pencil) panel: a mutually-exclusive left pane (like Overview / Grade),
 // shown while pencil mode is on. Holds a Clear button, a Pencil Size slider, and a
 // hue wheel that sets the global markup color. Split out of App_Grade.cpp; the
 // size/color it edits feed renderAnnotations. App members.
@@ -21,7 +21,7 @@ constexpr SDL_Color kLabel   = { 200, 205, 215, 255 };
 constexpr SDL_Color kValue   = { 150, 190, 255, 255 };
 constexpr SDL_Color kSection = { 120, 150, 210, 255 };
 
-// Draw-tool pencil-size slider range (multiplier on the pressure-sim width).
+// Annotate-tool pencil-size slider range (multiplier on the pressure-sim width).
 constexpr float kPencilSizeMin = 0.25f;
 constexpr float kPencilSizeMax = 4.0f;
 
@@ -100,17 +100,17 @@ void drawMarker(SDL_Renderer* r, float mx, float my) {
 
 } // namespace
 
-// ─── Draw-tool panel ─────────────────────────────────────────────────────────
+// ─── Annotate-tool panel ─────────────────────────────────────────────────────────
 // A mutually-exclusive left pane (flush against the icon strip, frame begins at its
 // right edge) while pencil mode is on. Holds a Clear button, a Pencil Size slider
 // (a multiplier on the speed-based stroke width), and a hue
 // wheel that sets the global markup color. Widget hit regions are registered here
-// and consumed by drawPanelHandlePress on the next event (one-frame lag, as with
+// and consumed by annotatePanelHandlePress on the next event (one-frame lag, as with
 // the grade widgets). Size/color feed renderAnnotations.
-void App::renderDrawPanel() {
-    if (!panelOpen(kPanelDraw) || drawPanelRect_.w <= 0.0f)
+void App::renderAnnotatePanel() {
+    if (!panelOpen(kPanelAnnotate) || annotatePanelRect_.w <= 0.0f)
         return;
-    const SDL_FRect& R = drawPanelRect_;
+    const SDL_FRect& R = annotatePanelRect_;
     setCol(renderer_, kPanelBg.r, kPanelBg.g, kPanelBg.b);
     jplay::fillRect(renderer_, &R);
     // Right-edge border (1px).
@@ -123,21 +123,21 @@ void App::renderDrawPanel() {
     gapTop(body, 8.0f);
 
     SDL_FRect header = cutTop(body, lineH);
-    drawText(header.x, header.y, kHeader, "DRAW");
+    drawText(header.x, header.y, kHeader, "ANNOTATE");
     gapTop(body, 10.0f);
 
     // Clear button (eraser icon + label).
-    drawClearRect_ = cutTop(body, 26.0f * dpiScale);
+    annotateClearRect_ = cutTop(body, 26.0f * dpiScale);
     gapTop(body, 14.0f);
-    bool ch = hoveredDrawClear_;
+    bool ch = hoveredAnnotateClear_;
     setCol(renderer_, ch ? 74 : 48, ch ? 52 : 40, ch ? 54 : 44);
-    jplay::fillRect(renderer_, &drawClearRect_);
+    jplay::fillRect(renderer_, &annotateClearRect_);
     setCol(renderer_, 118, 92, 96);
-    jplay::drawRect(renderer_, &drawClearRect_);
+    jplay::drawRect(renderer_, &annotateClearRect_);
     {
-        SDL_FRect inner = drawClearRect_;
+        SDL_FRect inner = annotateClearRect_;
         gapLeft(inner, 6.0f);
-        SDL_FRect ir = cutLeft(inner, drawClearRect_.h); // square icon well
+        SDL_FRect ir = cutLeft(inner, annotateClearRect_.h); // square icon well
         icons_.drawGlyph(renderer_, 0xF01FE /*ICON_MDI_ERASER*/, ir, kLabel);
         gapLeft(inner, 4.0f);
         const SDL_FRect lbl = centerV(inner, lineH);
@@ -147,11 +147,11 @@ void App::renderDrawPanel() {
     // Pencil Size slider.
     {
         const float trackH = 6.0f * dpiScale;
-        drawSizeRect_ = cutTop(body, lineH + 6.0f + trackH);
+        annotateSizeRect_ = cutTop(body, lineH + 6.0f + trackH);
         gapTop(body, 16.0f);
 
         // Label left, value right-aligned in the same row; track underneath.
-        SDL_FRect rows = drawSizeRect_;
+        SDL_FRect rows = annotateSizeRect_;
         SDL_FRect head = cutTop(rows, lineH);
         char buf[16];
         std::snprintf(buf, sizeof(buf), "%.2fx", pencilSizeMul_);
@@ -183,9 +183,9 @@ void App::renderDrawPanel() {
     float rad = std::min(body.w * 0.42f, 64.0f * dpiScale);
     const SDL_FRect band = cutTop(body, rad * 2.0f);
     gapTop(body, 10.0f);
-    drawHueRect_ = centerH(band, rad * 2.0f);
-    float cx = drawHueRect_.x + rad;
-    float cy = drawHueRect_.y + rad;
+    annotateHueRect_ = centerH(band, rad * 2.0f);
+    float cx = annotateHueRect_.x + rad;
+    float cy = annotateHueRect_.y + rad;
     drawColorWheel(renderer_, cx, cy, rad, pencilHue_);
     // Marker at the current color: radius from lightness (r = 1-light), angle = hue.
     {
@@ -208,15 +208,15 @@ void App::pencilColorRGB(float& r, float& g, float& b) const {
     hsl(pencilHue_, 1.0f, pencilLight_, r, g, b);
 }
 
-// Press (or drag continuation) inside the draw panel. Returns true if consumed.
-bool App::drawPanelHandlePress(float mx, float my) {
+// Press (or drag continuation) inside the annotate panel. Returns true if consumed.
+bool App::annotatePanelHandlePress(float mx, float my) {
     auto applySize = [&] {
-        float t = std::clamp((mx - drawSizeRect_.x) / drawSizeRect_.w, 0.0f, 1.0f);
+        float t = std::clamp((mx - annotateSizeRect_.x) / annotateSizeRect_.w, 0.0f, 1.0f);
         pencilSizeMul_ = kPencilSizeMin + t * (kPencilSizeMax - kPencilSizeMin);
     };
-    float cx = drawHueRect_.x + drawHueRect_.w * 0.5f;
-    float cy = drawHueRect_.y + drawHueRect_.h * 0.5f;
-    float rad = drawHueRect_.w * 0.5f;
+    float cx = annotateHueRect_.x + annotateHueRect_.w * 0.5f;
+    float cy = annotateHueRect_.y + annotateHueRect_.h * 0.5f;
+    float rad = annotateHueRect_.w * 0.5f;
     // Angle picks hue; distance from center picks lightness (center = white,
     // edge = black). Distance is clamped so dragging past the rim pins to black.
     auto applyWheel = [&] {
@@ -225,13 +225,13 @@ bool App::drawPanelHandlePress(float mx, float my) {
         pencilLight_ = std::clamp(1.0f - dist / rad, 0.0f, 1.0f);
     };
     // Continuation of an active drag: update the grabbed widget from anywhere.
-    if (drawDragSize_)  { applySize();  return true; }
-    if (drawDragWheel_) { applyWheel(); return true; }
+    if (annotateDragSize_)  { applySize();  return true; }
+    if (annotateDragWheel_) { applyWheel(); return true; }
     // Fresh press: hit-test the widgets.
-    if (inRect(drawClearRect_, mx, my)) { annotStrokes_.clear(); annotDrawing_ = false; flushAnnotBuffer(); broadcastClearStrokes(); return true; }
-    if (inRect(drawSizeRect_, mx, my))  { drawDragSize_ = true; applySize(); return true; }
+    if (inRect(annotateClearRect_, mx, my)) { annotStrokes_.clear(); annotDrawing_ = false; flushAnnotBuffer(); broadcastClearStrokes(); return true; }
+    if (inRect(annotateSizeRect_, mx, my))  { annotateDragSize_ = true; applySize(); return true; }
     if (rad > 0.0f && std::hypot(mx - cx, my - cy) <= rad) {
-        drawDragWheel_ = true; applyWheel(); return true;
+        annotateDragWheel_ = true; applyWheel(); return true;
     }
     return false;
 }

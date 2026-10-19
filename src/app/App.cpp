@@ -2434,7 +2434,7 @@ void App::handleEvent(SDL_Event& e) {
         }
         // E held: the left button drives the exposure/gamma virtual slider instead
         // of the jog — and ahead of the pencil, so checking exposure doesn't mean
-        // leaving the draw tool. The key going up ends it even if the button is
+        // leaving the annotate tool. The key going up ends it even if the button is
         // still down.
         if (e.button.button == SDL_BUTTON_LEFT && expHeld_ && !gridView()
             && !launcherVisible() && inPlayerView(mx, my)) {
@@ -2461,7 +2461,7 @@ void App::handleEvent(SDL_Event& e) {
             break;
         }
         // Pencil mode: left-press over the frame starts a freehand stroke.
-        if (e.button.button == SDL_BUTTON_LEFT && panelOpen(kPanelDraw) && inPlayerView(mx, my)
+        if (e.button.button == SDL_BUTTON_LEFT && panelOpen(kPanelAnnotate) && inPlayerView(mx, my)
             && texW_ > 0 && texH_ > 0) {
             annotBeginStroke(mx, my);
             break;
@@ -2790,8 +2790,8 @@ void App::handleEvent(SDL_Event& e) {
                 flushAnnotBuffer(); // persist the completed stroke onto its clip
             }
             annotDrawing_ = false; // finalize any in-progress pencil stroke
-            drawDragSize_ = false;
-            drawDragWheel_ = false;
+            annotateDragSize_ = false;
+            annotateDragWheel_ = false;
             panelResizing_ = -1;
             tlResizing_ = false;
             trackSb_.dragging = false;
@@ -2913,9 +2913,9 @@ void App::handleEvent(SDL_Event& e) {
             gradeHandleEvent(e);
             break;
         }
-        // Active draw-tool drag (size slider / color wheel) updates from anywhere.
-        if (drawDragSize_ || drawDragWheel_) {
-            drawPanelHandlePress(mx, my);
+        // Active annotate-tool drag (size slider / color wheel) updates from anywhere.
+        if (annotateDragSize_ || annotateDragWheel_) {
+            annotatePanelHandlePress(mx, my);
             break;
         }
         // Extending a pencil stroke.
@@ -3102,7 +3102,7 @@ void App::handleEvent(SDL_Event& e) {
         hoveredSequence_ = inRect(sequenceBtnRect_, mx, my);
         hoveredOpenProj_ = inRect(openProjBtnRect_, mx, my);
         hoveredOpenSeq_ = inRect(openSeqBtnRect_, mx, my);
-        hoveredDrawClear_ = drawPanelRect_.w > 0.0f && inRect(drawClearRect_, mx, my);
+        hoveredAnnotateClear_ = annotatePanelRect_.w > 0.0f && inRect(annotateClearRect_, mx, my);
         // Track-header burger (left gutter), never on the trailing placeholder
         // row, which draws none.
         hoveredTrackMenu_ = -1;
@@ -3116,7 +3116,7 @@ void App::handleEvent(SDL_Event& e) {
         // highlight and the ghost point. No-op when the mode is off.
         if (curveMode())
             curveLaneMouseMotion(mx, my);
-        pencilOverFrame_ = panelOpen(kPanelDraw) && inPlayerView(mx, my);
+        pencilOverFrame_ = panelOpen(kPanelAnnotate) && inPlayerView(mx, my);
         // Ruler hover: preview where a click would drop the playhead. Matches
         // the scrub-clickable zone (ruler + cache strip + seq/shot bars).
         tlHoverActive_ = mx >= headerX_ && my >= rulerRect_.y && my < tracksTop_
@@ -4081,10 +4081,10 @@ void App::computeLayout() {
     float topBarH = noChrome ? 0.0f : kTopBarH * (topBarTwoRow ? 2.0f : 1.0f);
     topBarRect_ = { leftX, topH, rightX - leftX, topBarH };
     float frameTop = topH + topBarH; // top of the video frame (below the title bar + top toolbar)
-    // Draw-tool panel: a mutually-exclusive left pane (like Overview / Grade), so it
+    // Annotate-tool panel: a mutually-exclusive left pane (like Overview / Grade), so it
     // sits flush against the icon strip and the frame begins at its right edge. Its
     // width is already folded into leftX above; anchor it at kSidePanelW here.
-    drawPanelRect_ = (panelOpen(kPanelDraw) && !noChrome) ? leftPaneRect() : SDL_FRect{};
+    annotatePanelRect_ = (panelOpen(kPanelAnnotate) && !noChrome) ? leftPaneRect() : SDL_FRect{};
     playerRect_ = { leftX, frameTop, rightX - leftX, winH_ - tlH - frameTop };
     infoRect_ = { 0.0f, tlRect_.y, winW_, kInfoH };
     {

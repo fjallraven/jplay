@@ -39,7 +39,7 @@ Prebuilt x64 binaries for Linux and Windows are available on the
 - [Presentation mode](docs/PRESENTATION_MODE.md) — fullscreen, review monitor,
   NDI / SDI output, burn-in, letterbox
 - [Sync session](docs/SYNC_SESSION.md) — LAN review, one host and many spectators
-- [Draw tool](docs/DRAW_TOOL.md) — pencil annotations
+- [Annotate tool](docs/ANNOTATE_TOOL.md) — pencil annotations
 - [Proxy modes](docs/PROXY_MODES.md) — the global media-representation switch
 
 **Colour**

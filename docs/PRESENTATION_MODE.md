@@ -5,7 +5,7 @@
 
 A borderless fullscreen window on a **second display** that mirrors the clean
 program frame: the graded and tech-checked image plus
-[pencil annotations](DRAW_TOOL.md), at the same zoom and pan as the player, with
+[pencil annotations](ANNOTATE_TOOL.md), at the same zoom and pan as the player, with
 no status text, no LOADING badge, no tech-check legend, no grid.
 
 Pick it under **Output ▸ Review: \<display name>**. The entry appears only when
@@ -52,5 +52,5 @@ because Fit View means the framing only matches when the matte does.
 ## Related
 
 - [Sync session](SYNC_SESSION.md) — driving other people's players from yours.
-- [Draw tool](DRAW_TOOL.md) — annotations, which the review monitor shows.
+- [Annotate tool](ANNOTATE_TOOL.md) — annotations, which the review monitor shows.
 - [Shortcuts](SHORTCUTS.md)

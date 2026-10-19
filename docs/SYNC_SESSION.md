@@ -62,7 +62,7 @@ it.
 **Annotations are two-way.** A spectator draws, its completed stroke goes to the
 host, the host merges everything for that frame and broadcasts the combined set
 back, and spectators replace their markup with it. A clear travels either
-direction. See [draw tool](DRAW_TOOL.md).
+direction. See [annotate tool](ANNOTATE_TOOL.md).
 
 **Colour is deliberately local.** The grade, the tech-check mode and OCIO are
 not synced — each viewer keeps their own. Only the exposure/gamma the host owns
