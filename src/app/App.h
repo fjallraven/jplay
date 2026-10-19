@@ -251,19 +251,20 @@ private:
     Uint64 lastTickNs_ = 0;
     double playClockErr_ = 0.0;
     bool playClockRunning_ = false; // false until the first playing tick
-    // Visible playback rate (debug readout): timestamps (ms) of distinct frames
-    // actually shown in the player over the last ~1s. fpsVisible_ is the rate
-    // derived from them — reads the project fps when playback keeps up and sags
-    // only when frames are genuinely held/dropped.
-    std::deque<Uint64> visibleFrameTimes_;
+    // The play clock: playback time in ms since Play, advanced by update() in whole
+    // refreshes of the pacing display (the measured tick time when that is
+    // unknown). The shown rate is measured on it, free of the present's jitter.
+    double playClockMs_ = 0.0;
+    // Visible playback rate (info-bar readout): play-clock stamps (ms) of distinct
+    // frames actually shown in the player over the last ~1s. fpsVisible_ is the
+    // rate derived from them (updateShownRate) — reads the project fps when
+    // playback keeps up and sags only when frames are genuinely held/dropped.
+    std::deque<double> visibleFrameTimes_;
     double fpsVisible_ = 0.0;
     // The value actually drawn: fpsVisible_ snapped to the project rate and then
     // held until it moves a full tenth, so the readout does not flicker between
     // adjacent tenths (23.9 / 24.0) on sub-frame ripple.
     double fpsShown_ = 0.0;
-    // Tick playback began: the lower bound of the measuring window, so the idle
-    // time before Play is not mistaken for a stall while the window fills.
-    Uint64 fpsWindowFrom_ = 0;
     // True while playback is holding this tick for an uncached frame; passed to
     // the audio engine so it pauses in lockstep with the frozen video.
     bool playbackStalled_ = false;
@@ -1561,6 +1562,10 @@ private:
     SDL_FRect timingsRect_{};         // panel bounds
     SDL_FRect timingsCloseRect_{};    // close (X) button
     SDL_FRect timingsExpandRect_{};   // expand / contract button, left of the close
+    // Each stage's legend key toggles it out of the work lane, to read the rest
+    // of the stack at a finer scale. Not persisted.
+    std::array<bool, 5> timingsStageHidden_{};
+    std::array<SDL_FRect, 5> timingsStageKeyRect_{};
     // Expanded: the panel fills the frame, less the same margin on every side,
     // for reading a long run of bars. Not persisted, like the panel itself.
     bool timingsExpanded_ = true;
@@ -1574,22 +1579,32 @@ private:
     TimingSample timingPending_{};
     bool timingPendingValid_ = false;
     Uint64 timingTickStartNs_ = 0;    // when this drawFrame began
-    // GL_TIME_ELAPSED query around each UI tick while the panel is open (GL path,
-    // GUI holding vsync). The result is read at the start of the next tick, after
-    // the swap wait has drained the GPU, and filled into the sample it belongs to.
-    unsigned timingGpuQuery_ = 0;     // 0: not created yet, or unsupported
+    // GL_TIME_ELAPSED queries around each UI tick while the panel is open (GL path),
+    // and around the review monitor's draw on its own context. A small ring, so the
+    // results can be collected once available without ever waiting on the GPU
+    // (timingCollectGpu); a slot's sum goes into the sample its tick committed.
+    struct TimingGpuSlot {
+        unsigned mainQuery = 0;     // on mainGlContext_; 0: not created yet
+        unsigned reviewQuery = 0;   // on reviewGlContext_; 0: not created yet
+        bool mainPending = false;   // ended, result not read yet
+        bool reviewPending = false;
+        bool committed = false;     // its tick committed a sample: sample / frame below
+        int sample = 0;             // index into timingSamples_
+        int64_t frame = 0;          // that sample's frame, in case the ring moved on
+        Uint64 ns = 0;              // results read so far
+    };
+    static constexpr int kTimingGpuSlots = 4;
+    std::array<TimingGpuSlot, kTimingGpuSlots> timingGpuSlots_{};
+    int timingGpuCur_ = -1;           // this tick's slot, -1 untimed
     int timingGpuSupport_ = -1;       // -1 not checked, 0 no, 1 yes
     bool timingGpuActive_ = false;    // begun this tick, not yet ended
-    bool timingGpuPending_ = false;   // ended on a tick that committed a sample
     // The GL renderers' contexts, taken as each is created (glContextOf_); null when
     // that renderer is not OpenGL. Either may be current at a given point, so the
     // timer code makes the one it needs current itself. The review monitor's draw
     // has a query of its own on its context, read along with the GUI's.
     SDL_GLContext mainGlContext_ = nullptr;
     SDL_GLContext reviewGlContext_ = nullptr;
-    unsigned timingReviewQuery_ = 0;      // on reviewGlContext_; 0: not created yet
     bool timingReviewGpuActive_ = false;  // begun in renderReviewWindow, not yet ended
-    bool timingReviewGpuPending_ = false; // ended for a sample, result not read yet
     Uint64 timingReviewStartNs_ = 0;      // when the review window's draw began
     Uint64 timingLastShownNs_ = 0;    // when the previous new frame reached the screen
 
@@ -2719,6 +2734,7 @@ private:
     void onKeyUp(const SDL_KeyboardEvent& k);
     void update();
     double refreshPeriodSec() const; // of the display pacing the loop; 0 if unknown
+    void updateShownRate(double period); // fpsVisible_ / fpsShown_, on the play clock
     void submitCacheRequests();
     // Guard against re-deriving an unchanged prefetch window every frame: a
     // signature over everything the wanted set is built from, plus when it was last
@@ -2740,7 +2756,8 @@ private:
     // ── Playback timings (App_Timings.cpp) ───────────────────────────────
     void toggleTimingsPanel(); // 'T' / View > Playback Timings; opening starts a fresh history
     void commitTimingSample(); // timingPending_ -> the ring
-    void timingTickBegin();    // drawFrame start, panel open: swap wait, last GPU time, start timers
+    void timingTickBegin();    // drawFrame start, panel open: collect GPU times, start timers
+    void timingCollectGpu();   // read the GPU timer results that have arrived, never waiting
     void timingTickEnd();      // just before the present: CPU time, end the GPU timer
     void timingReviewBegin();  // renderReviewWindow start: its CPU time and GPU timer
     void timingReviewEnd();    // just before its present: charged to the pending sample

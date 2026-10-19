@@ -2272,7 +2272,7 @@ void App::handleEvent(SDL_Event& e) {
             inspectorOpen_ = false;
             break;
         }
-        // The timings panel likewise: its close and expand buttons only.
+        // The timings panel likewise: its close and expand buttons and the stage legend keys only.
         if (timingsOpen_ && e.button.button == SDL_BUTTON_LEFT
             && inRect(timingsCloseRect_, mx, my)) {
             timingsOpen_ = false;
@@ -2282,6 +2282,16 @@ void App::handleEvent(SDL_Event& e) {
             && inRect(timingsExpandRect_, mx, my)) {
             timingsExpanded_ = !timingsExpanded_;
             break;
+        }
+        if (timingsOpen_ && e.button.button == SDL_BUTTON_LEFT) {
+            bool hit = false;
+            for (size_t k = 0; k < timingsStageKeyRect_.size() && !hit; ++k)
+                if (inRect(timingsStageKeyRect_[k], mx, my)) {
+                    timingsStageHidden_[k] = !timingsStageHidden_[k];
+                    hit = true;
+                }
+            if (hit)
+                break;
         }
         // Left panels capture all clicks within their strip (below the title bar,
         // above the full-width timeline): directory toggle, ProjectExplorer +/-
@@ -3257,62 +3267,24 @@ void App::update() {
         dragDropMode_ = DropMode::Overwrite;
     }
 
-    // Visible playback rate (info-bar debug readout). Counts distinct frames that
-    // actually reached the screen over the last ~1s (timestamps pushed in
-    // renderPlayer). The rate is derived from frame spacing rather than the render
-    // cadence, so steady playback reads a stable project fps; a held/dropped frame
-    // shows up as a gap and an in-progress stall sags the value promptly.
+    // Visible playback rate (info-bar readout): measured on the play clock in
+    // updateShownRate, after this tick's refreshes are counted. Stopped, it resets.
     if (!playing_) {
         fpsVisible_ = 0.0;
         fpsShown_ = 0.0;
         visibleFrameTimes_.clear();
-        fpsWindowFrom_ = 0;
+        playClockMs_ = 0.0;
         playClockErr_ = 0.0;
         playClockRunning_ = false;
         playLateValid_ = false;
-    } else {
-        const Uint64 windowMs = 1000;
-        if (fpsWindowFrom_ == 0) fpsWindowFrom_ = now;
-        while (visibleFrameTimes_.size() > 1 && visibleFrameTimes_.front() + windowMs < now)
-            visibleFrameTimes_.pop_front();
-        const size_t n = visibleFrameTimes_.size();
-        if (n >= 2) {
-            double spanMs = (double)(visibleFrameTimes_.back() - visibleFrameTimes_.front());
-            double expMs = spanMs / (double)(n - 1);            // avg interval among recent frames
-            double gapMs = (double)(now - visibleFrameTimes_.back()); // wait since last shown frame
-            // Dead time at the *start* of the window, counted the same way as the
-            // wait at the end. Without it a stall that has just cleared is invisible
-            // -- its frameless stretch holds no timestamps, so trimming leaves only
-            // the handful since the stall and the rate is read off those alone. That
-            // reported a full 24 fps a beat after a 500 ms hitch, and after a stall
-            // longer than the window (n back down to 2) the render cadence itself:
-            // ~59 fps on 24 fps media. The window never reaches back past the
-            // start of playback, or the first second after Play would read as one
-            // long stall and ramp up from ~1 fps instead of the rate straight away.
-            Uint64 winStart = (now > windowMs) ? now - windowMs : 0;
-            if (winStart < fpsWindowFrom_) winStart = fpsWindowFrom_;
-            double leadMs = (double)visibleFrameTimes_.front() - (double)winStart;
-            double denomMs = spanMs + std::max(0.0, gapMs - expMs)   // only count an abnormal wait
-                                    + std::max(0.0, leadMs - expMs);
-            fpsVisible_ = denomMs > 0.0 ? (double)(n - 1) * 1000.0 / denomMs : 0.0;
-        } else {
-            fpsVisible_ = 0.0;
-        }
-        // Snap to the project rate when within tolerance, then hold the drawn
-        // value until the measurement moves a full tenth away from it: an
-        // estimate hovering on a tenth boundary would otherwise alternate
-        // 23.9 / 24.0 every frame. Real drops move further than that and show.
-        double fpsTarget = fpsVisible_;
-        if (timeline_.fps > 0.0 && std::fabs(fpsTarget - timeline_.fps) < 0.3)
-            fpsTarget = timeline_.fps;
-        if (std::fabs(fpsTarget - fpsShown_) >= 0.1)
-            fpsShown_ = std::round(fpsTarget * 10.0) / 10.0;
     }
 
     updateOutputMenu();   // rebuild the Output menu when displays/backends change (hotplug)
 
     if (!playing_ || timeline_.length() <= 0 || timeline_.fps <= 0.0) {
         playHeldSec_ = 0.0;
+        fpsVisible_ = 0.0; // nothing to measure (already reset when stopped)
+        fpsShown_ = 0.0;
         updateAudio(); // stopped: pause the audio device (or feed scrub grains)
         return;
     }
@@ -3346,6 +3318,7 @@ void App::update() {
         }
         dt = n * period;
     }
+    playClockMs_ += dt * 1e3;
     playAcc_ += dt;
     const double spf = 1.0 / timeline_.fps;
     // The tolerance keeps a boundary the refresh count lands on exactly (every
@@ -3392,8 +3365,76 @@ void App::update() {
         playSkippedFrames_ = advanced - 1;
         playLateValid_ = true;
     }
+    updateShownRate(period);
     followPlayhead();
     updateAudio();
+}
+
+// The info bar's shown rate: distinct frames that reached the screen over the
+// last ~1 s (stamped in renderPlayer). Measured on the play clock rather than
+// the wall clock: a frame's stamp is the refreshes counted up to the tick that
+// put it up, free of the present's few-millisecond jitter -- which on a 50 ms
+// frame of the 2-3 cadence was enough to read 23.7 with every frame on time.
+// Without a known refresh period the clock is the measured tick time.
+//
+// Frames are only ever shown on a refresh, so on-time playback lands each frame
+// on the first refresh at or after it was due, and any run of them spans its
+// ideal length to within one refresh. Within that it reads the project rate
+// exactly. Only a frame lost to the run -- a hold for loading, a stall still in
+// progress, a tick long enough to pass frames over -- puts it further out, and
+// then the measured rate shows. Measuring alone, the cadence's uneven intervals
+// biased the estimate: a window with one more 3-refresh frame than 2-refresh
+// read 23.3 at 24 on 60 Hz, and cadences that never repeat cleanly (23.976 on
+// 60 Hz, 24 on 50 Hz) wandered off the rate for seconds at a time. One frame
+// shown a refresh late and then caught up loses nothing and does not dip it;
+// the Timings panel marks those as late.
+void App::updateShownRate(double period) {
+    const double now = playClockMs_;
+    const double windowMs = 1000.0;
+    while (visibleFrameTimes_.size() > 1 && visibleFrameTimes_.front() + windowMs < now)
+        visibleFrameTimes_.pop_front();
+    const size_t n = visibleFrameTimes_.size();
+    bool onRate = false;
+    if (n >= 2) {
+        const double spanMs = visibleFrameTimes_.back() - visibleFrameTimes_.front();
+        const double expMs = spanMs / (double)(n - 1); // avg interval among recent frames
+        const double gapMs = now - visibleFrameTimes_.back(); // wait since last shown frame
+        // A wait only counts once it runs past the longest interval an on-time
+        // frame has. That is not the average: at 24 fps on 60 Hz frames alternate
+        // 2 and 3 refreshes, and measured against the 41.7 ms mean every 50 ms
+        // frame read as 8 ms of stall -- 22.7 fps in the first second after Play.
+        const double onTimeMs = period > 0.0 && timeline_.fps > 0.0
+                                    ? std::ceil(1.0 / (timeline_.fps * period) - 1e-6) * period * 1e3
+                                    : 0.0;
+        const double allowMs = std::max(expMs, onTimeMs);
+        // Dead time at the *start* of the window, counted the same way as the
+        // wait at the end. Without it a stall that has just cleared is invisible
+        // -- its frameless stretch holds no timestamps, so trimming leaves only
+        // the handful since the stall and the rate is read off those alone. That
+        // reported a full 24 fps a beat after a 500 ms hitch, and after a stall
+        // longer than the window (n back down to 2) the render cadence itself:
+        // ~59 fps on 24 fps media. The clock starts at Play, so the window never
+        // reaches back past it, or the first second would read as one long stall.
+        const double winStart = std::max(0.0, now - windowMs);
+        const double leadMs = visibleFrameTimes_.front() - winStart;
+        const double denomMs = spanMs + std::max(0.0, gapMs - allowMs) // only count an abnormal wait
+                                      + std::max(0.0, leadMs - allowMs);
+        fpsVisible_ = denomMs > 0.0 ? (double)(n - 1) * 1000.0 / denomMs : 0.0;
+        // The run against its ideal length; +1 ms of slack for the float sums.
+        const double idealMs = timeline_.fps > 0.0 ? (double)(n - 1) * 1000.0 / timeline_.fps : 0.0;
+        onRate = period > 0.0 && timeline_.fps > 0.0 && std::fabs(denomMs - idealMs) < period * 1e3 + 1.0;
+    } else {
+        fpsVisible_ = 0.0;
+    }
+    // On rate it reads the project rate. With no refresh period to judge by,
+    // snap to it when within tolerance instead. Then hold the drawn value until
+    // the measurement moves a full tenth away from it: an estimate hovering on a
+    // tenth boundary would otherwise alternate 23.9 / 24.0 every frame.
+    double fpsTarget = fpsVisible_;
+    if (timeline_.fps > 0.0 && (onRate || (period <= 0.0 && std::fabs(fpsTarget - timeline_.fps) < 0.3)))
+        fpsTarget = timeline_.fps;
+    if (std::fabs(fpsTarget - fpsShown_) >= 0.1)
+        fpsShown_ = std::round(fpsTarget * 10.0) / 10.0;
 }
 
 // The refresh period, in seconds, of the display whose present paces the main

@@ -68,8 +68,9 @@ void App::clearTimingSamples() {
     timingHead_ = 0;
     timingCount_ = 0;
     timingPendingValid_ = false;
-    timingGpuPending_ = false;
-    timingReviewGpuPending_ = false;
+    // Results still in flight are read and dropped; nothing is committed to them.
+    for (TimingGpuSlot& slot : timingGpuSlots_)
+        slot.committed = false;
     timingLastShownNs_ = 0;
 }
 
@@ -79,8 +80,8 @@ namespace {
 // context is 3.2 compatibility; GL_TIME_ELAPSED needs 3.3 or ARB_timer_query.
 constexpr unsigned kGlTimeElapsed = 0x88BF;
 constexpr unsigned kGlQueryResult = 0x8866;
+constexpr unsigned kGlQueryResultAvailable = 0x8867;
 struct TickGl {
-    void (*finish)(void) = nullptr;
     void (*genQueries)(int, unsigned*) = nullptr;
     void (*beginQuery)(unsigned, unsigned) = nullptr;
     void (*endQuery)(unsigned) = nullptr;
@@ -90,7 +91,6 @@ struct TickGl {
 const TickGl& tickGl() {
     static const TickGl gl = [] {
         TickGl g;
-        g.finish = (void (*)(void))SDL_GL_GetProcAddress("glFinish");
         g.genQueries = (void (*)(int, unsigned*))SDL_GL_GetProcAddress("glGenQueries");
         g.beginQuery = (void (*)(unsigned, unsigned))SDL_GL_GetProcAddress("glBeginQuery");
         g.endQuery = (void (*)(unsigned))SDL_GL_GetProcAddress("glEndQuery");
@@ -104,55 +104,35 @@ const TickGl& tickGl() {
 
 } // namespace
 
-// With vsync on, the GL present returns at once and this thread waits out the
-// swap at the first blocking GL call of the next tick (see OcioGpu::render).
-// Inside the timed span that wait would read as work: the display side could
-// never look much faster than the refresh rate, its phase wandering with the 2:3
-// cadence. So it is taken here, before the clock starts. That also leaves the GPU
-// idle, so the previous tick's timer queries have their results. GL path only.
-// With a review monitor up, it holds vsync and the GUI presents unthrottled: its
-// context is drained the same way, then the GUI's, each made current by hand as
-// either may be the current one here. The review window's draw has a query of its
-// own (timingReviewBegin); the tick's GPU time is the sum of the two, as both
-// windows' work queues on the GPU. A review monitor not on OpenGL has no timer.
+// Each UI tick's GPU time comes from a GL_TIME_ELAPSED query around it, and the
+// review monitor's draw from one on its own context; the tick's GPU time is the
+// sum, as both windows' work queues on the GPU. The queries sit in a small ring of
+// slots and each result is collected on a later tick once the driver reports it
+// available, a tick or two on. Nothing here waits for the GPU: an earlier version
+// drained it with glFinish every tick, which took away the frame of lead the CPU
+// normally has on it, so any hiccup in the driver or compositor missed a vsync --
+// the panel itself made playback drop to 23.4 fps on 24 while it was open. GL path
+// only; a review monitor not on OpenGL has no timer.
+//
+// The tick's CPU clock starts here, after the previous present. Where the driver
+// blocks in the present for the swap, as here, that leaves the wait out. Where it
+// returns at once and blocks at the next GL call instead (see OcioGpu::render),
+// the wait lands in the OCIO stage and the UI tick.
 void App::timingTickBegin() {
     const bool review = reviewActive();
     const bool gl = !hdrPipeline_ && (!review || (mainGlContext_ && reviewGlContext_));
     const TickGl& g = tickGl();
-    Uint64 ns = 0;
-    bool haveGpu = false;
-    if (gl && review) {
-        SDL_GL_MakeCurrent(reviewWindow_, reviewGlContext_);
-        if (g.finish)
-            g.finish();
-        if (timingReviewGpuPending_) {
-            Uint64 reviewNs = 0;
-            g.getQueryObjectui64v(timingReviewQuery_, kGlQueryResult, &reviewNs);
-            ns += reviewNs;
-            haveGpu = true;
-        }
-    }
-    timingReviewGpuPending_ = false;
     if (mainGlContext_)
         SDL_GL_MakeCurrent(window_, mainGlContext_);
-    if (gl && g.finish)
-        g.finish();
-    if (timingGpuActive_) { // a tick that never reached the present
+    if (timingGpuActive_) { // a tick that never reached the present: its result is dropped
         g.endQuery(kGlTimeElapsed);
         timingGpuActive_ = false;
-        timingGpuPending_ = false;
+        TimingGpuSlot& slot = timingGpuSlots_[(size_t)timingGpuCur_];
+        slot.mainPending = true;
+        slot.committed = false;
     }
-    if (timingGpuPending_) {
-        timingGpuPending_ = false;
-        Uint64 mainNs = 0;
-        g.getQueryObjectui64v(timingGpuQuery_, kGlQueryResult, &mainNs);
-        ns += mainNs;
-        haveGpu = true;
-    }
-    if (haveGpu && timingCount_ > 0) {
-        TimingSample& s = timingSamples_[(size_t)((timingHead_ - 1 + kTimingSamples) % kTimingSamples)];
-        s.gpuMs = (float)ns * 1e-6f;
-    }
+    timingGpuCur_ = -1;
+    timingCollectGpu();
     if (gl && timingGpuSupport_ < 0) {
         int major = 0, minor = 0;
         if (g.getIntegerv) {
@@ -162,14 +142,70 @@ void App::timingTickBegin() {
         const bool api = g.genQueries && g.beginQuery && g.endQuery && g.getQueryObjectui64v;
         timingGpuSupport_ = api && (major > 3 || (major == 3 && minor >= 3) ||
                                     SDL_GL_ExtensionSupported("GL_ARB_timer_query")) ? 1 : 0;
-        if (timingGpuSupport_)
-            g.genQueries(1, &timingGpuQuery_);
     }
-    if (gl && timingGpuSupport_ == 1 && timingGpuQuery_ != 0) {
-        g.beginQuery(kGlTimeElapsed, timingGpuQuery_);
-        timingGpuActive_ = true;
+    if (gl && timingGpuSupport_ == 1) {
+        // A free slot: both its results read. With none (the GPU some ticks
+        // behind) this tick goes untimed rather than wait.
+        for (int i = 0; i < kTimingGpuSlots; ++i) {
+            TimingGpuSlot& slot = timingGpuSlots_[(size_t)i];
+            if (slot.mainPending || slot.reviewPending)
+                continue;
+            if (slot.mainQuery == 0)
+                g.genQueries(1, &slot.mainQuery);
+            if (slot.mainQuery == 0)
+                break;
+            slot = TimingGpuSlot{ slot.mainQuery, slot.reviewQuery };
+            g.beginQuery(kGlTimeElapsed, slot.mainQuery);
+            timingGpuActive_ = true;
+            timingGpuCur_ = i;
+            break;
+        }
     }
     timingTickStartNs_ = SDL_GetTicksNS();
+}
+
+// Read whatever results have arrived, without waiting for the rest, and give a
+// slot whose results are all in to the sample its tick committed.
+void App::timingCollectGpu() {
+    const TickGl& g = tickGl();
+    auto ready = [&](unsigned q, Uint64& ns) {
+        Uint64 avail = 0;
+        g.getQueryObjectui64v(q, kGlQueryResultAvailable, &avail);
+        if (!avail)
+            return false;
+        g.getQueryObjectui64v(q, kGlQueryResult, &ns);
+        return true;
+    };
+    bool anyReview = false, anyMain = false;
+    for (const TimingGpuSlot& slot : timingGpuSlots_) {
+        anyReview |= slot.reviewPending;
+        anyMain |= slot.mainPending;
+    }
+    if (anyReview && reviewGlContext_) {
+        SDL_GL_MakeCurrent(reviewWindow_, reviewGlContext_);
+        for (TimingGpuSlot& slot : timingGpuSlots_) {
+            Uint64 ns = 0;
+            if (slot.reviewPending && ready(slot.reviewQuery, ns)) {
+                slot.ns += ns;
+                slot.reviewPending = false;
+            }
+        }
+    }
+    if (mainGlContext_)
+        SDL_GL_MakeCurrent(window_, mainGlContext_);
+    for (TimingGpuSlot& slot : timingGpuSlots_) {
+        Uint64 ns = 0;
+        if (anyMain && slot.mainPending && ready(slot.mainQuery, ns)) {
+            slot.ns += ns;
+            slot.mainPending = false;
+        }
+        if (!slot.committed || slot.mainPending || slot.reviewPending)
+            continue;
+        slot.committed = false;
+        TimingSample& s = timingSamples_[(size_t)slot.sample];
+        if (timingCount_ > 0 && s.frame == slot.frame)
+            s.gpuMs = (float)slot.ns * 1e-6f;
+    }
 }
 
 void App::timingTickEnd() {
@@ -184,25 +220,26 @@ void App::timingTickEnd() {
         SDL_GL_MakeCurrent(window_, mainGlContext_);
     tickGl().endQuery(kGlTimeElapsed);
     timingGpuActive_ = false;
-    timingGpuPending_ = timingPendingValid_; // its sample is committed just after the present
+    timingGpuSlots_[(size_t)timingGpuCur_].mainPending = true; // committed with its sample
 }
 
 // The review monitor's draw, for a frame with a sample pending: its CPU time up to
 // the present is charged to the sample's Output stage and UI tick, and its GPU time
-// goes to a query on its own context, read with the GUI's on the next tick. The
-// present is left out: with the review monitor holding vsync, that is the wait.
+// goes to a query on its own context, in the tick's slot. The present is left out:
+// with the review monitor holding vsync, that is the wait.
 void App::timingReviewBegin() {
     if (!timingPendingValid_)
         return;
     timingReviewStartNs_ = SDL_GetTicksNS();
-    if (hdrPipeline_ || !mainGlContext_ || !reviewGlContext_ || timingGpuSupport_ != 1)
+    if (hdrPipeline_ || !mainGlContext_ || !reviewGlContext_ || timingGpuSupport_ != 1 || timingGpuCur_ < 0)
         return;
     const TickGl& g = tickGl();
+    TimingGpuSlot& slot = timingGpuSlots_[(size_t)timingGpuCur_];
     SDL_GL_MakeCurrent(reviewWindow_, reviewGlContext_);
-    if (timingReviewQuery_ == 0)
-        g.genQueries(1, &timingReviewQuery_); // query objects are not shared between contexts
-    if (timingReviewQuery_ != 0) {
-        g.beginQuery(kGlTimeElapsed, timingReviewQuery_);
+    if (slot.reviewQuery == 0)
+        g.genQueries(1, &slot.reviewQuery); // query objects are not shared between contexts
+    if (slot.reviewQuery != 0) {
+        g.beginQuery(kGlTimeElapsed, slot.reviewQuery);
         timingReviewGpuActive_ = true;
     }
 }
@@ -216,7 +253,7 @@ void App::timingReviewEnd() {
         SDL_GL_MakeCurrent(reviewWindow_, reviewGlContext_);
         tickGl().endQuery(kGlTimeElapsed);
         timingReviewGpuActive_ = false;
-        timingReviewGpuPending_ = true;
+        timingGpuSlots_[(size_t)timingGpuCur_].reviewPending = true;
     }
     const float ms = (float)(SDL_GetTicksNS() - timingReviewStartNs_) * 1e-6f;
     timingPending_.outputMs += ms;
@@ -262,6 +299,12 @@ void App::commitTimingSample() {
         s.aheadSec = (float)timingBufferedAheadSec();
     }
     timingSamples_[(size_t)timingHead_] = s;
+    if (timingGpuCur_ >= 0) { // its GPU time arrives a tick or two on (timingCollectGpu)
+        TimingGpuSlot& slot = timingGpuSlots_[(size_t)timingGpuCur_];
+        slot.committed = true;
+        slot.sample = timingHead_;
+        slot.frame = s.frame;
+    }
     timingHead_ = (timingHead_ + 1) % kTimingSamples;
     timingCount_ = std::min(timingCount_ + 1, kTimingSamples);
 }
@@ -328,6 +371,7 @@ void App::renderTimingsPanel() {
     const float contractedW = std::max(560.0f * dpiScale, legendW + pad * 2.0f);
     const float panelW = timingsExpanded_ ? fullW : std::min(fullW, contractedW);
     const float panelH = timingsExpanded_ ? fullH : std::min(fullH, 400.0f * dpiScale);
+    timingsStageKeyRect_ = {}; // set again only if the legend is drawn
     if (panelW < 200.0f || panelH < 200.0f) {
         timingsRect_ = timingsCloseRect_ = timingsExpandRect_ = {};
         return;
@@ -349,6 +393,18 @@ void App::renderTimingsPanel() {
         v[2] = s.exrMs;
         v[3] = s.ocioMs;
         v[4] = s.outputMs;
+    };
+    // The work lane's stack: the stages less any toggled out at the legend.
+    static_assert(std::tuple_size_v<decltype(timingsStageHidden_)> == kStages);
+    auto stageHidden = [&](int k) { return timingsStageHidden_[(size_t)k]; };
+    auto shownWorkMs = [&](const TimingSample& s) {
+        float v[kStages];
+        stageValues(s, v);
+        double t = 0.0;
+        for (int k = 0; k < kStages; ++k)
+            if (!stageHidden(k))
+                t += v[k];
+        return t;
     };
     // Samples oldest first: the ring's i-th entry counting from the oldest.
     auto sampleAt = [&](int i) -> const TimingSample& {
@@ -705,7 +761,7 @@ void App::renderTimingsPanel() {
         double peak = 0.0;
         for (int i = 0; i < timingCount_; ++i) {
             const TimingSample& s = sampleAt(i);
-            peak = std::max(peak, (double)(s.readMs() + s.displayMs()));
+            peak = std::max(peak, shownWorkMs(s));
         }
         size_t scale = std::size(kScaleMs) - 1;
         for (size_t i = 0; i < std::size(kScaleMs); ++i)
@@ -733,7 +789,7 @@ void App::renderTimingsPanel() {
             const float x = x0 + slotW * (float)i;
             double acc = 0.0;
             for (int k = 0; k < kStages; ++k) {
-                if (v[k] <= 0.0f)
+                if (v[k] <= 0.0f || stageHidden(k))
                     continue;
                 const float yTop = yOf(acc + v[k]);
                 const float yBot = yOf(acc);
@@ -754,7 +810,7 @@ void App::renderTimingsPanel() {
             }
         }
         if (readout) {
-            const double total = readout->readMs() + readout->displayMs();
+            const double total = shownWorkMs(*readout);
             if (total > 0.0) {
                 char buf[32];
                 SDL_snprintf(buf, sizeof(buf), "%.1f ms", total);
@@ -859,13 +915,9 @@ void App::renderTimingsPanel() {
         const float sw = swatchW;
         float x = legend.x;
         char buf[48];
+        float mx = 0.0f, my = 0.0f;
+        uiHoverMouse(mx, my);
         for (int k = 0; k < kStages; ++k) {
-            const SDL_FRect swatch = { x, legend.y + (lineH - sw) * 0.5f, sw, sw };
-            SDL_SetRenderDrawColor(renderer_, kStageColor[k].r, kStageColor[k].g, kStageColor[k].b, 255);
-            jplay::fillRect(renderer_, &swatch);
-            x += sw + 4.0f;
-            drawText(x, legend.y, kMutedText, kStageLabel[k]);
-            x += textFont_.measure(renderer_, kStageLabel[k]) + 4.0f;
             // Read stages of a frame with no read figures (a hover-preview frame,
             // a video) show a dash; OpenEXR's read is inside the EXR figure (see
             // ReadTiming::ioSplit).
@@ -875,8 +927,30 @@ void App::renderTimingsPanel() {
                 SDL_snprintf(buf, sizeof(buf), "in EXR");
             else
                 SDL_snprintf(buf, sizeof(buf), "%.1f ms", v[k]);
-            drawText(x, legend.y, kValueText, buf);
-            x += textFont_.measure(renderer_, buf) + 12.0f;
+            // Each key is a toggle (see timingsStageHidden_): a stage toggled out
+            // of the work lane is keyed faint, and the key under the cursor lights
+            // up, on a faint plate, to show it takes a click.
+            const float labelW = textFont_.measure(renderer_, kStageLabel[k]);
+            const float valW = textFont_.measure(renderer_, buf);
+            const SDL_FRect key = { x, legend.y, sw + 4.0f + labelW + 4.0f + valW, lineH };
+            timingsStageKeyRect_[(size_t)k] = key;
+            const bool hidden = stageHidden(k);
+            const bool hot = inRect(key, mx, my);
+            if (hot) {
+                const SDL_FRect plate = { key.x - 3.0f, key.y, key.w + 6.0f, key.h };
+                SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 28);
+                jplay::fillRect(renderer_, &plate);
+            }
+            const SDL_FRect swatch = { x, legend.y + (lineH - sw) * 0.5f, sw, sw };
+            SDL_SetRenderDrawColor(renderer_, kStageColor[k].r, kStageColor[k].g, kStageColor[k].b,
+                                   hidden ? (hot ? 130 : 60) : 255);
+            jplay::fillRect(renderer_, &swatch);
+            x += sw + 4.0f;
+            drawText(x, legend.y, hidden ? (hot ? kMutedText : kGridLine) : (hot ? kValueText : kMutedText),
+                     kStageLabel[k]);
+            x += labelW + 4.0f;
+            drawText(x, legend.y, hidden ? (hot ? kMutedText : kGridLine) : (hot ? kRateLine : kValueText), buf);
+            x += valW + 12.0f;
         }
         // The lines' keys, each a short stroke in the line's own colour.
         for (int k = 0; k < kRates; ++k) {

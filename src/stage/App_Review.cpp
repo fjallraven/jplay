@@ -211,9 +211,11 @@ void App::closeReviewWindow() {
     reviewHdr_ = false;
     // The timer query went with the context.
     reviewGlContext_ = nullptr;
-    timingReviewQuery_ = 0;
+    for (TimingGpuSlot& slot : timingGpuSlots_) {
+        slot.reviewQuery = 0;
+        slot.reviewPending = false;
+    }
     timingReviewGpuActive_ = false;
-    timingReviewGpuPending_ = false;
     // The main window was rendering the SDR companion display while the HDR review
     // monitor owned the selected one (mainForcedSdrOcio); force one recomposite so its
     // color pass is rebuilt with the selected transform now that it is the reference.

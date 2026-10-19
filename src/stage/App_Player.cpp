@@ -1585,7 +1585,7 @@ void App::renderPlayer() {
                     }
                 }
                 if (newVisibleFrame)
-                    visibleFrameTimes_.push_back(SDL_GetTicks());
+                    visibleFrameTimes_.push_back(playClockMs_);
                 if (newVisibleFrame && timingsOpen_) {
                     const Uint64 tEnd = SDL_GetTicksNS();
                     TimingSample& ts = timingPending_;
