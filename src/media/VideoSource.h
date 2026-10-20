@@ -23,7 +23,8 @@ public:
     double fps() const override { return fps_; }
     int width() const override { return width_; }
     int height() const override { return height_; }
-    FramePtr readFrame(int64_t index) override;
+    FramePtr readFrame(int64_t index) override { return read(index, nullptr); }
+    FramePtr readFrameTimed(int64_t index, ReadTiming& timing) override { return read(index, &timing); }
     const std::string& path() const override { return path_; }
     SourceColorTags colorTags() const override { return colorTags_; }
     std::vector<InfoField> describe() const override;
@@ -31,8 +32,12 @@ public:
 private:
     VideoSource() = default;
     bool openInternal(const std::string& path, std::string& err);
+    // Both readFrame()s: `timing`, when given, is filled as the read goes.
+    FramePtr read(int64_t index, ReadTiming* timing);
     bool seekTo(int64_t index);
-    bool decodeNext(); // fills frm_, returns false on EOF/error
+    // Fills frm_, returns false on EOF/error. Time spent demuxing packets is added
+    // to `timing`'s readIoMs when given.
+    bool decodeNext(ReadTiming* timing = nullptr);
     int64_t ptsToIndex(const AVFrame* f) const;
     FramePtr convert(const AVFrame* f);
     void close();

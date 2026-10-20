@@ -1280,6 +1280,9 @@ void App::renderPlayer() {
                 // The HDR review monitor's upload happens inside that span but is a
                 // sink's cost, so it is taken out of OCIO and charged to Output.
                 Uint64 reviewFeedNs = 0;
+                // The wait for the previous swap, met at the first GL sync on the
+                // way to the upload: not work, so taken out too (see timingSyncWaitMs).
+                double syncWaitMs = 0.0;
 
                 // The colour space each half is read in. Resolved before the
                 // composite because a dissolve joining two different ones cannot be
@@ -1525,18 +1528,24 @@ void App::renderPlayer() {
                                                      (unsigned)texId, (unsigned)texTarget,
                                                      grade_.gain, tag);
                             gainHandledUpstream = didGpu;
+                            if (didGpu && timingsOpen_)
+                                syncWaitMs += ocioGpu_.lastSyncWaitMs();
                         }
                     }
                     if (!didGpu) {
                         ocioPixels_.resize((size_t)fr->width * fr->height * 4);
                         ocio_.cpuTransformFor(csA, grade_.gain).apply(*fr, ocioPixels_.data());
                         gainHandledUpstream = true; // the CPU transform exposed it too
+                        if (timingsOpen_)
+                            syncWaitMs += timingSyncWaitMs();
                         SDL_UpdateTexture(texture_, nullptr, ocioPixels_.data(), fr->width * 4);
                     }
                 } else if (!didNit) {
                     // Colour management off, or a mixed-space dissolve already
                     // transformed above: the frame's own 8-bit buffer stands.
                     gainHandledUpstream = csMixed;
+                    if (timingsOpen_)
+                        syncWaitMs += timingSyncWaitMs();
                     SDL_UpdateTexture(texture_, nullptr, fr->rgba8().data(), fr->width * 4);
                 }
                 // Color-grading + tech-check post-pass: grade the freshly-built
@@ -1596,7 +1605,9 @@ void App::renderPlayer() {
                         ts.skippedFrames = playSkippedFrames_;
                     }
                     playLateValid_ = false;
-                    ts.ocioMs = (float)(tOutput0 - tDisplay0 - reviewFeedNs) * 1e-6f;
+                    ts.vsyncMs = (float)syncWaitMs;
+                    ts.ocioMs = std::max(0.0f, (float)(tOutput0 - tDisplay0 - reviewFeedNs) * 1e-6f - ts.vsyncMs);
+                    ts.ocio = ocioActive;
                     // SDR readback (or the HDR review upload); the HDR readback adds its
                     // own below, the review window's draw in renderReviewWindow.
                     ts.outputMs = (float)(tEnd - tOutput0 + reviewFeedNs) * 1e-6f;
@@ -1612,8 +1623,9 @@ void App::renderPlayer() {
                         ts.fresh = ts.fresh || first;
                         ts.waitIoMs += (float)rt.waitIoMs;
                         ts.readIoMs += (float)rt.readIoMs;
-                        ts.exrMs += (float)rt.exrMs;
+                        ts.decodeMs += (float)rt.decodeMs;
                         ts.ioSplit = ts.ioSplit && rt.ioSplit;
+                        ts.serial = ts.serial || rt.serial;
                     }
                     timingPendingValid_ = true;
                 }

@@ -1517,10 +1517,10 @@ private:
     // timed while the panel is shut. The samples are a fixed ring, oldest overwritten.
     struct TimingSample {
         int64_t frame = 0;     // timeline frame shown
-        float waitIoMs = 0.0f; // file open + header
-        float readIoMs = 0.0f; // pixel data read
-        float exrMs = 0.0f;    // interleave / decode into the frame buffer
-        float ocioMs = 0.0f;   // UI thread: composite, OCIO/colour work, upload
+        float waitIoMs = 0.0f; // file open + header (video: decoder wait + seek)
+        float readIoMs = 0.0f; // pixel data read (video: demux)
+        float decodeMs = 0.0f; // interleave / decode into the frame buffer
+        float ocioMs = 0.0f;   // UI thread: composite, OCIO/colour work, upload (vsyncMs taken out)
         float outputMs = 0.0f; // UI thread: readback + submit to an output / review monitor, and the review window's draw
         // The whole UI tick up to present, every stage above included, as CPU time:
         // the wait for the previous swap is taken before it starts (see
@@ -1532,10 +1532,17 @@ private:
         // of the two. Neither is a stacked stage.
         float uiMs = 0.0f;
         float gpuMs = -1.0f;
+        // The wait for the previous frame's swap that the display path met on its
+        // way to the upload (see timingSyncWaitMs): idle, not work, so it is left
+        // out of ocioMs and uiMs and keyed on its own, hidden from the stack by
+        // default. Mostly a refresh at 60 Hz where the present returns at once.
+        float vsyncMs = 0.0f;
+        bool ocio = false;     // the OCIO display transform was on: the display stage is keyed "OCIO", else "Upload"
         bool playing = false;  // advanced by playback, not a step or a scrub
         bool hasRead = false;  // the read figures above are known
         bool fresh = false;    // first showing since that read (false: shown again from the cache)
-        bool ioSplit = false;  // readIoMs measured apart from exrMs (see ReadTiming)
+        bool ioSplit = false;  // readIoMs measured apart from decodeMs (see ReadTiming)
+        bool serial = false;   // read by a source whose reads run one at a time (a video, see ReadTiming)
         // Time since the previous new frame reached the screen; 0 for the first
         // after a pause, which has nothing to measure against.
         float intervalMs = 0.0f;
@@ -1551,7 +1558,7 @@ private:
         // seconds of playback when it was shown: what a run of slow reads can eat
         // into before a frame is held. Capped at kTimingAheadCapSec; -1 unknown.
         float aheadSec = -1.0f;
-        float readMs() const { return waitIoMs + readIoMs + exrMs; }
+        float readMs() const { return waitIoMs + readIoMs + decodeMs; }
         float displayMs() const { return ocioMs + outputMs; }
     };
     static constexpr int kTimingSamples = 240; // 10 s at 24 fps
@@ -1565,8 +1572,8 @@ private:
     SDL_FRect timingsExpandRect_{};   // expand / contract button, left of the close
     // Each stage's legend key toggles it out of the work lane, to read the rest
     // of the stack at a finer scale. Not persisted.
-    std::array<bool, 5> timingsStageHidden_{};
-    std::array<SDL_FRect, 5> timingsStageKeyRect_{};
+    std::array<bool, 6> timingsStageHidden_{ false, false, false, false, false, true }; // Vsync wait out
+    std::array<SDL_FRect, 6> timingsStageKeyRect_{};
     // Expanded: the panel fills the frame, less the same margin on every side,
     // for reading a long run of bars. Not persisted, like the panel itself.
     bool timingsExpanded_ = true;
@@ -2764,6 +2771,7 @@ private:
     void timingReviewEnd();    // just before its present: charged to the pending sample
     static SDL_GLContext glContextOf_(SDL_Renderer* r); // r's context, just after creating it
     double readCostMs(double readMs, double readsPerFrame); // read side per frame shown
+    double timingSyncWaitMs(); // take the wait for the previous swap now, and time it (GL only)
     void preuploadNextFrame(bool bandedOnly = false); // App_Player.cpp: next frame's OCIO input upload, on an idle refresh
     double timingBufferedAheadSec(); // see TimingSample::aheadSec
     void clearTimingSamples();

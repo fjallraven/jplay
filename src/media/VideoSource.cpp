@@ -8,6 +8,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
+#include <algorithm>
 #include <cmath>
 
 // If a request is at most this far ahead of the decoder position we decode
@@ -185,14 +186,17 @@ bool VideoSource::seekTo(int64_t index) {
     return true;
 }
 
-bool VideoSource::decodeNext() {
+bool VideoSource::decodeNext(ReadTiming* timing) {
     for (;;) {
         int r = avcodec_receive_frame(codec_, frm_);
         if (r == 0)
             return true;
         if (r == AVERROR(EAGAIN)) {
             for (;;) {
+                const double tRead = timing ? readTimingNowMs() : 0.0;
                 int rr = av_read_frame(fmt_, pkt_);
+                if (timing)
+                    timing->readIoMs += readTimingNowMs() - tRead;
                 if (rr < 0) {
                     avcodec_send_packet(codec_, nullptr); // start draining
                     break;
@@ -302,7 +306,18 @@ FramePtr VideoSource::convert(const AVFrame* f) {
     });
 }
 
-FramePtr VideoSource::readFrame(int64_t index) {
+// The Playback Timings stages, for a video:
+//   waitIoMs  the wait for the decoder -- its lock, which the thumbnail reader
+//             shares -- and a keyframe seek when the request is not just ahead.
+//   readIoMs  av_read_frame: demuxing the packets, which is where the file is read.
+//   decodeMs  the rest: the codec, and the conversion to RGBA.
+// After a seek every frame from the keyframe up to `index` is demuxed and decoded
+// and thrown away, and is charged to this one: it is what reading it cost. With
+// the codec's frame threading a frame comes out of a pipeline that was already
+// working on it during earlier reads, so the decode figure is how long this read
+// waited for it rather than all the work that went into it.
+FramePtr VideoSource::read(int64_t index, ReadTiming* timing) {
+    const double tWait = timing ? readTimingNowMs() : 0.0;
     std::lock_guard<std::mutex> lock(mtx_);
     if (!fmt_)
         return nullptr;
@@ -316,11 +331,15 @@ FramePtr VideoSource::readFrame(int64_t index) {
         }
         nextIndex_ = -1;
     }
+    const double tDecode = timing ? readTimingNowMs() : 0.0;
+    const double readIo0 = timing ? timing->readIoMs : 0.0;
+    if (timing)
+        timing->waitIoMs += tDecode - tWait;
 
     bool any = false;
     int guard = 0;
     for (;;) {
-        if (!decodeNext()) {
+        if (!decodeNext(timing)) {
             nextIndex_ = -1; // EOF/error: force a seek on the next request
             break;
         }
@@ -332,7 +351,16 @@ FramePtr VideoSource::readFrame(int64_t index) {
         if (idx >= index || ++guard > 4000)
             break;
     }
-    return any ? convert(keep_) : nullptr;
+    FramePtr frame = any ? convert(keep_) : nullptr;
+    if (timing && frame) {
+        // The demux was stamped as it went; everything else since tDecode is decode.
+        const double demuxMs = timing->readIoMs - readIo0;
+        timing->decodeMs += std::max(0.0, readTimingNowMs() - tDecode - demuxMs);
+        timing->ioSplit = true;
+        timing->serial = true;
+        timing->valid = true;
+    }
+    return frame;
 }
 
 std::vector<InfoField> VideoSource::describe() const {

@@ -106,14 +106,22 @@ bool decodeRgba8();
 // one that cannot. The cache workers time every read, panel open or not: it is a
 // handful of clock readings against milliseconds of IO, and a frame read before
 // the panel was opened then still has its figures when it is shown.
+//
+// For a video the same three stages are the seek, the demux and the decode: see
+// VideoSource::read.
 struct ReadTiming {
     double waitIoMs = 0.0; // opening the file and reading its header: the wait for first data
     double readIoMs = 0.0; // reading the pixel data
-    double exrMs = 0.0;    // turning it into the frame's buffer: interleave or decode, 8-bit build
+    double decodeMs = 0.0; // turning it into the frame's buffer: interleave or decode, 8-bit build
     // Whether readIoMs was measured on its own. OpenEXR's readPixels reads and
     // decodes in one call, so for a file it reads chunk by chunk (multi-part, or
-    // too large to read whole first) readIoMs is 0 and exrMs holds both.
+    // too large to read whole first) readIoMs is 0 and decodeMs holds both.
     bool ioSplit = false;
+    // Whether the source's reads run one at a time however many cache workers
+    // there are: a video, whose one decoder the cache gives a single worker (see
+    // FrameCache::busyVideos_). The read side then sustains 1 / read time, not
+    // workers / read time.
+    bool serial = false;
     bool valid = false;
 };
 

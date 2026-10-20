@@ -546,7 +546,7 @@ FramePtr ExrSequenceSource::read(int64_t index, ReadTiming* timing) {
 
         if (!done) {
             // OpenEXR's constructors open the file and parse its headers: the wait.
-            // readPixels then reads and decodes in one call, which is exrMs whole --
+            // readPixels then reads and decodes in one call, which is decodeMs whole --
             // unless the file was read whole first, which is readIoMs on its own.
             const double tOpen = timing ? readTimingNowMs() : 0.0;
             // A single-part file is read through WholeFileExrStream. Only a single-
@@ -591,7 +591,7 @@ FramePtr ExrSequenceSource::read(int64_t index, ReadTiming* timing) {
                 double from;
                 ~PixelStamp() {
                     if (t)
-                        t->exrMs += readTimingNowMs() - from;
+                        t->decodeMs += readTimingNowMs() - from;
                 }
             } pixelStamp{ timing, tPixels };
 #ifndef _WIN32
@@ -729,7 +729,7 @@ FramePtr ExrSequenceSource::read(int64_t index, ReadTiming* timing) {
                 double from;
                 ~BuildStamp() {
                     if (t)
-                        t->exrMs += readTimingNowMs() - from;
+                        t->decodeMs += readTimingNowMs() - from;
                 }
             } buildStamp{ timing, tBuild };
             std::vector<uint8_t> rgba;

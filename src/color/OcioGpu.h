@@ -82,6 +82,11 @@ public:
     // render then uploads as usual).
     bool preupload(const void* pixels, InputFormat fmt, int width, int height, uint64_t tag);
     uint64_t preuploadedTag() const { return preTag_; }
+
+    // How long the last render() stood at its first GL sync: with vsync on, the
+    // wait for the previous frame's swap (see render). For the Playback Timings
+    // panel, which takes it out of the display work.
+    double lastSyncWaitMs() const { return lastSyncWaitMs_; }
     static int preuploadBands(InputFormat fmt, int width, int height);
 
     // Render a scene-referred luminance heatmap of `linear` into `dstTexGL` — a
@@ -108,6 +113,7 @@ private:
     unsigned preTex_ = 0;
     int      preW_ = 0, preH_ = 0, preFmt_ = -1;
     uint64_t preTag_ = 0;
+    double lastSyncWaitMs_ = 0.0;
     void swapInput_();
     // A preupload part-way through its bands: the frame, the rows of preTex_ it
     // has filled, and the ring slot holding its pixels (-1: sent from host

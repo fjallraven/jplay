@@ -516,7 +516,7 @@ bool readRgbHalf(const std::string& path, int part, const std::string (&rgb)[3],
         for (size_t i = 0; i < take && ok; ++i, p += chunkBytes)
             ok = processChunk(p);
         if (timing)
-            timing->exrMs += readTimingNowMs() - tWork;
+            timing->decodeMs += readTimingNowMs() - tWork;
         if (!ok) return false;
         remaining -= (int64_t)take;
     }

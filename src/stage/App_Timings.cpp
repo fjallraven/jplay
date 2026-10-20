@@ -20,17 +20,25 @@ using namespace jplay;
 
 namespace {
 
-// The five stages, bottom of the stack to top, in the fixed categorical order.
-// Checked for colour-vision separation and contrast against the dark panel.
-constexpr int kStages = 5;
+// The stages, bottom of the stack to top, in the fixed categorical order. Checked
+// for colour-vision separation and contrast against the dark panel. The last is
+// not work: the wait for the previous swap (TimingSample::vsyncMs), in neutral
+// grey rather than a hue, and out of the stack until its key is clicked.
+constexpr int kStages = 6;
+constexpr int kDisplayStage = 3;
+constexpr int kVsyncStage = 5;
 const SDL_Color kStageColor[kStages] = {
     { 0x39, 0x87, 0xe5, 255 }, // wait IO  - blue
     { 0xd9, 0x59, 0x26, 255 }, // read IO  - orange
     { 0x19, 0x9e, 0x70, 255 }, // decode   - aqua
     { 0xc9, 0x85, 0x00, 255 }, // OCIO     - yellow
     { 0xd5, 0x51, 0x81, 255 }, // output   - magenta
+    { 0x6e, 0x72, 0x7e, 255 }, // vsync    - grey
 };
-const char* const kStageLabel[kStages] = { "Wait IO", "Read IO", "Decode", "OCIO", "Output" };
+const char* const kStageLabel[kStages] = { "Wait IO", "Read IO", "Decode", "OCIO", "Output", "Vsync wait" };
+// The display stage's key for a frame shown without the OCIO transform: the same
+// span, which is then the composite and the plain upload.
+const char* const kPlainDisplayLabel = "Upload";
 
 const SDL_Color kTitleText = { 160, 170, 200, 255 };
 const SDL_Color kMutedText = { 130, 135, 148, 255 };
@@ -115,9 +123,9 @@ const TickGl& tickGl() {
 // only; a review monitor not on OpenGL has no timer.
 //
 // The tick's CPU clock starts here, after the previous present. Where the driver
-// blocks in the present for the swap, as here, that leaves the wait out. Where it
-// returns at once and blocks at the next GL call instead (see OcioGpu::render),
-// the wait lands in the OCIO stage and the UI tick.
+// blocks in the present for the swap, that leaves the wait out. Where it returns
+// at once and blocks at the next GL call instead, the display path times that
+// call and takes it back out of its stage and the UI tick (timingSyncWaitMs).
 void App::timingTickBegin() {
     const bool review = reviewActive();
     const bool gl = !hdrPipeline_ && (!review || (mainGlContext_ && reviewGlContext_));
@@ -209,8 +217,9 @@ void App::timingCollectGpu() {
 }
 
 void App::timingTickEnd() {
-    if (timingPendingValid_)
-        timingPending_.uiMs = (float)(SDL_GetTicksNS() - timingTickStartNs_) * 1e-6f;
+    if (timingPendingValid_) // less the swap wait, which is idle (see timingSyncWaitMs)
+        timingPending_.uiMs = std::max(0.0f, (float)(SDL_GetTicksNS() - timingTickStartNs_) * 1e-6f -
+                                                 timingPending_.vsyncMs);
     if (!timingGpuActive_)
         return;
     // SDL holds this tick's draws in its queue until the present; submit them so
@@ -258,6 +267,24 @@ void App::timingReviewEnd() {
     const float ms = (float)(SDL_GetTicksNS() - timingReviewStartNs_) * 1e-6f;
     timingPending_.outputMs += ms;
     timingPending_.uiMs += ms;
+}
+
+// The first GL call of a tick that needs the driver's attention is where, with
+// vsync on and a present that returns at once, this thread waits out the previous
+// frame's swap: most of a refresh, and no work at all. The display path makes
+// that call itself just before its upload (SDL_UpdateTexture would otherwise take
+// the wait inside it), so the wait is measured and kept out of the display stage
+// and the UI tick (TimingSample::vsyncMs). The OCIO GPU pass measures its own, at
+// the same point in its sequence (OcioGpu::lastSyncWaitMs). GL path only.
+double App::timingSyncWaitMs() {
+    const TickGl& g = tickGl();
+    if (hdrPipeline_ || !mainGlContext_ || !g.getIntegerv)
+        return 0.0;
+    const Uint64 t0 = SDL_GetTicksNS();
+    SDL_FlushRenderer(renderer_);
+    int fbo = 0;
+    g.getIntegerv(0x8CA6 /*GL_FRAMEBUFFER_BINDING*/, &fbo);
+    return (double)(SDL_GetTicksNS() - t0) * 1e-6;
 }
 
 SDL_GLContext App::glContextOf_(SDL_Renderer* r) {
@@ -363,8 +390,12 @@ void App::renderTimingsPanel() {
     const float swatchW = std::round(lineH * 0.6f);
     const float valueW = textFont_.measure(renderer_, "000.0 ms");
     float legendW = 0.0f;
-    for (const char* label : kStageLabel)
-        legendW += swatchW + 4.0f + textFont_.measure(renderer_, label) + 4.0f + valueW + 12.0f;
+    for (int k = 0; k < kStages; ++k) {
+        float labelW = textFont_.measure(renderer_, kStageLabel[k]);
+        if (k == kDisplayStage)
+            labelW = std::max(labelW, textFont_.measure(renderer_, kPlainDisplayLabel));
+        legendW += swatchW + 4.0f + labelW + 4.0f + valueW + 12.0f;
+    }
     for (int k = 0; k < kRates; ++k)
         legendW += swatchW + 4.0f + textFont_.measure(renderer_, kRateLabel[k]) + 4.0f +
                    textFont_.measure(renderer_, kRateWidest[k]) + 12.0f;
@@ -390,9 +421,10 @@ void App::renderTimingsPanel() {
     auto stageValues = [](const TimingSample& s, float v[kStages]) {
         v[0] = s.waitIoMs;
         v[1] = s.readIoMs;
-        v[2] = s.exrMs;
+        v[2] = s.decodeMs;
         v[3] = s.ocioMs;
         v[4] = s.outputMs;
+        v[kVsyncStage] = s.vsyncMs;
     };
     // The work lane's stack: the stages less any toggled out at the legend.
     static_assert(std::tuple_size_v<decltype(timingsStageHidden_)> == kStages);
@@ -427,8 +459,15 @@ void App::renderTimingsPanel() {
     // nothing, so the read side is costed per frame shown: the reads there were,
     // over every frame. A per-frame figure would cost every fresh frame as if all
     // of them needed a read, and drop well under a rate playback is holding.
+    //
+    // A video's reads run one at a time (TimingSample::serial), so they are costed
+    // at their own time, with no division by the workers. A window that cuts from
+    // a sequence to a video holds both kinds; each is costed per frame shown, and
+    // the two added, as they followed each other. A dissolve between two videos is
+    // costed as one serial read of both halves, though each has its own worker:
+    // the estimate errs low there.
     auto capacityAt = [&](int i, bool& readLimited) -> double {
-        double readSum = 0.0, dispSum = 0.0;
+        double readSum = 0.0, serialSum = 0.0, dispSum = 0.0;
         int n = 0, reads = 0;
         for (int j = i; j >= 0 && j > i - kTimingRateWindow; --j) {
             const TimingSample& s = sampleAt(j);
@@ -436,14 +475,18 @@ void App::renderTimingsPanel() {
                 break;
             dispSum += std::max(s.uiMs, s.gpuMs);
             if (s.hasRead && s.fresh) {
-                readSum += s.readMs();
-                ++reads;
+                if (s.serial) {
+                    serialSum += s.readMs();
+                } else {
+                    readSum += s.readMs();
+                    ++reads;
+                }
             }
             ++n;
         }
         if (n == 0)
             return 0.0;
-        const double readMs = reads > 0 ? readCostMs(readSum / n, (double)reads / n) : 0.0;
+        const double readMs = (reads > 0 ? readCostMs(readSum / n, (double)reads / n) : 0.0) + serialSum / n;
         const double dispMs = dispSum / n;
         readLimited = readMs > dispMs;
         const double cost = std::max(readMs, dispMs);
@@ -558,9 +601,15 @@ void App::renderTimingsPanel() {
     char laneNote[3][128];
     SDL_snprintf(laneNote[0], sizeof(laneNote[0]),
                  "playback speed vs. what loading could sustain");
-    SDL_snprintf(laneNote[1], sizeof(laneNote[1]),
-                 "time to load each frame; %d load at once, so tall bars are not late frames",
-                 workers);
+    // A video loads one frame at a time (TimingSample::serial): there a bar past
+    // the frame interval is a frame that cannot keep up.
+    if (timingCount_ > 0 && sampleAt(timingCount_ - 1).serial)
+        SDL_snprintf(laneNote[1], sizeof(laneNote[1]),
+                     "time to load each frame; a video loads one at a time");
+    else
+        SDL_snprintf(laneNote[1], sizeof(laneNote[1]),
+                     "time to load each frame; %d load at once, so tall bars are not late frames",
+                     workers);
     SDL_snprintf(laneNote[2], sizeof(laneNote[2]),
                  "frames loaded and waiting; at zero playback stalls");
     {
@@ -925,12 +974,14 @@ void App::renderTimingsPanel() {
             if (k == 1 && ioInDecode)
                 continue;
             // Read stages of a frame with no read figures (a hover-preview frame,
-            // a video) show a dash.
+            // a still) show a dash.
             if (!s || (k < 3 && !s->hasRead))
                 SDL_snprintf(buf, sizeof(buf), "\xe2\x80\x94");
             else
                 SDL_snprintf(buf, sizeof(buf), "%.1f ms", v[k]);
-            const char* label = k == 2 && ioInDecode ? "Read IO & Decode" : kStageLabel[k];
+            const char* label = k == 2 && ioInDecode ? "Read IO & Decode"
+                              : k == kDisplayStage && s && !s->ocio ? kPlainDisplayLabel
+                                                                     : kStageLabel[k];
             // Each key is a toggle (see timingsStageHidden_): a stage toggled out
             // of the work lane is keyed faint, and the key under the cursor lights
             // up, on a faint plate, to show it takes a click.

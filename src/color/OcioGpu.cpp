@@ -880,6 +880,8 @@ bool OcioGpu::render(const void* pixels, InputFormat fmt, int width, int height,
     // their work inside that wait rather than after it.
     if (!pre)
         beginStage_(pixels, (size_t)width * height * bytesPerPixel_(fmt));
+    // The flush and the first state query are that wait (lastSyncWaitMs).
+    const Uint64 tSync = SDL_GetTicksNS();
     // Submit SDL's queued GL commands before we change GL state out from under it.
     SDL_FlushRenderer(renderer_);
 
@@ -887,6 +889,7 @@ bool OcioGpu::render(const void* pixels, InputFormat fmt, int width, int height,
     GLint prevFbo = 0, prevViewport[4] = { 0, 0, 0, 0 };
     GLint prevProgram = 0, prevVao = 0, prevArrayBuf = 0, prevActiveTex = 0, prevTex2D = 0;
     p_glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+    lastSyncWaitMs_ = (double)(SDL_GetTicksNS() - tSync) * 1e-6;
     p_glGetIntegerv(GL_VIEWPORT, prevViewport);
     p_glGetIntegerv(GL_CURRENT_PROGRAM, &prevProgram);
     p_glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVao);
