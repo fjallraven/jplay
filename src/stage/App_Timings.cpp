@@ -593,7 +593,7 @@ void App::renderTimingsPanel() {
     // legend and every lane's right-hand label follow it.
     int shownIdx = timingCount_ - 1;
     bool hovering = false;
-    {
+    if (!playing_) {
         float mx = 0.0f, my = 0.0f;
         uiHoverMouse(mx, my);
         if (timingCount_ > 0 && mx >= x0 && mx < cx + cw && my >= rateLane.y &&
