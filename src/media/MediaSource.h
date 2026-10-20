@@ -111,7 +111,8 @@ struct ReadTiming {
     double readIoMs = 0.0; // reading the pixel data
     double exrMs = 0.0;    // turning it into the frame's buffer: interleave or decode, 8-bit build
     // Whether readIoMs was measured on its own. OpenEXR's readPixels reads and
-    // decodes in one call, so for a file it handles readIoMs is 0 and exrMs holds both.
+    // decodes in one call, so for a file it reads chunk by chunk (multi-part, or
+    // too large to read whole first) readIoMs is 0 and exrMs holds both.
     bool ioSplit = false;
     bool valid = false;
 };

@@ -26,11 +26,11 @@ constexpr int kStages = 5;
 const SDL_Color kStageColor[kStages] = {
     { 0x39, 0x87, 0xe5, 255 }, // wait IO  - blue
     { 0xd9, 0x59, 0x26, 255 }, // read IO  - orange
-    { 0x19, 0x9e, 0x70, 255 }, // EXR      - aqua
+    { 0x19, 0x9e, 0x70, 255 }, // decode   - aqua
     { 0xc9, 0x85, 0x00, 255 }, // OCIO     - yellow
     { 0xd5, 0x51, 0x81, 255 }, // output   - magenta
 };
-const char* const kStageLabel[kStages] = { "Wait IO", "Read IO", "EXR", "OCIO", "Output" };
+const char* const kStageLabel[kStages] = { "Wait IO", "Read IO", "Decode", "OCIO", "Output" };
 
 const SDL_Color kTitleText = { 160, 170, 200, 255 };
 const SDL_Color kMutedText = { 130, 135, 148, 255 };
@@ -919,12 +919,12 @@ void App::renderTimingsPanel() {
         uiHoverMouse(mx, my);
         for (int k = 0; k < kStages; ++k) {
             // Read stages of a frame with no read figures (a hover-preview frame,
-            // a video) show a dash; OpenEXR's read is inside the EXR figure (see
-            // ReadTiming::ioSplit).
+            // a video) show a dash; a chunk-by-chunk OpenEXR read is inside the
+            // Decode figure (see ReadTiming::ioSplit).
             if (!s || (k < 3 && !s->hasRead))
                 SDL_snprintf(buf, sizeof(buf), "\xe2\x80\x94");
             else if (k == 1 && !s->ioSplit)
-                SDL_snprintf(buf, sizeof(buf), "in EXR");
+                SDL_snprintf(buf, sizeof(buf), "in Decode");
             else
                 SDL_snprintf(buf, sizeof(buf), "%.1f ms", v[k]);
             // Each key is a toggle (see timingsStageHidden_): a stage toggled out

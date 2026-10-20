@@ -74,11 +74,12 @@ public:
     // Read the whole file into this thread's buffer. On the calling thread, before
     // readPixels: OpenEXR's pool threads only read once that has started, and
     // read through data_, which points at this thread's buffer while it waits.
-    // Leaves a file too large to be worth holding to chunk-by-chunk reads.
-    void loadAll() {
+    // Leaves a file too large to be worth holding to chunk-by-chunk reads, and
+    // returns whether the file is now held.
+    bool loadAll() {
         const int64_t total = size();
         if (total <= 0 || (uint64_t)total > kMaxWholeBytes)
-            return;
+            return false;
         static thread_local std::vector<char> buffer;
         buffer.resize((size_t)total);
         uint64_t got = 0;
@@ -91,6 +92,7 @@ public:
         }
         buffer.resize((size_t)got);
         data_ = &buffer;
+        return true;
     }
 
     bool isStatelessRead() const override { return true; }
@@ -544,7 +546,8 @@ FramePtr ExrSequenceSource::read(int64_t index, ReadTiming* timing) {
 
         if (!done) {
             // OpenEXR's constructors open the file and parse its headers: the wait.
-            // readPixels then reads and decodes in one call, which is exrMs whole.
+            // readPixels then reads and decodes in one call, which is exrMs whole --
+            // unless the file was read whole first, which is readIoMs on its own.
             const double tOpen = timing ? readTimingNowMs() : 0.0;
             // A single-part file is read through WholeFileExrStream. Only a single-
             // part one: of a multi-part file only the image's part is read, and the
@@ -592,8 +595,12 @@ FramePtr ExrSequenceSource::read(int64_t index, ReadTiming* timing) {
                 }
             } pixelStamp{ timing, tPixels };
 #ifndef _WIN32
-            if (stream)
-                stream->loadAll(); // part of the read, so inside exrMs with the rest of it
+            if (stream && stream->loadAll() && timing) {
+                const double tLoaded = readTimingNowMs();
+                timing->readIoMs += tLoaded - tPixels;
+                timing->ioSplit = true;
+                pixelStamp.from = tLoaded;
+            }
 #endif
 
             dispW = disp.max.x - disp.min.x + 1;
