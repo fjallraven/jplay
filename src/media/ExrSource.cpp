@@ -50,7 +50,7 @@ static std::atomic<int> g_exrReads{0};
 // against 800 MB/s in 4 MB ones, and a lone 4K ZIPS frame (the first frame, a
 // scrub target) read in 82-92 ms instead of 162-179 ms. Eight workers reading at
 // once gained nothing either way: between them they already keep enough
-// requests in flight. JPLAY_EXR_WHOLEFILE=0 turns it off.
+// requests in flight.
 //
 // Stateless (pread), as the library's own file access is, so its decode threads
 // read concurrently rather than serialized behind the library's lock.
@@ -69,14 +69,6 @@ public:
         // was an outlier that would otherwise pin its size for good.
         if (data_ && data_->capacity() > kKeepBytes)
             std::vector<char>().swap(*data_);
-    }
-
-    static bool enabled() {
-        static const bool on = [] {
-            const char* v = std::getenv("JPLAY_EXR_WHOLEFILE");
-            return !(v && v[0] == '0');
-        }();
-        return on;
     }
 
     // Read the whole file into this thread's buffer. On the calling thread, before
@@ -560,7 +552,7 @@ FramePtr ExrSequenceSource::read(int64_t index, ReadTiming* timing) {
             // files reading from it.
 #ifndef _WIN32
             std::optional<WholeFileExrStream> stream;
-            if (layout_.parts.size() == 1 && WholeFileExrStream::enabled())
+            if (layout_.parts.size() == 1)
                 stream.emplace(file.c_str());
 #endif
             std::optional<Imf::MultiPartInputFile> mp;
