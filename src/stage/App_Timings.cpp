@@ -917,20 +917,24 @@ void App::renderTimingsPanel() {
         char buf[48];
         float mx = 0.0f, my = 0.0f;
         uiHoverMouse(mx, my);
+        // A chunk-by-chunk OpenEXR read is inside the Decode figure (see
+        // ReadTiming::ioSplit): Read IO has no key of its own then, and Decode is
+        // keyed as both.
+        const bool ioInDecode = s && s->hasRead && !s->ioSplit;
         for (int k = 0; k < kStages; ++k) {
+            if (k == 1 && ioInDecode)
+                continue;
             // Read stages of a frame with no read figures (a hover-preview frame,
-            // a video) show a dash; a chunk-by-chunk OpenEXR read is inside the
-            // Decode figure (see ReadTiming::ioSplit).
+            // a video) show a dash.
             if (!s || (k < 3 && !s->hasRead))
                 SDL_snprintf(buf, sizeof(buf), "\xe2\x80\x94");
-            else if (k == 1 && !s->ioSplit)
-                SDL_snprintf(buf, sizeof(buf), "in Decode");
             else
                 SDL_snprintf(buf, sizeof(buf), "%.1f ms", v[k]);
+            const char* label = k == 2 && ioInDecode ? "Read IO & Decode" : kStageLabel[k];
             // Each key is a toggle (see timingsStageHidden_): a stage toggled out
             // of the work lane is keyed faint, and the key under the cursor lights
             // up, on a faint plate, to show it takes a click.
-            const float labelW = textFont_.measure(renderer_, kStageLabel[k]);
+            const float labelW = textFont_.measure(renderer_, label);
             const float valW = textFont_.measure(renderer_, buf);
             const SDL_FRect key = { x, legend.y, sw + 4.0f + labelW + 4.0f + valW, lineH };
             timingsStageKeyRect_[(size_t)k] = key;
@@ -947,7 +951,7 @@ void App::renderTimingsPanel() {
             jplay::fillRect(renderer_, &swatch);
             x += sw + 4.0f;
             drawText(x, legend.y, hidden ? (hot ? kMutedText : kGridLine) : (hot ? kValueText : kMutedText),
-                     kStageLabel[k]);
+                     label);
             x += labelW + 4.0f;
             drawText(x, legend.y, hidden ? (hot ? kMutedText : kGridLine) : (hot ? kRateLine : kValueText), buf);
             x += valW + 12.0f;
