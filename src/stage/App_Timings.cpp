@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <iterator>
 #include <vector>
 
@@ -50,6 +51,12 @@ const SDL_Color kOffRateLine = { 222, 82, 82, 255 }; // the rate line off the pr
 // The capacity and the buffer: neutral ink rather than a hue, so neither
 // reads as one of the stages. Identity comes from the lane and the labels.
 const SDL_Color kSustainLine = { 160, 168, 190, 255 };
+
+// The clip band under the lanes, in the timeline shot bar's colours.
+const SDL_Color kClipBlock = { 24, 26, 28, 255 };
+const SDL_Color kClipBlockLive = { 36, 38, 42, 255 }; // the clip of the sample read out
+const SDL_Color kClipBlockBorder = { 70, 74, 82, 255 };
+const SDL_Color kClipLabel = { 210, 214, 222, 255 };
 
 // The legend's line keys after the stages, and each one's widest value.
 constexpr int kRates = 3;
@@ -583,10 +590,13 @@ void App::renderTimingsPanel() {
     // ---- geometry: three lanes over one frame axis ----
     // Rate, work and buffer are three different measures (fps, ms, seconds), so
     // each has its own lane and its own axis rather than sharing one; the frames
-    // line up across all three. The legend and the frame numbers go under them.
+    // line up across all three. The clip band, the hovered frame and the legend
+    // go under them.
     SDL_FRect legend = cutBottom(body, lineH);
     gapBottom(body, 4.0f * dpiScale);
     SDL_FRect xLabels = cutBottom(body, lineH);
+    SDL_FRect clipBand = cutBottom(body, lineH + 4.0f * dpiScale);
+    gapBottom(body, 4.0f * dpiScale);
     const float axisW = textFont_.measure(renderer_, "10000 ms") + 6.0f;
     const float rightW = textFont_.measure(renderer_, "000.0 fps") + 6.0f;
     const float titleH = lineH + 2.0f * dpiScale;
@@ -926,33 +936,71 @@ void App::renderTimingsPanel() {
         }
     }
 
-    // Frame numbers under the lanes: the oldest, the newest, and the one read out,
-    // which also says when its read figures are from an earlier lap.
-    auto frameLabel = [&](int i) {
-        const TimingSample& s = sampleAt(i);
-        std::string t = std::to_string(s.frame);
-        if (i == shownIdx && s.hasRead && !s.fresh)
-            t += " (cached)";
-        return t;
-    };
-    if (timingCount_ > 0) {
-        auto label = [&](int i, bool alignRight) {
-            const std::string t = frameLabel(i);
-            const float w = textFont_.measure(renderer_, t.c_str());
-            float x = alignRight ? x0 + slotW * (float)(i + 1) - w : x0 + slotW * (float)i;
-            x = std::clamp(x, cx, cx + cw - w);
-            drawText(x, xLabels.y, kMutedText, t);
-            return SDL_FRect{ x, xLabels.y, w, lineH };
-        };
-        const SDL_FRect a = label(0, false);
-        const SDL_FRect b = label(timingCount_ - 1, true);
-        if (shownIdx != timingCount_ - 1 && shownIdx != 0) {
-            const std::string t = frameLabel(shownIdx);
-            const float w = textFont_.measure(renderer_, t.c_str());
-            const float x = std::clamp(slotMid(shownIdx) - w * 0.5f, cx, cx + cw - w);
-            if (x > a.x + a.w + 4.0f && x + w < b.x - 4.0f)
-                drawText(x, xLabels.y, kValueText, t);
+    // ---- clip band: one block per run of samples from the same clip, named as
+    // the timeline names it; the run holding the sample read out is lifted ----
+    for (int i = 0; i < timingCount_;) {
+        const int id = sampleAt(i).clipId;
+        int j = i + 1;
+        while (j < timingCount_ && sampleAt(j).clipId == id)
+            ++j;
+        const Clip* clip = id >= 0 ? timeline_.findClipById(id) : nullptr;
+        if (clip) {
+            const SDL_FRect bar = { std::round(x0 + slotW * (float)i), clipBand.y,
+                                    std::max(2.0f, std::round(slotW * (float)(j - i))), clipBand.h };
+            const SDL_Color& fill = shownIdx >= i && shownIdx < j ? kClipBlockLive : kClipBlock;
+            SDL_SetRenderDrawColor(renderer_, fill.r, fill.g, fill.b, fill.a);
+            jplay::fillRect(renderer_, &bar);
+            SDL_SetRenderDrawColor(renderer_, kClipBlockBorder.r, kClipBlockBorder.g,
+                                   kClipBlockBorder.b, kClipBlockBorder.a);
+            jplay::drawRect(renderer_, &bar);
+            // Looked up now rather than kept in the sample, so a relink shows.
+            if (auto pm = timeline_.findMediaById(clip->mediaId)) {
+                const std::string name = hashSeqStem(std::filesystem::path(pm->path()).stem().string(),
+                                                     pm->type() == ClipType::ImageSequence);
+                const std::string t = fitText(name, bar.w - 6.0f);
+                if (!t.empty()) {
+                    const SDL_FRect slot = center(bar, textFont_.measure(renderer_, t.c_str()), lineH);
+                    drawText(slot.x, slot.y, kClipLabel, t);
+                }
+            }
         }
+        i = j;
+    }
+
+    // Under the hovered sample, its clip's frame as the info bar gives it: the
+    // source frame number in Frames mode, the clip-relative time in Timecode mode.
+    // Also says when its read figures are from an earlier lap.
+    if (hovering) {
+        const TimingSample& s = sampleAt(shownIdx);
+        std::string t = "-";
+        if (const Clip* clip = s.clipId >= 0 ? timeline_.findClipById(s.clipId) : nullptr) {
+            int64_t base = 0;
+            if (auto pm = timeline_.findMediaById(clip->mediaId); pm && pm->isOpen()) {
+                std::string err;
+                if (auto src = pm->ensureOpen(err))
+                    base = src->firstFrameNumber();
+            }
+            const int64_t clipPos = clip->sourceOffset + (s.frame - clip->timelineStart);
+            if (showAsFrames()) {
+                t = std::to_string(base + clipPos);
+            } else {
+                const double tcFps = fps > 0.0 ? fps : 24.0;
+                const int64_t totalSec = (int64_t)(clipPos / tcFps);
+                const int h = (int)(totalSec / 3600), m = (int)((totalSec % 3600) / 60);
+                const int sec = (int)(totalSec % 60), fr = (int)(clipPos % (int64_t)std::llround(tcFps));
+                char buf[32];
+                if (timeline_.length() < (int64_t)(3600.0 * tcFps)) // no "HH:" under an hour, as on the ruler
+                    SDL_snprintf(buf, sizeof(buf), "%02d:%02d:%02d", m, sec, fr);
+                else
+                    SDL_snprintf(buf, sizeof(buf), "%02d:%02d:%02d:%02d", h, m, sec, fr);
+                t = buf;
+            }
+        }
+        if (s.hasRead && !s.fresh)
+            t += " (cached)";
+        const float w = textFont_.measure(renderer_, t.c_str());
+        const float x = std::clamp(slotMid(shownIdx) - w * 0.5f, cx, cx + cw - w);
+        drawText(x, xLabels.y, kValueText, t);
     }
 
     // ---- legend: swatch, stage and its value for the sample read out ----

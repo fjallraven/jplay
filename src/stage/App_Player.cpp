@@ -1600,6 +1600,8 @@ void App::renderPlayer() {
                     TimingSample& ts = timingPending_;
                     ts = TimingSample{};
                     ts.frame = timeline_.playhead;
+                    if (const Clip* top = getTopMostClipAtFrame(ts.frame))
+                        ts.clipId = top->id;
                     if (playing_ && playLateValid_) {
                         ts.lateRefreshes = playLateRefreshes_;
                         ts.skippedFrames = playSkippedFrames_;

@@ -1517,6 +1517,7 @@ private:
     // timed while the panel is shut. The samples are a fixed ring, oldest overwritten.
     struct TimingSample {
         int64_t frame = 0;     // timeline frame shown
+        int clipId = -1;       // the top-most clip on that frame, named in the clip band; -1 none
         float waitIoMs = 0.0f; // file open + header (video: decoder wait + seek)
         float readIoMs = 0.0f; // pixel data read (video: demux)
         float decodeMs = 0.0f; // interleave / decode into the frame buffer
