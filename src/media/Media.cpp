@@ -180,18 +180,20 @@ bool Media::setChannelSelection(const ChannelSelection& sel) {
 }
 
 bool Media::isOpen() const {
-    std::lock_guard<std::mutex> lk(openMtx_);
-    return (bool)source_;
+    return (bool)std::atomic_load(&source_); // lock-free: see resolvedPath()
 }
 
+// These three are asked by the UI thread every frame (the timeline, the playback
+// hold, the prefetch), so none takes openMtx_: a worker holds it across the whole
+// open of this media -- a directory scan and header reads, 100+ ms from network
+// storage -- and the prefetch opens the next shot exactly while it is on screen.
 std::string Media::resolvedPath() const {
-    std::lock_guard<std::mutex> lk(openMtx_);
-    return source_ ? source_->path() : path_;
+    auto src = std::atomic_load(&source_);
+    return src ? src->path() : path_;
 }
 
 bool Media::openFailed() const {
-    std::lock_guard<std::mutex> lk(openMtx_);
-    return openFailed_;
+    return openFailed_.load(std::memory_order_acquire);
 }
 
 bool Media::refreshMetadata() {

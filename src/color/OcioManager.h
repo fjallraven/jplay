@@ -80,22 +80,35 @@ public:
     bool setContextForMedia(const std::map<std::string, std::string>& meta);
 
     // A job that builds, off the main thread, the transform the media at `mediaPath`
-    // with metadata `meta` will need — its context variables resolved against the
-    // active config. Loading a shot's LUTs costs tens of milliseconds cold (more from
-    // network storage) and OCIO caches processors and LUT files per config, keyed by
-    // content, so warming the clip ahead of the playhead turns the rebuild at the cut
-    // into a cache hit rather than a stall in the render loop.
+    // with metadata `meta` and colour space `inputCS` will need — its context
+    // variables resolved against the active config: the display half, its SDR
+    // companion and the input half. Loading a shot's LUTs costs tens of milliseconds
+    // cold, and a new scene's close to a second from network storage, so this runs
+    // for the clip ahead of the playhead, before its cut.
     //
-    // The returned job owns copies of everything it reads — the config handle, the
-    // selection, the resolved variables — so it races nothing the main thread may
-    // change under it, and OCIO's caches are internally locked, so several may run at
-    // once. Call this on the main thread; run the job anywhere.
+    // The processors are kept, not just left in OCIO's cache: `adopt` hands them to
+    // the manager, and the rebuild at the cut takes them from there without calling
+    // into OCIO at all. A cache hit would not do, because OCIO holds its processor
+    // cache's lock for the whole of a build — the main thread asking for even an
+    // already-built processor waits out whatever warm is in flight, and a short shot
+    // puts the next scene's warm right on top of its own cut.
+    //
+    // `build` owns copies of everything it reads — the config handle, the selection,
+    // the resolved variables — so it races nothing the main thread may change under
+    // it. Call this on the main thread; run `build` anywhere, then `adopt` on the main
+    // thread.
     //
     // Empty when there is nothing worth warming: no context entry configured, values
     // the active transform already uses, values already warmed, or a media whose
     // config differs from the active one (that switch is not warmed).
-    std::function<void()> warmJobForMedia(const std::string& mediaPath,
-                                          const std::map<std::string, std::string>& meta);
+    struct WarmJob {
+        std::function<void()> build;
+        std::function<void()> adopt;
+        explicit operator bool() const { return !!build; }
+    };
+    WarmJob warmJobForMedia(const std::string& mediaPath,
+                            const std::map<std::string, std::string>& meta,
+                            const std::string& inputCS);
 
     // ── Input colour space per media ──────────────────────────────────────
     // The colour space a media's pixels should be interpreted in when the user has
@@ -315,6 +328,12 @@ private:
     mutable OCIO::ConstProcessorRcPtr sdrDisplayProc_; // working -> SDR companion display
     mutable std::map<std::string, Transform> transforms_, sdrTransforms_;
     mutable std::map<std::string, OCIO::ConstProcessorRcPtr> inputProcs_; // shared input halves
+    // Processors built by warm jobs (warmJobForMedia), by displayKey_ / inputKey_:
+    // what a cut's rebuild takes instead of calling into OCIO. Not cleared by
+    // markDirty_() -- a cut is exactly when they are wanted -- and keyed on the
+    // config and the whole selection, so an entry from before a change of either is
+    // simply never asked for again. An input entry may be null: an identity input.
+    mutable std::map<std::string, OCIO::ConstProcessorRcPtr> warmedProcs_;
 
     mutable int versionSeq_ = 0; // monotonic; stamps every Transform::version
     mutable int version_ = 0;    // token of the current displayProc_
@@ -333,6 +352,16 @@ private:
     // name. True when the selection actually changed (the caller marks dirty).
     bool applyPreferredView_();
     void rebuildDisplay_() const;
+    // warmedProcs_ keys: everything the processor depends on under the active config.
+    std::string displayKey_(const std::map<std::string, std::string>& vars,
+                            const std::string& display, const std::string& view) const;
+    std::string inputKey_(const std::map<std::string, std::string>& vars,
+                          const std::string& src) const;
+    // The SDR companion's view on `sdrDisplay` (see sdrDisplay).
+    std::string sdrViewFor_(const std::string& sdrDisplay) const;
+    // A display half for (display, view): the warmed one when there is one, else built.
+    OCIO::ConstProcessorRcPtr displayProcessor_(const std::string& display,
+                                                const std::string& view) const;
     // The media colour space -> the working space. Null for an identity conversion.
     OCIO::ConstProcessorRcPtr inputProcessor_(const std::string& inputCS) const;
     // (working -> display, view) with the look, as a GPU/CPU-ready processor.

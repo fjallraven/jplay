@@ -203,6 +203,6 @@ private:
     // Published by the same release store as source_ (written before it), so a
     // fast-path reader that sees the source sees the offset it was opened with.
     std::atomic<int64_t> slateOffset_{0};
-    bool openFailed_ = false;
+    std::atomic<bool> openFailed_{false}; // written under openMtx_, read lock-free
     ChannelSelection channelSel_; // under openMtx_
 };

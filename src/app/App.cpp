@@ -4726,6 +4726,7 @@ void App::run() {
         pickerWork_.drainCompletions(); // apply finished picker queries on this thread
         openTargetWork_.drainCompletions(); // cache finished "Open Project" lookups
         pathValueWork_.drainCompletions(); // apply naming-convention values to media
+        ocioWarmWork_.drainCompletions(); // hand warmed OCIO processors to the manager
         pollPickerDecorations();     // apply whatever the labels/colors pass has merged so far
         drainSync();                 // apply host events / emit changes (sync review)
         drainControl();              // apply commands from the local control channel

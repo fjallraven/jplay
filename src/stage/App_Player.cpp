@@ -1029,7 +1029,7 @@ OutputTransfer App::hdrProgramTransfer_() const {
 static constexpr double kOcioWarmSeconds = 2.0;
 
 // Build the transform the clip ~kOcioWarmSeconds ahead of the playhead will need,
-// on a background thread, so switching to it is a cache hit. Called once per
+// on a background thread, so switching to it takes no OCIO call at all. Called once per
 // rendered frame: the lookup is one clipAt plus a map compare, and a job is only
 // submitted when that clip resolves context variables not already live or warmed.
 void App::warmOcioAhead() {
@@ -1044,11 +1044,14 @@ void App::warmOcioAhead() {
     // its naming-convention values here too — far enough ahead of the cut that they
     // land before the transform they select is needed.
     requestPathValues(media.get());
-    // Copies: the job outlives this frame and must not hold Media pointers.
-    std::function<void()> job = ocio_.warmJobForMedia(media->path(), media->meta());
+    // Copies: the job outlives this frame and must not hold Media pointers. Its
+    // processors are handed back on this thread (drainCompletions in run()).
+    OcioManager::WarmJob job = ocio_.warmJobForMedia(media->path(), media->meta(),
+                                                     mediaColorSpace(*media));
     if (!job)
         return;
-    ocioWarmWork_.submit([job](const std::atomic<bool>&) { job(); });
+    ocioWarmWork_.submit([build = std::move(job.build)](const std::atomic<bool>&) { build(); },
+                         std::move(job.adopt));
 }
 
 std::string App::mediaColorSpace(Media& m) {

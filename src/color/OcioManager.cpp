@@ -224,6 +224,26 @@ static OCIO::ConstContextRcPtr makeContext(const OCIO::ConstConfigRcPtr& config,
     return ctx;
 }
 
+// The media colour space `src` -> the working space under `vars`. Null when the
+// two name the same space, which is the common EXR case and saves the renderers a
+// whole no-op shader function and its resources. Throws on an OCIO error.
+static OCIO::ConstProcessorRcPtr buildInputProcessor(const OCIO::ConstConfigRcPtr& config,
+                                                     const std::map<std::string, std::string>& vars,
+                                                     const std::string& src,
+                                                     const std::string& workingCS) {
+    // Compare resolved names, not the strings as given: an alias, a role and the
+    // canonical name all denote one space and must not produce a real transform.
+    auto srcCS = config->getColorSpace(src.c_str());
+    auto dstCS = config->getColorSpace(workingCS.c_str());
+    if (srcCS && dstCS && srcCS->getName() && dstCS->getName() &&
+        std::string(srcCS->getName()) == dstCS->getName())
+        return nullptr;
+    OCIO::ColorSpaceTransformRcPtr cst = OCIO::ColorSpaceTransform::Create();
+    cst->setSrc(src.c_str());
+    cst->setDst(workingCS.c_str());
+    return config->getProcessor(makeContext(config, vars), cst, OCIO::TRANSFORM_DIR_FORWARD);
+}
+
 void OcioManager::resolveEnv(const std::string& samplePath) {
     // $OCIO already set — externally, or by an earlier call — is the whole guard, so
     // this stays repeatable: reinitOcioForFirstSource() calls init() again once real
@@ -420,8 +440,9 @@ bool OcioManager::setContextForMedia(const std::map<std::string, std::string>& m
     return true;
 }
 
-std::function<void()> OcioManager::warmJobForMedia(const std::string& mediaPath,
-                                                   const std::map<std::string, std::string>& meta) {
+OcioManager::WarmJob OcioManager::warmJobForMedia(const std::string& mediaPath,
+                                                  const std::map<std::string, std::string>& meta,
+                                                  const std::string& inputCS) {
     if (contextTemplates().empty() || !config_)
         return {};
     // A source from another show wants a different config, which this does not load:
@@ -441,31 +462,79 @@ std::function<void()> OcioManager::warmJobForMedia(const std::string& mediaPath,
     // display / view / look / working space re-warms rather than trusting a job that
     // built a transform nobody will ask for again.
     std::string key = activeConfigPath_ + '\n' + display_ + '\n' + view_ + '\n' +
-                      look_ + '\n' + workingCS_;
+                      look_ + '\n' + workingCS_ + '\n' + inputCS;
     for (const auto& kv : vars)
         key += '\n' + kv.first + '=' + kv.second;
     if (key == warmedKey_)
         return {}; // a job for exactly this transform has already been issued
     warmedKey_ = std::move(key);
 
-    // Copies of everything the build touches, so the job races nothing the main
-    // thread may change under it — the config handle is shared_ptr-owned and OCIO's
-    // caches are internally locked, which is what makes this safe to run off-thread.
+    // What the cut will ask rebuildDisplay_() and inputProcessor_() for, and the
+    // keys they will look it up under.
+    const std::string sdrDisp = sdrDisplay();
+    const std::string sdrView = sdrDisp.empty() ? std::string{} : sdrViewFor_(sdrDisp);
+    const std::string src = inputCS.empty() ? workingCS_ : inputCS;
+    const std::string displayKey = displayKey_(vars, display_, view_);
+    const std::string sdrKey = sdrView.empty() ? std::string{} : displayKey_(vars, sdrDisp, sdrView);
+    const std::string inputKey = workingCS_.empty() ? std::string{} : inputKey_(vars, src);
+
+    // Copies of everything the build touches, so it races nothing the main thread
+    // may change under it -- the config handle is shared_ptr-owned and OCIO's caches
+    // are internally locked, which is what makes this safe to run off-thread.
+    struct Built {
+        OCIO::ConstProcessorRcPtr display, sdr, input;
+        bool haveDisplay = false, haveSdr = false, haveInput = false;
+    };
+    auto built = std::make_shared<Built>();
     OCIO::ConstConfigRcPtr cfg = config_;
     std::string display = display_, view = view_, look = look_, working = workingCS_;
-    return [cfg, display, view, look, working, vars] {
+
+    WarmJob job;
+    job.build = [built, cfg, display, view, look, working, vars, sdrDisp, sdrView, src,
+                 haveSdr = !sdrKey.empty(), haveInput = !inputKey.empty()] {
+        // Warming is best-effort: a build that fails here is left to the rebuild at
+        // the cut, which reports its own failure.
         try {
-            // The processor is discarded: the point is the LUT files it pulled in and
-            // the processor itself, both now in OCIO's caches, so the rebuild this
-            // media triggers at the cut is a cache hit instead of a disk read.
-            cfg->getProcessor(makeContext(cfg, vars),
-                              makeDisplayTransform(display, view, look, working),
-                              OCIO::TRANSFORM_DIR_FORWARD);
+            built->display = cfg->getProcessor(makeContext(cfg, vars),
+                                               makeDisplayTransform(display, view, look, working),
+                                               OCIO::TRANSFORM_DIR_FORWARD);
+            built->haveDisplay = true;
         } catch (const std::exception& e) {
-            // Warming is best-effort: the real build reports its own failure.
             std::fprintf(stderr, "OCIO prewarm: %s\n", e.what());
         }
+        if (haveSdr) {
+            try {
+                built->sdr = cfg->getProcessor(makeContext(cfg, vars),
+                                               makeDisplayTransform(sdrDisp, sdrView, look, working),
+                                               OCIO::TRANSFORM_DIR_FORWARD);
+                built->haveSdr = true;
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "OCIO prewarm (SDR): %s\n", e.what());
+            }
+        }
+        if (haveInput) {
+            try {
+                built->input = buildInputProcessor(cfg, vars, src, working);
+                built->haveInput = true;
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "OCIO prewarm (input %s): %s\n", src.c_str(), e.what());
+            }
+        }
     };
+    job.adopt = [this, built, displayKey, sdrKey, inputKey] {
+        std::lock_guard<std::mutex> lk(displayMtx_);
+        // A bound, not an LRU: a warm is a few shots ahead of its use, so dropping the
+        // lot when it fills loses at most the processors already in use.
+        if (warmedProcs_.size() >= 48)
+            warmedProcs_.clear();
+        if (built->haveDisplay)
+            warmedProcs_[displayKey] = built->display;
+        if (built->haveSdr)
+            warmedProcs_[sdrKey] = built->sdr;
+        if (built->haveInput)
+            warmedProcs_[inputKey] = built->input;
+    };
+    return job;
 }
 
 // ── Input colour space resolution ────────────────────────────────────────────
@@ -692,6 +761,46 @@ OCIO::ConstProcessorRcPtr OcioManager::buildDisplayProcessor_(const std::string&
     }
 }
 
+std::string OcioManager::displayKey_(const std::map<std::string, std::string>& vars,
+                                     const std::string& display, const std::string& view) const {
+    std::string key = "display\n" + activeConfigPath_ + '\n' + display + '\n' + view + '\n' +
+                      look_ + '\n' + workingCS_;
+    for (const auto& kv : vars)
+        key += '\n' + kv.first + '=' + kv.second;
+    return key;
+}
+
+std::string OcioManager::inputKey_(const std::map<std::string, std::string>& vars,
+                                   const std::string& src) const {
+    std::string key = "input\n" + activeConfigPath_ + '\n' + src + '\n' + workingCS_;
+    for (const auto& kv : vars)
+        key += '\n' + kv.first + '=' + kv.second;
+    return key;
+}
+
+// Follow the selected view by name when this display offers it too; else let the
+// config choose (see the header for why we don't map view names ourselves).
+std::string OcioManager::sdrViewFor_(const std::string& sdrDisplay) const {
+    if (!config_)
+        return {};
+    for (const std::string& v : views(sdrDisplay))
+        if (v == view_)
+            return v;
+    const char* defView = config_->getDefaultView(sdrDisplay.c_str());
+    return defView ? defView : "";
+}
+
+// Called with displayMtx_ held, from rebuildDisplay_().
+OCIO::ConstProcessorRcPtr OcioManager::displayProcessor_(const std::string& display,
+                                                         const std::string& view) const {
+    if (display.empty() || view.empty())
+        return nullptr;
+    auto it = warmedProcs_.find(displayKey_(contextVars_, display, view));
+    if (it != warmedProcs_.end())
+        return it->second;
+    return buildDisplayProcessor_(display, view);
+}
+
 // Both display halves are rebuilt together: they share a selection, and the SDR
 // companion follows the selected view, so a change to either invalidates both.
 // Called with displayMtx_ held (see the header) -- every caller takes it first.
@@ -700,22 +809,14 @@ void OcioManager::rebuildDisplay_() const {
     displayProc_ = nullptr;
     sdrDisplayProc_ = nullptr;
     version_ = ++versionSeq_;
-    displayProc_ = buildDisplayProcessor_(display_, view_);
+    displayProc_ = displayProcessor_(display_, view_);
 
     sdrDisplay_ = sdrDisplay();
     sdrView_.clear();
     if (sdrDisplay_.empty() || !config_)
         return;
-    // Follow the selected view by name when this display offers it too; else let the
-    // config choose (see the header for why we don't map view names ourselves).
-    for (const std::string& v : views(sdrDisplay_)) {
-        if (v == view_) { sdrView_ = v; break; }
-    }
-    if (sdrView_.empty()) {
-        const char* defView = config_->getDefaultView(sdrDisplay_.c_str());
-        sdrView_ = defView ? defView : "";
-    }
-    sdrDisplayProc_ = buildDisplayProcessor_(sdrDisplay_, sdrView_);
+    sdrView_ = sdrViewFor_(sdrDisplay_);
+    sdrDisplayProc_ = displayProcessor_(sdrDisplay_, sdrView_);
 }
 
 // The media colour space -> the working space. Null when the two name the same
@@ -731,24 +832,17 @@ OCIO::ConstProcessorRcPtr OcioManager::inputProcessor_(const std::string& inputC
         return cached->second;
 
     OCIO::ConstProcessorRcPtr proc;
-    try {
-        // Compare resolved names, not the strings as given: an alias, a role and the
-        // canonical name all denote one space and must not produce a real transform.
-        auto srcCS = config_->getColorSpace(src.c_str());
-        auto dstCS = config_->getColorSpace(workingCS_.c_str());
-        const bool identity = srcCS && dstCS && srcCS->getName() && dstCS->getName() &&
-                              std::string(srcCS->getName()) == dstCS->getName();
-        if (!identity) {
-            OCIO::ColorSpaceTransformRcPtr cst = OCIO::ColorSpaceTransform::Create();
-            cst->setSrc(src.c_str());
-            cst->setDst(workingCS_.c_str());
-            proc = config_->getProcessor(makeContext(config_, contextVars_), cst,
-                                         OCIO::TRANSFORM_DIR_FORWARD);
+    auto warmed = warmedProcs_.find(inputKey_(contextVars_, src));
+    if (warmed != warmedProcs_.end()) {
+        proc = warmed->second;
+    } else {
+        try {
+            proc = buildInputProcessor(config_, contextVars_, src, workingCS_);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "OCIO input transform (%s -> %s): %s\n",
+                         src.c_str(), workingCS_.c_str(), e.what());
+            proc = nullptr;
         }
-    } catch (const std::exception& e) {
-        std::fprintf(stderr, "OCIO input transform (%s -> %s): %s\n",
-                     src.c_str(), workingCS_.c_str(), e.what());
-        proc = nullptr;
     }
     inputProcs_[src] = proc;
     return proc;
