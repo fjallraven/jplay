@@ -3670,6 +3670,31 @@ void App::openExportImageSequence() {
     exportDialog_.setColorTransforms(exportColorTransforms());
 }
 
+void App::openExportGif() {
+    int outW = 0, outH = 0;
+    const Clip* clip = getTopMostClipAtFrame(timeline_.playhead);
+    if (!clip) {
+        timeline_.forEachClip([&](const Clip& timelineClip) {
+            if (!outW) {
+                auto media = timeline_.findMediaById(timelineClip.mediaId);
+                if (media) { auto info = media->info(); outW = info.width; outH = info.height; }
+            }
+        });
+    } else {
+        auto media = timeline_.findMediaById(clip->mediaId);
+        if (media) { auto info = media->info(); outW = info.width; outH = info.height; }
+    }
+
+    exportDialog_.open(ExportDialog::Mode::Gif,
+                       timeline_.length(), timeline_.inPoint, timeline_.outPoint,
+                       timeline_.fps, outW, outH, window_);
+
+    std::vector<ExportDialog::FrameSource> frames;
+    buildFrameSnapshot(timeline_, [this](int64_t f) { return getTopMostClipAtFrame(f); }, frames);
+    exportDialog_.setFrames(std::move(frames));
+    exportDialog_.setColorTransforms(exportColorTransforms());
+}
+
 void App::openExportAudio() {
     exportDialog_.open(ExportDialog::Mode::Audio,
                        timeline_.length(), timeline_.inPoint, timeline_.outPoint,

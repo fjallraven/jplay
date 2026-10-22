@@ -2527,7 +2527,6 @@ private:
     // Right-click on a timeline clip: the clip-actions menu for the clip under
     // (mx,my), or — with Ctrl held — clipMenu_ listing its applicable pickers.
     void handleTimelineRightClick(float mx, float my);
-    void openRulerMenu(float mx, float my);
     // Shared tail of both: select the clip if it isn't already in the selection,
     // then open the clip-actions popup — or, with Ctrl held, its picker menu.
     void openClipRightClickMenu(const Clip& clip, float mx, float my, bool growDown = false);
@@ -2633,6 +2632,7 @@ private:
     void buildSequenceMenuRows();
     void openExportMovie();
     void openExportImageSequence();
+    void openExportGif();
     void openExportAudio();
     void processPendingDialogs();
     static void SDLCALL onOpenChosen(void* userdata, const char* const* filelist, int filter);

@@ -988,6 +988,8 @@ void App::buildMenu() {
                          [this] { openExportMovie(); }, hasClips);
         menuBar_.addItem(exportSub, "Export Image Sequence...",
                          [this] { openExportImageSequence(); }, hasClips);
+        menuBar_.addItem(exportSub, "Export GIF Animation...",
+                         [this] { openExportGif(); }, hasClips);
         menuBar_.addItem(exportSub, "Export Audio...",
                          [this] { openExportAudio(); }, hasClips);
         menuBar_.addItem(exportSub, "Export OTIO...",
@@ -2527,10 +2529,7 @@ void App::handleEvent(SDL_Event& e) {
         }
         if (e.button.button == SDL_BUTTON_RIGHT) {
             // The ruler / scrub band (the hover-preview zone) has its own menu.
-            if (mx >= headerX_ && my < tracksTop_)
-                openRulerMenu(mx, my);
-            else
-                handleTimelineRightClick(mx, my);
+            handleTimelineRightClick(mx, my);
             break;
         }
         if (e.button.button != SDL_BUTTON_LEFT)

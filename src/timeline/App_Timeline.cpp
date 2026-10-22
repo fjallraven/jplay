@@ -2757,31 +2757,6 @@ void App::openTrackMenu(int track) {
     trackMenu_.open(rect.x, rect.y, winW_, winH_, std::move(items));
 }
 
-// Right-click on the ruler: the export entries, the same ones File > Export
-// lists. The hover thumbnail would otherwise sit right over the popup, so it is
-// dropped first; the next mouse move after the menu closes brings it back.
-void App::openRulerMenu(float mx, float my) {
-    tlHoverActive_ = false;
-    updateFramePreview();
-
-    bool hasClips = false;
-    timeline_.forEachClip([&](const Clip&) { hasClips = true; });
-
-    std::vector<ContextMenu::Item> items;
-    auto add = [&](const char* label, ContextMenu::Action action) {
-        ContextMenu::Item it;
-        it.label = label;
-        it.action = std::move(action);
-        it.disabled = !hasClips; // export needs at least one placed clip
-        items.push_back(std::move(it));
-    };
-    add("Export Video", [this] { openExportMovie(); });
-    add("Export Image Sequence", [this] { openExportImageSequence(); });
-    add("Export Audio", [this] { openExportAudio(); });
-    // Grows upward from the cursor, clear of the tracks below.
-    rulerMenu_.open(mx, my, winW_, winH_, std::move(items));
-}
-
 // Switch a whole row off (its clips stop compositing and stop feeding audio, and
 // the row draws faint) or back on. Per-clip hidden flags are left alone, so
 // re-enabling the row restores exactly what it showed before.

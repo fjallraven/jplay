@@ -15,14 +15,14 @@
 #include <thread>
 #include <vector>
 
-// Modal export dialog for "Export Movie", "Export Image Sequence" and
-// "Export Audio".
+// Modal export dialog for "Export Movie", "Export Image Sequence",
+// "Export GIF Animation" and "Export Audio".
 // The host feeds it events before other handlers and renders it last so it
 // overlays everything. Export runs on a background thread; the host supplies a
 // snapshot of per-frame source info before starting.
 class ExportDialog {
 public:
-    enum class Mode { Movie, ImageSequence, Audio };
+    enum class Mode { Movie, ImageSequence, Gif, Audio };
 
     // Per-frame source info built by the host on the main thread.
     struct FrameSource {
@@ -115,6 +115,11 @@ private:
     Combobox containerCombo_, codecCombo_, qualityCombo_, movieAudioCombo_;
     // Image-only
     Combobox formatCombo_;
+    // GIF-only. The size and rate combos are built per open from the source, and
+    // these hold the value behind each row (0 = the source's own).
+    Combobox gifSizeCombo_, gifFpsCombo_, gifQualityCombo_, gifLoopCombo_;
+    std::vector<int>    gifWidths_;
+    std::vector<double> gifRates_;
     // Audio-only. The variant combo is bit depth for PCM/lossless formats and
     // bitrate for lossy ones; both it and the sample rates are rebuilt from the
     // format whenever the format changes (see refreshAudioOptions).
@@ -162,6 +167,13 @@ private:
     void startExport();
     void runMovieExport(int64_t startFrame, int64_t endFrame);
     void runImageExport(int64_t startFrame, int64_t endFrame);
+    void runGifExport(int64_t startFrame, int64_t endFrame);
+
+    // The GIF's frame size for the Size combo's selection: the source's own, or
+    // the chosen width with the height kept in proportion. 0x0 when the source
+    // size is not known yet.
+    void gifOutputSize(int& w, int& h) const;
+    double gifOutputFps() const;
     void runAudioExport(int64_t startFrame, int64_t endFrame);
 
     // Render the mix over [startFrame, endFrame] to a headerless f32le stereo
