@@ -4442,7 +4442,11 @@ void App::ensurePreviewThumb(const CacheKey& key, std::shared_ptr<Media> media,
             if (count > 0)      f = std::clamp<int64_t>(f, 0, count - 1);
             else if (f < 0)     f = 0;
             auto t0 = std::chrono::steady_clock::now();
-            FramePtr frame = src->readFrame(f + slate);
+            FramePtr frame;
+            {
+                BackgroundReads background;
+                frame = src->readFrame(f + slate);
+            }
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::steady_clock::now() - t0).count();
             if (ms > kPreviewSlowMs)

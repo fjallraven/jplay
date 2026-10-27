@@ -312,7 +312,11 @@ void ThumbnailCache::worker_(std::string dir, std::vector<ThumbItem> items,
         else if (f < 0)
             f = 0;
 
-        FramePtr frame = src->readFrame(f + slate);
+        FramePtr frame;
+        {
+            BackgroundReads background;
+            frame = src->readFrame(f + slate);
+        }
         if (run->cancel)
             return;
         if (!frame)

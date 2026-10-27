@@ -29,6 +29,7 @@
 #include <vector>
 
 #ifndef _WIN32
+#include <OpenEXR/IlmThreadPool.h>
 #include <OpenEXR/ImfIO.h>
 #include <cerrno>
 #include <cstdlib>
@@ -72,23 +73,31 @@ public:
     }
 
     // Read the whole file into this thread's buffer. On the calling thread, before
-    // readPixels: OpenEXR's pool threads only read once that has started, and
-    // read through data_, which points at this thread's buffer while it waits.
-    // Leaves a file too large to be worth holding to chunk-by-chunk reads, and
-    // returns whether the file is now held.
-    bool loadAll() {
+    // the headers are parsed, so that they come from memory too: OpenEXR's pool
+    // threads only read once readPixels has started, and read through data_,
+    // which points at this thread's buffer while it waits. `parallel` spreads the
+    // blocks over that pool, for a read with the pool to itself. Leaves a file too
+    // large to be worth holding to chunk-by-chunk reads, and returns whether the
+    // file is now held.
+    bool loadAll(bool parallel) {
         const int64_t total = size();
         if (total <= 0 || (uint64_t)total > kMaxWholeBytes)
             return false;
         static thread_local std::vector<char> buffer;
         buffer.resize((size_t)total);
         uint64_t got = 0;
-        while (got < (uint64_t)total) {
-            const uint64_t want = std::min<uint64_t>(kBlockBytes, (uint64_t)total - got);
-            const int64_t n = readAt(buffer.data() + got, want, got);
-            if (n <= 0)
-                break; // shorter than fstat said (a file still being written): serve what there is
-            got += (uint64_t)n;
+        if (parallel && IlmThread::ThreadPool::globalThreadPool().numThreads() > 0) {
+            got = loadParallel(buffer.data(), (uint64_t)total);
+        } else {
+            while (got < (uint64_t)total) {
+                const uint64_t want = std::min<uint64_t>(kBlockBytes, (uint64_t)total - got);
+                if (ReadCancel::requested())
+                    break; // the caller returns no frame (see read)
+                const int64_t n = readAt(buffer.data() + got, want, got);
+                if (n <= 0)
+                    break; // shorter than fstat said (a file still being written): serve what there is
+                got += (uint64_t)n;
+            }
         }
         buffer.resize((size_t)got);
         data_ = &buffer;
@@ -138,7 +147,45 @@ private:
         return (int64_t)got;
     }
 
+    // loadAll's blocks taken in turn by up to kParallelReads threads, this one
+    // among them. Returns the bytes held from the start of the file: up to the
+    // first block that came back short, as the serial loop stops there.
+    uint64_t loadParallel(char* dst, uint64_t total) {
+        const uint64_t block = std::clamp<uint64_t>(total / kParallelReads, 1ull << 20, 2ull << 20);
+        const size_t blocks = (size_t)((total + block - 1) / block);
+        std::vector<int64_t> got(blocks, 0);
+        std::atomic<size_t> next{ 0 };
+        auto drain = [&] {
+            for (size_t b; (b = next++) < blocks;) {
+                const uint64_t off = b * block;
+                got[b] = readAt(dst + off, std::min(block, total - off), off);
+            }
+        };
+        struct Drain : IlmThread::Task {
+            Drain(IlmThread::TaskGroup* g, decltype(drain)& f) : IlmThread::Task(g), run(f) {}
+            void execute() override { run(); }
+            decltype(drain)& run;
+        };
+        {
+            IlmThread::TaskGroup group; // waits out its tasks as it goes
+            const size_t helpers = std::min<size_t>(kParallelReads, blocks) - 1;
+            for (size_t i = 0; i < helpers; ++i)
+                IlmThread::ThreadPool::addGlobalTask(new Drain(&group, drain));
+            drain();
+        }
+        uint64_t held = 0;
+        for (size_t b = 0; b < blocks; ++b) {
+            const uint64_t want = std::min(block, total - b * block);
+            if (got[b] > 0)
+                held += (uint64_t)got[b];
+            if (got[b] != (int64_t)want)
+                break;
+        }
+        return held;
+    }
+
     static constexpr uint64_t kBlockBytes = 4ull << 20;
+    static constexpr size_t kParallelReads = 8;
     static constexpr uint64_t kMaxWholeBytes = 1ull << 30;
     static constexpr size_t kKeepBytes = 256u << 20;
 
@@ -520,14 +567,23 @@ FramePtr ExrSequenceSource::read(int64_t index, ReadTiming* timing) {
     if (index >= (int64_t)files_.size()) index = (int64_t)files_.size() - 1;
 
     const std::string& file = files_[(size_t)index];
+    // A background read is not counted, and is never alone (see BackgroundReads).
     struct ReadCount {
-        const int n = ++g_exrReads;
-        ~ReadCount() { --g_exrReads; }
+        const bool counted = !BackgroundReads::active();
+        const int n = counted ? ++g_exrReads : 0;
+        ~ReadCount() {
+            if (counted)
+                --g_exrReads;
+        }
     } reads;
+    // A read with the decoder to itself, or the one the player is waiting on
+    // (see UrgentReads), gets OpenEXR's pool and parallel file reads; the rest
+    // decode on their own worker, which with the pool full is the faster way.
+    const bool alone = reads.n == 1 || (reads.counted && UrgentReads::active());
     // One snapshot for the whole read: setChannelSelection() may swap the plan
     // while this runs, and a frame must not mix two of them.
     const std::shared_ptr<const ReadPlan> plan = std::atomic_load(&plan_);
-    const int threads = (reads.n == 1 && plan->compressed) ? Imf::globalThreadCount() : 0;
+    const int threads = (alone && plan->compressed) ? Imf::globalThreadCount() : 0;
 
     try {
         Frame::HalfBuffer linear;
@@ -545,18 +601,30 @@ FramePtr ExrSequenceSource::read(int64_t index, ReadTiming* timing) {
             timing->ioSplit = done;
 
         if (!done) {
-            // OpenEXR's constructors open the file and parse its headers: the wait.
-            // readPixels then reads and decodes in one call, which is decodeMs whole --
-            // unless the file was read whole first, which is readIoMs on its own.
-            const double tOpen = timing ? readTimingNowMs() : 0.0;
+            // Opening the file and parsing its headers is the wait. A file read whole
+            // first is read before the headers, which then come from memory, and that
+            // read is readIoMs on its own. Otherwise readPixels reads and decodes in
+            // one call, which is decodeMs whole.
+            double tOpen = timing ? readTimingNowMs() : 0.0;
             // A single-part file is read through WholeFileExrStream. Only a single-
             // part one: of a multi-part file only the image's part is read, and the
             // others can be many times its size. Declared first, so it outlives the
             // files reading from it.
 #ifndef _WIN32
             std::optional<WholeFileExrStream> stream;
-            if (layout_.parts.size() == 1)
+            if (layout_.parts.size() == 1) {
                 stream.emplace(file.c_str());
+                const double tStream = timing ? readTimingNowMs() : 0.0;
+                if (stream->loadAll(alone) && timing) {
+                    const double tLoaded = readTimingNowMs();
+                    timing->waitIoMs += tStream - tOpen;
+                    timing->readIoMs += tLoaded - tStream;
+                    timing->ioSplit = true;
+                    tOpen = tLoaded; // the header parse still counts as the wait
+                }
+                if (ReadCancel::requested())
+                    return nullptr; // called off: the frame is no longer wanted
+            }
 #endif
             std::optional<Imf::MultiPartInputFile> mp;
             std::optional<Imf::InputPart> part;
@@ -594,14 +662,6 @@ FramePtr ExrSequenceSource::read(int64_t index, ReadTiming* timing) {
                         t->decodeMs += readTimingNowMs() - from;
                 }
             } pixelStamp{ timing, tPixels };
-#ifndef _WIN32
-            if (stream && stream->loadAll() && timing) {
-                const double tLoaded = readTimingNowMs();
-                timing->readIoMs += tLoaded - tPixels;
-                timing->ioSplit = true;
-                pixelStamp.from = tLoaded;
-            }
-#endif
 
             dispW = disp.max.x - disp.min.x + 1;
             dispH = disp.max.y - disp.min.y + 1;

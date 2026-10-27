@@ -560,6 +560,12 @@ bool App::init(int argc, char** argv) {
             loadProject(arg);
         } else if (hasExtension(arg, ".otio")) {
             loadOtio(arg);
+        } else if (std::error_code ec; fs::is_directory(fs::u8path(arg), ec)) {
+            // A folder expands to the media at its top level, as a folder drop
+            // does, appended after whatever earlier arguments placed.
+            dropInsertTrack_ = -1;
+            dropInsertFrame_ = timeline_.trackEnd(firstTrackForKind(false));
+            addMediaFolder(arg);
         } else {
             // The new clip takes the current nextClipId_; Python may not be ready
             // yet, so no paired audio is added inline (see the deferred pass in run()).

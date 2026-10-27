@@ -101,6 +101,63 @@ private:
 void setDecodeRgba8(bool on);
 bool decodeRgba8();
 
+// Marks the reads this thread makes while one is alive as background work -- a
+// thumbnail, a timeline strip tile, a hover preview -- rather than a frame the
+// player is waiting on. The EXR source gives a lone read OpenEXR's whole thread
+// pool and parallel file reads; a background read gets neither, and is not
+// counted as company for a read the player waits on. Counted, two strip tiles
+// in flight made the frame under the playhead decode on one thread: a 4K ZIPS
+// frame went from 14-20 ms to 93 ms.
+class BackgroundReads {
+public:
+    BackgroundReads() : prev_(active_) { active_ = true; }
+    ~BackgroundReads() { active_ = prev_; }
+    BackgroundReads(const BackgroundReads&) = delete;
+    BackgroundReads& operator=(const BackgroundReads&) = delete;
+    static bool active() { return active_; }
+
+private:
+    bool prev_;
+    static inline thread_local bool active_ = false;
+};
+
+// Marks the reads this thread makes while one is alive as the frame the player
+// is waiting on: the playhead's own frame, which the cache reads at priority 0.
+// The EXR source gives such a read OpenEXR's thread pool and parallel file
+// reads even with prefetch reads in flight, as it does a lone read. Without
+// it, a seek or a playback stall landing during a fill read the one frame that
+// mattered on a single thread, behind the look-ahead it had asked for.
+class UrgentReads {
+public:
+    UrgentReads() : prev_(active_) { active_ = true; }
+    ~UrgentReads() { active_ = prev_; }
+    UrgentReads(const UrgentReads&) = delete;
+    UrgentReads& operator=(const UrgentReads&) = delete;
+    static bool active() { return active_; }
+
+private:
+    bool prev_;
+    static inline thread_local bool active_ = false;
+};
+
+// A read the caller may call off part-way: while one is alive, a source that
+// can stop early checks `flag` between the blocks it reads and returns no frame
+// once it is set. The cache sets it on a prefetch read whose frame has left the
+// wanted set -- a seek away from it, a flush -- so the frame the player now waits
+// on has the file server to itself rather than queueing behind the old fill.
+class ReadCancel {
+public:
+    explicit ReadCancel(const std::atomic<bool>* flag) : prev_(flag_) { flag_ = flag; }
+    ~ReadCancel() { flag_ = prev_; }
+    ReadCancel(const ReadCancel&) = delete;
+    ReadCancel& operator=(const ReadCancel&) = delete;
+    static bool requested() { return flag_ && flag_->load(std::memory_order_relaxed); }
+
+private:
+    const std::atomic<bool>* prev_;
+    static inline thread_local const std::atomic<bool>* flag_ = nullptr;
+};
+
 // Where one frame read spent its time, for the Playback Timings panel. Filled by
 // a source that can tell (MediaSource::readFrameTimed); `valid` stays false for
 // one that cannot. The cache workers time every read, panel open or not: it is a

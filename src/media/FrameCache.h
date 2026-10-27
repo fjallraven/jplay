@@ -2,6 +2,7 @@
 
 #include "Media.h"
 
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -141,8 +142,14 @@ private:
     // would let endRequests() skip re-requesting a frame whose only read is
     // already doomed, dropping it out of the wanted set until the next refresh
     // (half a second later) with nothing decoding it in the meantime. The
-    // generation is what tells a live read from a doomed one.
-    std::unordered_map<CacheKey, uint64_t, CacheKeyHash> inflight_;
+    // generation is what tells a live read from a doomed one. `cancel` is the
+    // read's ReadCancel flag: set once its frame leaves the wanted set, or the
+    // read is doomed, so it stops at its next block instead of running out.
+    struct Inflight {
+        uint64_t gen = 0;
+        std::shared_ptr<std::atomic<bool>> cancel;
+    };
+    std::unordered_map<CacheKey, Inflight, CacheKeyHash> inflight_;
     std::unordered_set<std::string> busyVideos_; // media ids a worker is currently decoding (one worker per video)
     std::unordered_set<std::string> failedMedia_; // media ids whose reads failed (see mediaFailed)
     std::unordered_map<CacheKey, Entry, CacheKeyHash> map_;

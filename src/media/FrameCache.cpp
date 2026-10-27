@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <iterator>
+#include <optional>
 
 FrameCache::FrameCache(size_t maxBytes, int numThreads)
     : maxBytes_(maxBytes) {
@@ -175,7 +176,9 @@ void FrameCache::endRequests(bool holdOnScreen) {
             // will have its result thrown away on arrival, so leaving the frame out
             // of the batch would mean nothing is decoding it at all (see inflight_).
             auto inf = inflight_.find(s.key);
-            if (inf != inflight_.end() && inf->second == generation_) {
+            // A read called off is as good as doomed: it will bring nothing back.
+            if (inf != inflight_.end() && inf->second.gen == generation_ &&
+                !inf->second.cancel->load(std::memory_order_relaxed)) {
                 // An on-screen frame a prefetch read is already on: the hold
                 // adopts that read, so the rest of the pool waits for it as it
                 // would for a read started as on-screen.
@@ -190,6 +193,12 @@ void FrameCache::endRequests(bool holdOnScreen) {
                 onScreenPending = true;
             pending_.push_back(std::move(s));
         }
+        // A read whose frame this batch no longer wants -- the playhead moved away
+        // from it -- is called off, so it stops taking disk and link from the ones
+        // that are wanted. Most reads are kept: playback only moves the window on.
+        for (auto& [key, inf] : inflight_)
+            if (!stagedKeys_.count(key))
+                inf.cancel->store(true, std::memory_order_relaxed);
         if (holdOnScreen && onScreenPending)
             firstFrameHold_ = true;
         // Nothing on screen left to wait for: drop a hold that no finishing read
@@ -210,6 +219,8 @@ void FrameCache::clear() {
         pending_.clear();
         doomed.swap(map_);
         failedMedia_.clear(); // a re-request may well succeed (the render may have finished)
+        for (auto& [key, inf] : inflight_)
+            inf.cancel->store(true, std::memory_order_relaxed); // doomed: see inflight_
         totalBytes_ = 0;
         ++generation_;
     }
@@ -247,7 +258,12 @@ void FrameCache::dropMedia(const std::string& mediaId) {
         // Its reads in flight are doomed, so none of them may hold off a re-request
         // (see inflight_): the next endRequests() starts fresh ones straight away.
         for (auto it = inflight_.begin(); it != inflight_.end();)
-            it = it->first.media == mediaId ? inflight_.erase(it) : std::next(it);
+            if (it->first.media == mediaId) {
+                it->second.cancel->store(true, std::memory_order_relaxed);
+                it = inflight_.erase(it);
+            } else {
+                ++it;
+            }
         failedMedia_.erase(mediaId);
     }
     // Freed off the lock and off this thread, as clear() does and for its reason.
@@ -367,7 +383,8 @@ void FrameCache::workerLoop() {
         pending_.erase(pending_.begin() + (ptrdiff_t)best);
         if (map_.count(job.key))
             continue;
-        inflight_.insert_or_assign(job.key, generation_);
+        auto cancel = std::make_shared<std::atomic<bool>>(false);
+        inflight_.insert_or_assign(job.key, Inflight{ generation_, cancel });
         bool isVideo = job.media->type() != ClipType::ImageSequence;
         if (isVideo)
             busyVideos_.insert(job.key.media);
@@ -387,7 +404,16 @@ void FrameCache::workerLoop() {
         // the shot starts behind it and every index shifts by that much.
         const int64_t index = job.srcFrame + job.media->slateOffset();
         ReadTiming timing;
-        FramePtr frame = src ? src->readFrameTimed(index, timing) : nullptr; // slow: decode/IO
+        FramePtr frame;
+        if (src) {
+            // The frame on screen gets the decoder's whole effort however many
+            // prefetch reads are running beside it (see UrgentReads).
+            std::optional<UrgentReads> urgent;
+            if (job.priority <= 0)
+                urgent.emplace();
+            ReadCancel cancellable(cancel.get());
+            frame = src->readFrameTimed(index, timing); // slow: decode/IO
+        }
         lk.lock();
         accountFillLocked();
         // Counted whether or not its result is kept: the read used the bandwidth.
@@ -395,13 +421,14 @@ void FrameCache::workerLoop() {
             fillReads_ += 1.0;
         --busy_;
 
-        // Only if this read is still the live one: a doomed read finishing after a
-        // fresh one was started for the same frame must not retract its entry.
-        // Doomed by clear() (the generation moved) or by dropMedia() (its media's
-        // epoch did).
+        // A doomed read's frame is not admitted: doomed by clear() (the generation
+        // moved) or by dropMedia() (its media's epoch did).
         const bool live = gen == generation_ && mediaEpochLocked(job.key.media) == mediaEpoch;
+        // Retract this read's own entry only, matched by its flag: a read doomed or
+        // called off may have been followed by a fresh read of the same frame,
+        // whose entry must stay.
         auto inf = inflight_.find(job.key);
-        if (live && inf != inflight_.end() && inf->second == gen)
+        if (inf != inflight_.end() && inf->second.cancel == cancel)
             inflight_.erase(inf);
         if (isVideo) {
             busyVideos_.erase(job.key.media);
@@ -420,7 +447,10 @@ void FrameCache::workerLoop() {
                 firstFrameHold_ = false;
             cv_.notify_all(); // wake the workers holding off their prefetch
         }
-        if (!frame) {
+        if (!frame && cancel->load(std::memory_order_relaxed)) {
+            // Called off part-way (see inflight_): nothing failed, and there is no
+            // frame to keep.
+        } else if (!frame) {
             // Log once per media, not once per requested frame: a broken sequence is
             // asked for dozens of times a second by the prefetch.
             if (failedMedia_.insert(job.key.media).second)
