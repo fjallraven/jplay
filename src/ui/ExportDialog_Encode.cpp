@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -74,14 +75,28 @@ std::unordered_map<FILE*, HANDLE> g_pipeProcs;
 // holds more than one quoted token -- a quoted ffmpeg path followed by a quoted
 // output path comes out mangled and never runs. One extra pair around the whole
 // string is what that stripping removes.
+// Logs a failed step of pipeOpen with the system's own text for GetLastError().
+static void logLaunchFailure(const char* step, const std::string& cmd) {
+    const DWORD err = GetLastError();
+    char msg[512] = {};
+    FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, err,
+                   0, msg, sizeof(msg), nullptr);
+    size_t n = std::strlen(msg);
+    while (n && (msg[n - 1] == '\r' || msg[n - 1] == '\n')) msg[--n] = '\0';
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch ffmpeg: %s failed (%lu: %s): %s",
+                 step, (unsigned long)err, msg, cmd.c_str());
+}
+
 static FILE* pipeOpen(const std::string& cmd, const char* mode) {
     const bool reading = mode[0] == 'r';
     const bool binary  = std::strchr(mode, 'b') != nullptr;
 
     SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
     HANDLE rd = nullptr, wr = nullptr;
-    if (!CreatePipe(&rd, &wr, &sa, 0))
+    if (!CreatePipe(&rd, &wr, &sa, 0)) {
+        logLaunchFailure("CreatePipe", cmd);
         return nullptr;
+    }
     HANDLE ours   = reading ? rd : wr;
     HANDLE theirs = reading ? wr : rd;
     SetHandleInformation(ours, HANDLE_FLAG_INHERIT, 0); // the child gets only its end
@@ -101,6 +116,8 @@ static FILE* pipeOpen(const std::string& cmd, const char* mode) {
     PROCESS_INFORMATION pi{};
     const BOOL ok = CreateProcessW(nullptr, wline.data(), nullptr, nullptr, TRUE,
                                    CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    if (!ok)
+        logLaunchFailure("CreateProcess", cmd); // before CloseHandle resets the error
     CloseHandle(theirs);
     if (!ok) {
         CloseHandle(ours);
@@ -112,6 +129,8 @@ static FILE* pipeOpen(const std::string& cmd, const char* mode) {
                                    (reading ? _O_RDONLY : _O_WRONLY) | (binary ? _O_BINARY : _O_TEXT));
     FILE* f = fd >= 0 ? _fdopen(fd, mode) : nullptr;
     if (!f) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch ffmpeg: %s failed (%s): %s",
+                     fd >= 0 ? "_fdopen" : "_open_osfhandle", std::strerror(errno), cmd.c_str());
         if (fd >= 0) _close(fd); else CloseHandle(ours);
         WaitForSingleObject(pi.hProcess, INFINITE); // stdin/stdout closed: it exits
         CloseHandle(pi.hProcess);
@@ -144,7 +163,11 @@ static int pipeClose(FILE* f) {
 #else
 #  define PPCLOSE pclose
 static FILE* pipeOpen(const std::string& cmd, const char* mode) {
-    return popen(cmd.c_str(), mode);
+    FILE* f = popen(cmd.c_str(), mode);
+    if (!f)
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch ffmpeg: popen failed (%s): %s",
+                     std::strerror(errno), cmd.c_str());
+    return f;
 }
 #endif
 
