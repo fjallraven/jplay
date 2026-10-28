@@ -163,7 +163,7 @@ static int pipeClose(FILE* f) {
 #else
 #  define PPCLOSE pclose
 static FILE* pipeOpen(const std::string& cmd, const char* mode) {
-    FILE* f = popen(cmd.c_str(), mode);
+    FILE* f = popen(cmd.c_str(), mode[0] == 'w' ? "w" : "r");
     if (!f)
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch ffmpeg: popen failed (%s): %s",
                      std::strerror(errno), cmd.c_str());
