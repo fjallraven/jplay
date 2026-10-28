@@ -1707,9 +1707,14 @@ void App::removeSelectedSource(bool alwaysConfirm) {
     }
 
     // The removal itself, deferred behind the confirmation below when the sources
-    // are in use. `targets` is captured by value: shared_ptr keeps them alive.
+    // are in use. `targets` is captured by value: shared_ptr keeps them alive, and
+    // the undo step holds them on so undo can put them back in the pool. As with
+    // Replace Source, the pool is fixed up before the clips are restored.
     auto doRemove = [this, targets] {
         if (draggingClip_) { draggingClip_ = false; dragClipId_ = -1; }
+        ContentSnapshot before = captureContent();
+        const std::vector<std::string> removedPaths = selectedSourcePaths_;
+        const std::string anchorPath = selectionAnchorPath_;
         for (const auto& t : targets) {
             const std::string& mid = t->id();
             for (auto& s : timeline_.sequences) {
@@ -1729,6 +1734,27 @@ void App::removeSelectedSource(bool alwaysConfirm) {
         infoClipId_ = -2; // force the info overlay to rebuild for whatever's now under the playhead
         hostSnapshotDirty_ = true; // re-push the project to spectators if hosting
         setStatus("REMOVED " + std::to_string(removed) + " CLIP(S)");
+
+        ContentSnapshot after = captureContent();
+        undoStack_.push({
+            removed == 1 ? "REMOVE SOURCE" : "REMOVE " + std::to_string(removed) + " SOURCES",
+            [this, before, targets, removedPaths, anchorPath] {
+                for (const auto& t : targets)
+                    timeline_.media[t->id()] = t;
+                restoreContent(before);
+                selectedSourcePaths_ = removedPaths; // reselect what came back
+                selectionAnchorPath_ = anchorPath;
+            },
+            [this, after, targets] {
+                if (draggingClip_) { draggingClip_ = false; dragClipId_ = -1; }
+                for (const auto& t : targets)
+                    timeline_.media.erase(t->id());
+                restoreContent(after);
+                selectedSourcePaths_.clear();
+                selectionAnchorPath_.clear();
+                inspectMediaPath_.clear();
+            },
+        });
     };
 
     // Confirm once if any selected source is used in the timeline.
@@ -1786,9 +1812,10 @@ void App::browseReplaceSource(const std::string& path) {
 // The clips are repointed at the replacement's own pool entry (an id is derived
 // from type+path, so it brings its own frame-cache and thumbnail keys and no
 // stale frame can survive the swap) and the old entry is erased, which is what
-// takes the source out of the bin. Undo snapshots hold clips, not media, so
-// restoring one would resurrect clips referencing an entry that is gone: the
-// stack is cleared instead, as the other structural edits do.
+// takes the source out of the bin. Content snapshots hold clips, not media, so
+// the undo step swaps the pool entries back itself (both are held alive by the
+// step) before restoring the clips. History is linear, so any older step that
+// still references the old entry only ever runs with that entry back in place.
 void App::replaceSourceMedia(const std::string& oldMediaId, const std::string& newPath) {
     auto old = timeline_.findMediaById(oldMediaId);
     if (!old) {
@@ -1811,12 +1838,15 @@ void App::replaceSourceMedia(const std::string& oldMediaId, const std::string& n
     }
 
     // Reuses the entry when the file is already in the bin, which merges the two
-    // sources into one rather than leaving a duplicate behind.
+    // sources into one rather than leaving a duplicate behind. Undo only takes the
+    // entry back out of the pool when this swap is what brought it in.
+    const bool freshWasInBin = timeline_.findMediaByPath(newType, newPath) != nullptr;
     auto fresh = ensureMedia(newPath, newType);
     if (!fresh)
         return; // ensureMedia set the status
     if (fresh->id() == oldMediaId)
         return; // paths differ, so this can't happen; never erase what the clips now use
+    ContentSnapshot before = captureContent();
 
     const int64_t frames = std::max<int64_t>(fresh->info().frameCount, 1);
     int placed = 0, shortened = 0;
@@ -1838,28 +1868,52 @@ void App::replaceSourceMedia(const std::string& oldMediaId, const std::string& n
     }
     timeline_.media.erase(oldMediaId);
 
-    for (auto& p : selectedSourcePaths_)
-        if (p == oldPath)
-            p = newPath;
-    if (selectionAnchorPath_ == oldPath)
-        selectionAnchorPath_ = newPath;
-    if (inspectMediaPath_ == oldPath)
-        inspectMediaPath_ = newPath; // keep the MEDIA sub-panel on the row it was opened for
+    // Shared by the edit and its undo/redo: the bin selection and the MEDIA
+    // sub-panel follow the source across the swap, and the frame on screen is
+    // re-rendered. What is on screen may be a frame the replacement doesn't
+    // have, so the displayed key is dropped. The texture itself is kept: the
+    // player holds the last frame until the replacement's decodes (as it does
+    // for any undecoded frame) instead of flashing black across the swap. A
+    // playhead left over a gap draws the backdrop regardless - the program image
+    // is only drawn while a clip with a live source is under it.
+    auto retarget = [this](const std::string& from, const std::string& to) {
+        for (auto& p : selectedSourcePaths_)
+            if (p == from)
+                p = to;
+        if (selectionAnchorPath_ == from)
+            selectionAnchorPath_ = to;
+        if (inspectMediaPath_ == from)
+            inspectMediaPath_ = to; // keep the MEDIA sub-panel on the row it was opened for
+        clearFramePreview();
+        displayedKey_ = CacheKey{};
+    };
 
     timeline_.repackSequences();  // a shortened last clip changes its sequence's extent
     timeline_.clampPlayhead();
     pruneTransitions();           // a shortened clip may no longer meet its dissolve partner
     infoClipId_ = -2;             // force the info overlay to rebuild
     hostSnapshotDirty_ = true;    // re-push the project to spectators if hosting
-    undoStack_.clear();           // its snapshots reference the media that just left the pool
-    // What is on screen may be a frame the replacement doesn't have, so the
-    // displayed key is dropped to force a re-render. The texture itself is kept:
-    // the player holds the last frame until the replacement's decodes (as it does
-    // for any undecoded frame) instead of flashing black across the swap. A
-    // playhead left over a gap draws the backdrop regardless - the program image
-    // is only drawn while a clip with a live source is under it.
-    clearFramePreview();
-    displayedKey_ = CacheKey{};
+    retarget(oldPath, newPath);
+
+    // The pool is fixed up before the clips are restored, so nothing in between
+    // (pruneTransitions reads source lengths) sees a clip without its media.
+    ContentSnapshot after = captureContent();
+    undoStack_.push({
+        "REPLACE SOURCE",
+        [this, before, old, fresh, freshWasInBin, oldPath, newPath, retarget] {
+            timeline_.media[old->id()] = old;
+            if (!freshWasInBin)
+                timeline_.media.erase(fresh->id());
+            restoreContent(before);
+            retarget(newPath, oldPath);
+        },
+        [this, after, old, fresh, oldPath, newPath, retarget] {
+            timeline_.media[fresh->id()] = fresh;
+            timeline_.media.erase(old->id());
+            restoreContent(after);
+            retarget(oldPath, newPath);
+        },
+    });
 
     std::string msg = "REPLACED WITH " + fileLabel(newPath);
     if (placed == 0)

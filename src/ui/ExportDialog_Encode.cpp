@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <mutex>
 #include <sstream>
@@ -157,6 +158,62 @@ static std::string runAndCapture(const std::string& cmd) {
     PPCLOSE(pipe);
     return out;
 }
+
+namespace {
+
+// ffmpeg's stderr, sent to a temp file rather than discarded so a failed run can
+// say why. One per export: each run's 2> truncates it, and it is removed when the
+// export ends whatever the outcome.
+class FfmpegLog {
+public:
+    FfmpegLog() {
+        std::error_code ec;
+        const fs::path dir = fs::temp_directory_path(ec);
+        if (ec) return; // redirect() falls back to discarding it
+        char name[64];
+        SDL_snprintf(name, sizeof(name), "jplay_ffmpeg_%llx.log",
+                     (unsigned long long)SDL_GetTicksNS());
+        path_ = (dir / name).string();
+    }
+    ~FfmpegLog() {
+        std::error_code ec;
+        if (!path_.empty()) fs::remove(path_, ec);
+    }
+    FfmpegLog(const FfmpegLog&) = delete;
+    FfmpegLog& operator=(const FfmpegLog&) = delete;
+
+    // Shell redirection for the end of the command.
+    std::string redirect() const {
+        if (!path_.empty()) return " 2>\"" + path_ + "\"";
+#ifdef _WIN32
+        return " 2>nul";
+#else
+        return " 2>/dev/null";
+#endif
+    }
+
+    // Logs the command, its exit code, and everything ffmpeg wrote to stderr,
+    // a line per message so no single one runs into SDL's length limit.
+    void report(const std::string& cmd, int rc) const {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ffmpeg failed (exit code %d): %s",
+                     rc, cmd.c_str());
+        std::ifstream in{ fs::path(path_) };
+        std::string line;
+        bool any = false;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ffmpeg: %s", line.c_str());
+            any = true;
+        }
+        if (!any)
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ffmpeg: (no output)");
+    }
+
+private:
+    std::string path_;
+};
+
+} // namespace
 
 // ─── FFmpeg discovery ────────────────────────────────────────────────────────
 
@@ -411,12 +468,8 @@ void ExportDialog::runMovieExport(int64_t startFrame, int64_t endFrame) {
 
     cmd << " \"" << outPath << "\"";
 
-#ifdef _WIN32
-    // Silence ffmpeg's own output on Windows.
-    cmd << " 2>nul";
-#else
-    cmd << " 2>/dev/null";
-#endif
+    FfmpegLog log;
+    cmd << log.redirect();
 
     FILE* pipe = pipeOpen(cmd.str(), "wb");
     if (!pipe) {
@@ -427,7 +480,9 @@ void ExportDialog::runMovieExport(int64_t startFrame, int64_t endFrame) {
     }
 
     int64_t total = endFrame - startFrame + 1;
+    const size_t frameBytes = (size_t)outW * outH * 4;
     std::vector<uint8_t> xfBuf; // reused across frames when a transform runs
+    bool pipeBroke = false;
     for (int64_t i = 0; i < total; ++i) {
         if (cancelExport_) break;
         int64_t tlFrame = startFrame + i;
@@ -435,13 +490,18 @@ void ExportDialog::runMovieExport(int64_t startFrame, int64_t endFrame) {
         if (tlFrame < (int64_t)frames_.size())
             frame = decodeFrame(frames_[tlFrame], srcCache);
 
+        size_t written;
         if (frame && frame->width == outW && frame->height == outH) {
             const uint8_t* px = displayPixels_(frames_[tlFrame], *frame, xfBuf);
-            fwrite(px, 1, (size_t)outW * outH * 4, pipe);
+            written = fwrite(px, 1, frameBytes, pipe);
         } else {
             // Write black frame.
-            std::vector<uint8_t> black(outW * outH * 4, 0);
-            fwrite(black.data(), 1, black.size(), pipe);
+            std::vector<uint8_t> black(frameBytes, 0);
+            written = fwrite(black.data(), 1, black.size(), pipe);
+        }
+        if (written != frameBytes) {
+            pipeBroke = true; // ffmpeg exited early; its exit code says why
+            break;
         }
 
         int prog = (int)((i + 1) * 100 / total);
@@ -451,7 +511,7 @@ void ExportDialog::runMovieExport(int64_t startFrame, int64_t endFrame) {
         setStatusMsg(buf);
     }
 
-    PPCLOSE(pipe);
+    const int rc = PPCLOSE(pipe);
     if (!audioTmp.empty()) {
         std::error_code ec;
         fs::remove(audioTmp, ec);
@@ -459,6 +519,10 @@ void ExportDialog::runMovieExport(int64_t startFrame, int64_t endFrame) {
 
     if (cancelExport_) {
         setStatusMsg("Cancelled.");
+        exportError_ = true;
+    } else if (rc != 0 || pipeBroke) {
+        log.report(cmd.str(), rc);
+        setStatusMsg("ffmpeg failed (exit code " + std::to_string(rc) + ").");
         exportError_ = true;
     } else {
         exportProgress_ = 100;
@@ -538,16 +602,13 @@ void ExportDialog::runAudioExport(int64_t startFrame, int64_t endFrame) {
         outPath += std::string(".") + def.ext;
 
     // Mixed at the output rate, so ffmpeg only encodes.
+    FfmpegLog log;
     std::ostringstream cmd;
     cmd << ffmpegCmd()
         << " -y -f f32le -ar " << rate << " -ac 2 -i pipe:0"
         << " " << def.variants[(size_t)variant].args
         << " \"" << outPath << "\""
-#ifdef _WIN32
-        << " 2>nul";
-#else
-        << " 2>/dev/null";
-#endif
+        << log.redirect();
 
     FILE* pipe = pipeOpen(cmd.str(), "wb");
     if (!pipe) {
@@ -583,6 +644,7 @@ void ExportDialog::runAudioExport(int64_t startFrame, int64_t endFrame) {
         setStatusMsg("Cancelled.");
         exportError_ = true;
     } else if (rc != 0 || pipeBroke) {
+        log.report(cmd.str(), rc);
         setStatusMsg("ffmpeg failed (exit code " + std::to_string(rc) + ").");
         exportError_ = true;
     } else {
@@ -650,6 +712,7 @@ void ExportDialog::runGifExport(int64_t startFrame, int64_t endFrame) {
     vf << "scale=" << outW << ":" << outH << ":flags=lanczos,format=rgb24,"
        << "split[a][b];[a]" << q.palettegen << "[p];[b][p]" << q.paletteuse;
 
+    FfmpegLog log;
     std::ostringstream cmd;
     cmd << ffmpegCmd()
         << " -y -f rawvideo -pix_fmt rgba"
@@ -659,11 +722,7 @@ void ExportDialog::runGifExport(int64_t startFrame, int64_t endFrame) {
         << " -vf \"" << vf.str() << "\""
         << " -loop " << (gifLoopCombo_.selected() == 1 ? -1 : 0)
         << " \"" << outPath << "\""
-#ifdef _WIN32
-        << " 2>nul";
-#else
-        << " 2>/dev/null";
-#endif
+        << log.redirect();
 
     FILE* pipe = pipeOpen(cmd.str(), "wb");
     if (!pipe) {
@@ -714,6 +773,7 @@ void ExportDialog::runGifExport(int64_t startFrame, int64_t endFrame) {
         setStatusMsg("Cancelled.");
         exportError_ = true;
     } else if (rc != 0 || pipeBroke) {
+        log.report(cmd.str(), rc);
         setStatusMsg("ffmpeg failed (exit code " + std::to_string(rc) + ").");
         exportError_ = true;
     } else {
@@ -821,6 +881,7 @@ void ExportDialog::runImageExport(int64_t startFrame, int64_t endFrame) {
 
     std::vector<uint8_t> xfBuf;  // display-referred bytes (PNG)
     std::vector<float> linBuf;   // working-space floats (EXR)
+    FfmpegLog log;               // shared by the per-frame PNG runs
     for (int64_t i = 0; i < total; ++i) {
         if (cancelExport_) break;
         int64_t tlFrame = startFrame + i;
@@ -880,17 +941,18 @@ void ExportDialog::runImageExport(int64_t startFrame, int64_t endFrame) {
                 << " -video_size " << fw << "x" << fh
                 << " -framerate 1 -i pipe:0"
                 << " -frames:v 1 \"" << outPath << "\""
-#ifdef _WIN32
-                << " 2>nul";
-#else
-                << " 2>/dev/null";
-#endif
+                << log.redirect();
             FILE* pipe = pipeOpen(cmd.str(), "wb");
-            if (pipe) {
-                fwrite(pixels, 1, (size_t)fw * fh * 4, pipe);
-                PPCLOSE(pipe);
-            } else {
+            if (!pipe) {
                 setStatusMsg("Failed to launch ffmpeg for PNG export.");
+                exportError_ = true; return;
+            }
+            const size_t bytes = (size_t)fw * fh * 4;
+            const bool pipeBroke = fwrite(pixels, 1, bytes, pipe) != bytes;
+            const int rc = PPCLOSE(pipe);
+            if (rc != 0 || pipeBroke) {
+                log.report(cmd.str(), rc);
+                setStatusMsg("ffmpeg failed (exit code " + std::to_string(rc) + ").");
                 exportError_ = true; return;
             }
         }
