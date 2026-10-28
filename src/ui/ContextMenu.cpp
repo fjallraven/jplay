@@ -293,7 +293,7 @@ void ContextMenu::layoutTable(SDL_Renderer* r) {
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
     if (y0 + totalH > winH_) y0 = winH_ - totalH;
-    tableY0_ = y0;
+    tableY0_ = y0 + kRowH; // header row on top
 
     float cx = x0;
     for (size_t c = 0; c < columns_.size(); ++c) {
@@ -375,13 +375,12 @@ bool ContextMenu::tableCellAt(float x, float y, int& col, int& item) const {
     item = -1;
     if (colRects_.empty())
         return false;
-    const float hy = tableY0_ + visRows_ * kRowH; // header row top
     for (size_t c = 0; c < colRects_.size(); ++c) {
         const SDL_FRect& rect = colRects_[c];
         if (x < rect.x || x >= rect.x + rect.w || y < rect.y || y >= rect.y + rect.h)
             continue;
         col = (int)c;
-        if (y >= hy) { item = -1; return true; } // header row at the bottom
+        if (y < tableY0_) { item = -1; return true; } // header row at the top
         // Options are top-aligned (item 0 at the top) and scrolled up by this
         // column's scroll; solve which option row y hits.
         int n = (int)columns_[c].items.size();
@@ -741,7 +740,8 @@ void ContextMenu::render(SDL_Renderer* r) {
     float glyphH = textFont_ ? textFont_->lineHeight() : 8.0f;
 
     if (table_) {
-        const float hy = tableY0_ + visRows_ * kRowH; // header row top
+        const float hy = tableY0_ - kRowH;            // header row top
+        const float optY1 = tableY0_ + visRows_ * kRowH; // option viewport bottom
         for (size_t c = 0; c < colRects_.size(); ++c) {
             const SDL_FRect& rect = colRects_[c];
             const Column& col = columns_[c];
@@ -756,13 +756,13 @@ void ContextMenu::render(SDL_Renderer* r) {
             setColor(r, colHovered ? kTableBgHot : kTableBg);
             jplay::fillRect(r, &rect);
 
-            // Options: top-aligned from the table's top, scrolled up by the
-            // column's scroll and clipped to the option viewport (above the header row).
+            // Options: top-aligned under the header row, scrolled up by the
+            // column's scroll and clipped to the option viewport.
             SDL_Rect clip{ (int)rect.x, (int)tableY0_, (int)rect.w, (int)(visRows_ * kRowH) };
             SDL_SetRenderClipRect(r, &clip);
             for (int i = 0; i < n; ++i) {
                 float ry = tableY0_ + (float)i * kRowH - scroll;
-                if (ry + kRowH <= tableY0_ || ry >= hy)
+                if (ry + kRowH <= tableY0_ || ry >= optY1)
                     continue; // scrolled out of the viewport
                 float cy = ry + kRowH * 0.5f;
                 if (col.items[i].checked) {
@@ -791,7 +791,7 @@ void ContextMenu::render(SDL_Renderer* r) {
                 drawScrollbar(r, SDL_FRect{ rect.x, tableY0_, rect.w, visRows_ * kRowH },
                               (float)n * kRowH, scroll, 1.0f, false, colSb_[c]);
 
-            // Header row pinned at the bottom of the column.
+            // Header row pinned at the top of the column.
             SDL_FRect hrect{ rect.x, hy, rect.w, kRowH };
             setColor(r, colHovered ? kHeaderBgHot : kHeaderBg);
             jplay::fillRect(r, &hrect);

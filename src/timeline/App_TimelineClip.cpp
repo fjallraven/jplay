@@ -1437,7 +1437,7 @@ std::vector<App::PickerColumn> App::buildPickerColumns(const std::vector<PickerS
 }
 
 // (Re)build clipMenu_ from the menu cascade: one table column per picker (label
-// header at the bottom, options above), wired so every column except the last
+// header at the top, options below), wired so every column except the last
 // navigates and the last commits.
 void App::rebuildClipPickerMenu(const std::vector<PickerState>& states, bool navigating) {
     std::vector<PickerColumn> picks = buildPickerColumns(states, menuCascade_);

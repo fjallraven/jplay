@@ -90,8 +90,8 @@ public:
         uint32_t badgeColor = 0;
     };
 
-    // A vertical column of a table menu: a header label pinned at the bottom of
-    // the column, with its options stacked from the top down (top row = items[0]).
+    // A vertical column of a table menu: a header label pinned at the top of
+    // the column, with its options stacked below it (top row = items[0]).
     struct Column {
         std::string label;
         std::vector<Item> items;
@@ -247,7 +247,7 @@ private:
     // ---- table mode
     std::vector<Column> columns_;
     std::vector<SDL_FRect> colRects_; // per-column rect (header + options), recomputed in layout
-    float tableY0_ = 0;               // top of the table
+    float tableY0_ = 0;               // top of the option rows (below the header row)
     SDL_FRect beside_{};              // openTable's beside: empty = center on the anchor
     float maxTableH_ = 0;             // openTable's maxH: 0 = only the window cap
     int tableRows_ = 0;               // option rows above the header (max column length)
