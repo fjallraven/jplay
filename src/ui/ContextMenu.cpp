@@ -102,12 +102,12 @@ void ContextMenu::open(float x, float y, float winW, float winH, std::vector<Ite
 }
 
 void ContextMenu::openTable(float x, float y, float winW, float winH, std::vector<Column> columns,
-                            bool keepMinSizes) {
+                            bool keepMinSizes, bool growDown) {
     columns_ = std::move(columns);
     items_.clear();
     table_ = true;
     grid_ = false;
-    growDown_ = false;
+    growDown_ = growDown;
     header_ = {};
     headerRect_ = {};
     anchorX_ = x;
@@ -222,9 +222,9 @@ void ContextMenu::layoutTable(SDL_Renderer* r) {
     float totalH = (float)(visRows_ + 1) * kRowH; // +1 header row
 
     // Center the table horizontally on the cursor; anchor its bottom there and
-    // grow upward, then clamp on screen.
+    // grow upward (or its top, growing down, when asked), then clamp on screen.
     float x0 = anchorX_ - totalW * 0.5f;
-    float y0 = anchorY_ - totalH;
+    float y0 = growDown_ ? anchorY_ : anchorY_ - totalH;
     if (x0 + totalW > winW_) x0 = winW_ - totalW;
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;

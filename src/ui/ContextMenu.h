@@ -105,8 +105,9 @@ public:
     // of resetting them. Set when re-opening in place during a cascade (a
     // navigation click that rebuilds the columns) so the panel doesn't jump
     // smaller; leave false for a genuinely fresh open.
+    // growDown: anchor the top-left at (x, y) instead and grow downward, as open()'s.
     void openTable(float x, float y, float winW, float winH, std::vector<Column> columns,
-                   bool keepMinSizes = false);
+                   bool keepMinSizes = false, bool growDown = false);
 
     // Open as a swatch grid: the items laid out left-to-right, top-to-bottom in
     // `cols` columns and painted in their Item::rowColor with no label — a color
@@ -201,7 +202,7 @@ private:
     bool open_ = false;
     bool table_ = false;   // true => columns_ table mode; false => items_ list mode
     bool grid_ = false;    // true => items_ drawn as a gridCols_-wide swatch grid
-    bool growDown_ = false; // list mode: anchor the top at anchorY_, not the bottom
+    bool growDown_ = false; // list/table mode: anchor the top at anchorY_, not the bottom
 
     std::vector<Item> items_;
     float anchorX_ = 0, anchorY_ = 0;

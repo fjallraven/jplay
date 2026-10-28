@@ -428,6 +428,32 @@ void App::updateClipSourceData() {
             clipSourceStates_.end());
     }
 
+    // Labels and colors follow on their own query, so the option lists are never
+    // held back by a site's database lookup. The panel redraws from
+    // clipSourceStates_ every frame, so taking each instalment into it is the
+    // whole refresh — the scroll position is untouched.
+    panelCascade_.decorateApply = [this](const std::vector<PickerState>& st) {
+        clipSourceStates_ = st;
+    };
+
+    // Several clips: the right-click menu's own describe, so the panel stops at the
+    // same picker over the same clips. Describing just the first selected clip
+    // would let a plate or editorial clip that only offers a version stand for the
+    // whole selection, and the sections would end at VERSION where the menu ends at
+    // DEPARTMENT. Not modal: the panel follows the selection rather than a gesture
+    // aimed at it, so it just waits.
+    if (ids.size() > 1) {
+        panelCascade_.loading = true;
+        startSelectionDescribe(panelCascade_, ids, /*modal=*/false,
+                               [this](bool ok, const std::vector<PickerState>& states) {
+                                   panelCascade_.loading = false;
+                                   clipSourceStates_ = ok ? states : std::vector<PickerState>{};
+                                   clipSourceNoPickers_ = !ok || clipSourceStates_.empty();
+                                   startPickerDecorate(panelCascade_, clipSourceStates_);
+                               });
+        return;
+    }
+
     const uint64_t id = ++panelCascade_.queryId;
     panelCascade_.loading = true;
     struct DescribeResult {
@@ -457,13 +483,6 @@ void App::updateClipSourceData() {
             if (auto media = timeline_.findMediaById(mediaId))
                 for (auto& kv : res->values)
                     media->setMetaValue(kv.first, std::move(kv.second));
-            // Labels and colors follow on their own query, so the option lists are
-            // never held back by a site's database lookup. The panel redraws from
-            // clipSourceStates_ every frame, so taking each instalment into it
-            // is the whole refresh — the scroll position is untouched.
-            panelCascade_.decorateApply = [this](const std::vector<PickerState>& st) {
-                clipSourceStates_ = st;
-            };
             startPickerDecorate(panelCascade_, clipSourceStates_);
         });
 }

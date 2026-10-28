@@ -421,6 +421,23 @@ void App::openClipContextMenu(const Clip& clip, float mx, float my, bool growDow
             items.push_back(std::move(it));
         }
     };
+    // The metadata picker panels (also Ctrl+right-click), replacing this menu. They
+    // take its place: the edge the menu grew from — top when it dropped from the
+    // cursor, bottom when it rose — stays put, and the picker grows the same way.
+    // The bounds are read in the action, after the click closed the menu, which
+    // leaves its last layout in place.
+    {
+        ContextMenu::Item it;
+        it.label = "Switch Source";
+        it.shortcut = "Ctrl+RMB";
+        it.action = [this, mx, my, growDown] {
+            SDL_FRect b = clipToolboxMenu_.listBounds();
+            float y = b.h <= 0.0f ? my : growDown ? b.y : b.y + b.h;
+            openClipPickerMenu(selectedClipIds_, mx, y, growDown);
+        };
+        items.push_back(std::move(it));
+    }
+    sep();
     add("Copy Clip", [this] { copySelectedClips(); });
     add("Paste Clip", [this] { pasteClips(); });
     sep();
@@ -779,7 +796,8 @@ void App::applyClipRange(int clipId, int64_t inSrc, int64_t outSrc) {
 // upstream picker cascades cleanly; the final commit re-applies the navigated
 // chain to every selected clip (see startPickerCommit). Just seeds the cascade
 // state and hands off to rebuildClipPickerMenu, which builds the columns.
-void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my) {
+// growDown: (mx, my) is the table's top edge rather than its bottom.
+void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my, bool growDown) {
     if (clipIds.empty())
         return;
 
@@ -787,6 +805,41 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
     if (metaPickers_.empty())
         return;
 
+    // Labels and colors, whenever they arrive, go into the table in place — see
+    // relabelClipPickerMenu. A decoration that lands after the menu was dismissed
+    // must not put it back up, hence the isOpen() guard.
+    menuCascade_.decorateApply = [this](const std::vector<PickerState>& pickerStates) {
+        if (clipMenu_.isOpen())
+            relabelClipPickerMenu(pickerStates);
+    };
+    pickerMenuX_ = mx;
+    pickerMenuY_ = my;
+    pickerMenuGrowDown_ = growDown;
+
+    // Several clips is a Python describe per shot, long enough on a big selection to
+    // owe the user a dialog — the same modal with a Cancel that the multi-clip
+    // commit puts up (startPickerCommit). It only shows past kProgressShowDelayMs,
+    // so a quick describe still just opens the menu.
+    startSelectionDescribe(menuCascade_, clipIds, /*modal=*/clipIds.size() > 1,
+                           [this](bool ok, const std::vector<PickerState>& states) {
+                               if (!ok)
+                                   return;
+                               rebuildClipPickerMenu(states, /*navigating=*/false);
+                               // The annotations follow separately, so the columns
+                               // are up as soon as the option lists are known.
+                               startPickerDecorate(menuCascade_, states);
+                           });
+}
+
+// Seed cascade `c` for `clipIds` and run the describe its view is built from, then
+// hand `done` the representative's full describe_pickers result. Shared by the
+// right-click menu and the Clip Source panel, so a multi-clip target opens on the
+// same representative, clip set and merged commit column in both. `done` runs on
+// the main thread, and only while the query is still the cascade's latest: a
+// superseded or cancelled describe drops it.
+void App::startSelectionDescribe(
+    PickerCascade& c, const std::vector<int>& clipIds, bool modal,
+    std::function<void(bool ok, const std::vector<PickerState>& states)> done) {
     // Skip clips with no media so a stray selection can't block the menu.
     std::vector<int> pickableClipIds;
     std::vector<std::string> clipPaths;
@@ -800,8 +853,10 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
         pickableClipIds.push_back(clipId);
         clipPaths.push_back(media->resolvedPath());
     }
-    if (pickableClipIds.empty() || clipPaths.front().empty())
+    if (pickableClipIds.empty() || clipPaths.front().empty()) {
+        done(false, {});
         return;
+    }
 
     // With several clips, the ones the first picker doesn't apply to are left out:
     // a clip whose describe offers no first-picker options (a plate, an editorial
@@ -845,19 +900,10 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
 
     // Until the describes land the cascade carries the whole selection; the
     // completion narrows it to the clips the first picker applies to.
-    menuCascade_.clipIds = pickableClipIds;
-    menuCascade_.repPath = clipPaths.front();
-    menuCascade_.chain.clear();
-    menuCascade_.selectionStates.clear();
-    // Labels and colors, whenever they arrive, go into the table in place — see
-    // relabelClipPickerMenu. A decoration that lands after the menu was dismissed
-    // must not put it back up, hence the isOpen() guard.
-    menuCascade_.decorateApply = [this](const std::vector<PickerState>& pickerStates) {
-        if (clipMenu_.isOpen())
-            relabelClipPickerMenu(pickerStates);
-    };
-    pickerMenuX_ = mx;
-    pickerMenuY_ = my;
+    c.clipIds = pickableClipIds;
+    c.repPath = clipPaths.front();
+    c.chain.clear();
+    c.selectionStates.clear();
 
     // The describes run on pickerWork_ like every click that follows, so a site
     // whose describe_pickers reaches a database can't freeze the frame the
@@ -866,7 +912,7 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
     // would read a not-yet-open menu as a cancel and drop this very query. The
     // queryId guard alone is enough: a second right-click bumps it and supersedes
     // this one.
-    const uint64_t describeQueryId = ++menuCascade_.queryId;
+    const uint64_t describeQueryId = ++c.queryId;
     struct FirstPickerCheck {
         bool ok = false;
         PickerState state; // the first picker's state; no options when it doesn't apply
@@ -1000,8 +1046,8 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
                         (unsigned long long)(SDL_GetTicks() - describeStart));
     };
 
-    auto openMenu = [this, describeQueryId, menuDescribe, pickableClipIds, clipPaths,
-                     firstPickerKey] {
+    auto openMenu = [this, &c, describeQueryId, menuDescribe, pickableClipIds, clipPaths,
+                     firstPickerKey, done] {
         // Cache what the worker read on the media (Media's metadata is written on
         // the main thread only), whatever becomes of this menu: the values hold
         // either way, and the next open over these clips then reads nothing.
@@ -1013,10 +1059,12 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
             for (const auto& [valueKey, value] : menuDescribe->readValues[clipIndex])
                 media->setMetaValue(valueKey, value);
         }
-        if (describeQueryId != menuCascade_.queryId) // superseded by a newer open
+        if (describeQueryId != c.queryId) // superseded by a newer open
             return;
-        if (!menuDescribe->representativeOk)
+        if (!menuDescribe->representativeOk) {
+            done(false, {});
             return;
+        }
         const size_t representativeClip = menuDescribe->representativeClip;
         const auto& groupChecks = menuDescribe->groupChecks;
         const auto& groupOfClip = menuDescribe->groupOfClip;
@@ -1070,20 +1118,13 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
             if (!merged.options.empty())
                 selectionStates.push_back(std::move(merged));
         }
-        menuCascade_.selectionStates = std::move(selectionStates);
-        menuCascade_.clipIds = std::move(appliedClipIds);
-        menuCascade_.repPath = clipPaths[representativeClip];
-        rebuildClipPickerMenu(menuDescribe->representativeStates, /*navigating=*/false);
-        // The annotations follow separately, so the columns are up as soon as
-        // the option lists are known.
-        startPickerDecorate(menuCascade_, menuDescribe->representativeStates);
+        c.selectionStates = std::move(selectionStates);
+        c.clipIds = std::move(appliedClipIds);
+        c.repPath = clipPaths[representativeClip];
+        done(true, menuDescribe->representativeStates);
     };
 
-    // Several clips is a Python describe per shot, long enough on a big selection to
-    // owe the user a dialog — the same modal with a Cancel that the multi-clip
-    // commit puts up (startPickerCommit). It only shows past kProgressShowDelayMs,
-    // so a quick describe still just opens the menu.
-    runBackground(pickableClipIds.size() > 1,
+    runBackground(modal && pickableClipIds.size() > 1,
                   "Reading pickers (" + std::to_string(pickableClipIds.size()) + " clips)",
                   describeForMenu, [openMenu](bool cancelled) {
                       if (!cancelled)
@@ -1386,7 +1427,8 @@ void App::rebuildClipPickerMenu(const std::vector<PickerState>& states, bool nav
         return;
     }
 
-    clipMenu_.openTable(pickerMenuX_, pickerMenuY_, winW_, winH_, std::move(columns), navigating);
+    clipMenu_.openTable(pickerMenuX_, pickerMenuY_, winW_, winH_, std::move(columns), navigating,
+                        pickerMenuGrowDown_);
 }
 
 // An armed commit row of the open menu moved past the drag threshold: carry that
@@ -1966,7 +2008,7 @@ void App::openClipRightClickMenu(const Clip& clip, float mx, float my, bool grow
     if (!isClipSelected(clip.id))
         selectClipSingle(clip.id);
     if (SDL_GetModState() & SDL_KMOD_CTRL)
-        openClipPickerMenu(selectedClipIds_, mx, my);
+        openClipPickerMenu(selectedClipIds_, mx, my, growDown);
     else
         openClipContextMenu(clip, mx, my, growDown);
 }

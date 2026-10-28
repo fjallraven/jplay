@@ -2138,6 +2138,7 @@ private:
     PickerCascade menuCascade_;
     PickerCascade panelCascade_;
     float pickerMenuX_ = 0, pickerMenuY_ = 0; // clipMenu_ anchor
+    bool pickerMenuGrowDown_ = false;          // anchor is the table's top, not its bottom
 
     // One picker as a view sees it, derived from the cascade + a describe_pickers
     // result by buildPickerColumns(). The clip menu maps these to table columns,
@@ -2557,7 +2558,14 @@ private:
     // first clip as the representative for building columns; the final commit
     // applies the navigated chain to every listed clip. Several clips also stop
     // the menu at the config's multi_select_picker — see buildPickerColumns.
-    void openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my);
+    void openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my,
+                            bool growDown = false);
+    // Seed `c` for `clipIds` and describe them the way the menu opens: with several
+    // clips, narrowed to those the first picker applies to, a representative among
+    // them, and the commit column merged across their shots (selectionStates).
+    // `done` gets the representative's describe; the Clip Source panel uses this too.
+    void startSelectionDescribe(PickerCascade& c, const std::vector<int>& clipIds, bool modal,
+                                std::function<void(bool ok, const std::vector<PickerState>& states)> done);
     // Swap `clip`'s media to `newPath`, matching the previous clip span where the
     // new media allows, and dropping the old media from the pool if now unused.
     // `opened`, when given, is `newPath`'s media already opened off the main thread
