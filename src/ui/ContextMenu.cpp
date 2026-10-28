@@ -748,6 +748,9 @@ void ContextMenu::render(SDL_Renderer* r) {
             int n = (int)col.items.size();
             const bool colHovered = ((int)c == hoverCol_);
             const float scroll = (c < colScroll_.size()) ? colScroll_[c] : 0.0f;
+            // A scrolling column's extra width (see layoutTable) is the bar's strip;
+            // right-aligned row content stops short of it.
+            const float contentW = rect.w - (n > visRows_ ? scrollbarStripW(1.0f, true) : 0.0f);
 
             // Column body fill + outline.
             setColor(r, colHovered ? kTableBgHot : kTableBg);
@@ -774,7 +777,7 @@ void ContextMenu::render(SDL_Renderer* r) {
                     drawCheck(r, rect.x + 4.0f, cy);
                 }
                 if (!col.items[i].badge.empty()) // color only: see Item::badge
-                    drawStatusSwatch(r, SDL_FRect{ rect.x, ry, rect.w, kRowH },
+                    drawStatusSwatch(r, SDL_FRect{ rect.x, ry, contentW, kRowH },
                                      col.items[i].badgeColor, 1.0f);
                 if (textFont_)
                     textFont_->draw(r, rect.x + kMarkW, ry + (kRowH - glyphH) * 0.5f,
