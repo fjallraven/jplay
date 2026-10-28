@@ -11,12 +11,15 @@
 #include "AppInternal.h"
 #include "ImageSeq.h"
 #include "Layout.h"
+#include "ParallelFor.h"
 #include "PythonBridge.h"
 #include "RevealFile.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -822,34 +825,23 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
     // whose path values agree on everything but the picker keys share one query.
     // Grouping falls back to the exact path when the values can't be read. The
     // representative clip then gets the one full describe the menu is built from.
+    //
+    // The values are each media's cached naming-convention values (Media::meta,
+    // filled by flushPathValueRequests) where it has them. A clip still waiting on
+    // that pass is read by the worker below, never here: get_path_values can cost
+    // ~0.2 s a path on network storage, which across a selection froze the frame
+    // the right-click landed on before any dialog could come up.
     const std::string firstPickerKey = metaPickers_.front().key;
-    std::vector<size_t> groupOfClip(clipPaths.size(), 0);
-    std::vector<std::string> groupPaths;
-    if (pickableClipIds.size() > 1) {
-        std::vector<std::map<std::string, std::string>> pathValuesPerClip;
-        const bool haveValues = jplayGetPathValues(clipPaths, pathValuesPerClip) &&
-                                pathValuesPerClip.size() == clipPaths.size();
-        auto isPickerKey = [this](const std::string& valueKey) {
-            return pickerDisplayIndex(valueKey) >= 0;
-        };
-        std::map<std::string, size_t> groupByContext;
-        for (size_t clipIndex = 0; clipIndex < clipPaths.size(); ++clipIndex) {
-            std::string context;
-            if (haveValues) {
-                for (const auto& [valueKey, value] : pathValuesPerClip[clipIndex]) {
-                    if (isPickerKey(valueKey))
-                        continue;
-                    context += valueKey + '=' + value + '\n';
-                }
-            } else {
-                context = clipPaths[clipIndex];
-            }
-            auto [groupEntry, isNewGroup] = groupByContext.emplace(context, groupPaths.size());
-            if (isNewGroup)
-                groupPaths.push_back(clipPaths[clipIndex]);
-            groupOfClip[clipIndex] = groupEntry->second;
+    std::set<std::string> pickerKeys;
+    for (const auto& picker : metaPickers_)
+        pickerKeys.insert(picker.key);
+    std::vector<std::map<std::string, std::string>> cachedValues(clipPaths.size());
+    if (pickableClipIds.size() > 1)
+        for (size_t clipIndex = 0; clipIndex < pickableClipIds.size(); ++clipIndex) {
+            const Clip* clip = timeline_.findClipById(pickableClipIds[clipIndex]);
+            if (auto media = timeline_.findMediaById(clip->mediaId))
+                cachedValues[clipIndex] = media->meta();
         }
-    }
 
     // Until the describes land the cascade carries the whole selection; the
     // completion narrows it to the clips the first picker applies to.
@@ -881,21 +873,104 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
         bool applies() const { return ok && !state.options.empty(); }
     };
     struct MenuDescribe {
-        std::vector<FirstPickerCheck> groupChecks;   // one per groupPaths entry
+        std::vector<size_t> groupOfClip;            // per clip, index into groupChecks
+        // Per clip, the values the worker read because the media had none cached
+        // (empty otherwise) — handed back to the media so the next open skips them.
+        std::vector<std::map<std::string, std::string>> readValues;
+        std::vector<FirstPickerCheck> groupChecks;   // one per shot group
         size_t representativeClip = 0;               // index into pickableClipIds
         bool representativeOk = false;
         std::vector<PickerState> representativeStates; // full describe, every picker
     };
     auto menuDescribe = std::make_shared<MenuDescribe>();
-    menuDescribe->groupChecks.resize(groupPaths.size());
+    menuDescribe->groupOfClip.assign(clipPaths.size(), 0);
 
-    // The first-picker check per group, then the representative's full describe.
-    auto describeForMenu = [groupPaths, groupOfClip, clipPaths, firstPickerKey,
-                            menuDescribe](const std::atomic<bool>& stopRequested) {
-        const size_t groupCount = groupPaths.size();
-        for (size_t groupIndex = 0; groupIndex < groupCount; ++groupIndex) {
-            if (stopRequested)
+    // The grouping (reading values the cache didn't have), the first-picker check
+    // per group, then the representative's full describe. `stopRequested` is the
+    // pickerWork_ supersede flag or the dialog's Cancel, whichever runs it.
+    auto describeForMenu = [cachedValues, pickerKeys, clipPaths, firstPickerKey,
+                            menuDescribe](const TaskContext& ctx) {
+        // Stage timings under Debug Logging: what a slow menu open is waiting on.
+        const uint64_t describeStart = SDL_GetTicks();
+        uint64_t stageStart = describeStart;
+        auto logStage = [&](const char* stage) {
+            if (!jplayDebugLogging())
                 return;
+            const uint64_t now = SDL_GetTicks();
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Picker menu: %s took %llu ms", stage,
+                        (unsigned long long)(now - stageStart));
+            stageStart = now;
+        };
+        auto& groupOfClip = menuDescribe->groupOfClip;
+        std::vector<std::string> groupPaths;
+        bool pathsRead = false; // the path reads took the bar's first half
+        if (clipPaths.size() > 1) {
+            auto values = cachedValues; // completed below with what the cache lacked
+            std::vector<size_t> uncachedClips;
+            std::vector<std::string> uncachedPaths;
+            for (size_t clipIndex = 0; clipIndex < clipPaths.size(); ++clipIndex)
+                if (values[clipIndex].empty()) {
+                    uncachedClips.push_back(clipIndex);
+                    uncachedPaths.push_back(clipPaths[clipIndex]);
+                }
+            if (!uncachedPaths.empty()) {
+                pathsRead = true;
+                const size_t uncachedCount = uncachedPaths.size();
+                ctx.update(-1.f, "Waiting for Python");
+                // The first callback marks the GIL acquired: the gap before it is
+                // time spent behind another thread's Python work, not this read.
+                uint64_t gilAcquired = 0;
+                std::vector<std::map<std::string, std::string>> readValues;
+                if (jplayGetPathValues(uncachedPaths, readValues, [&](size_t pathIndex) {
+                        if (pathIndex == 0)
+                            gilAcquired = SDL_GetTicks();
+                        ctx.update(0.5f * (float)pathIndex / (float)uncachedCount,
+                                   "Reading clip path " + std::to_string(pathIndex + 1) + "/" +
+                                       std::to_string(uncachedCount));
+                        return !ctx.stopped();
+                    }) &&
+                    readValues.size() == uncachedCount) {
+                    menuDescribe->readValues.resize(clipPaths.size());
+                    for (size_t i = 0; i < uncachedClips.size(); ++i) {
+                        values[uncachedClips[i]] = readValues[i];
+                        menuDescribe->readValues[uncachedClips[i]] = std::move(readValues[i]);
+                    }
+                }
+                if (jplayDebugLogging() && gilAcquired)
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                                "Picker menu: %zu of %zu clips uncached; GIL wait %llu ms",
+                                uncachedCount, clipPaths.size(),
+                                (unsigned long long)(gilAcquired - stageStart));
+                logStage("get_path_values");
+            }
+            if (ctx.stopped())
+                return;
+            std::map<std::string, size_t> groupByContext;
+            for (size_t clipIndex = 0; clipIndex < clipPaths.size(); ++clipIndex) {
+                std::string context;
+                for (const auto& [valueKey, value] : values[clipIndex]) {
+                    if (pickerKeys.count(valueKey))
+                        continue;
+                    context += valueKey + '=' + value + '\n';
+                }
+                if (context.empty()) // no values to go by: this clip is its own group
+                    context = clipPaths[clipIndex];
+                auto [groupEntry, isNewGroup] = groupByContext.emplace(context, groupPaths.size());
+                if (isNewGroup)
+                    groupPaths.push_back(clipPaths[clipIndex]);
+                groupOfClip[clipIndex] = groupEntry->second;
+            }
+        }
+        menuDescribe->groupChecks.resize(groupPaths.size());
+        const size_t groupCount = groupPaths.size();
+        const float groupsFrom = pathsRead ? 0.5f : 0.f;
+        for (size_t groupIndex = 0; groupIndex < groupCount; ++groupIndex) {
+            if (ctx.stopped())
+                return;
+            ctx.update(groupsFrom + (1.f - groupsFrom) * (float)groupIndex /
+                                        (float)(groupCount + 1),
+                       "Reading shot " + std::to_string(groupIndex + 1) + "/" +
+                           std::to_string(groupCount));
             auto& groupCheck = menuDescribe->groupChecks[groupIndex];
             groupCheck.ok = jplayDescribePickerPathOnly(groupPaths[groupIndex], firstPickerKey,
                                                         groupCheck.state);
@@ -907,21 +982,44 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
                 menuDescribe->representativeClip = clipIndex;
                 break;
             }
-        if (stopRequested)
+        if (groupCount > 0)
+            logStage((std::to_string(groupCount) + " first-picker describes").c_str());
+        if (ctx.stopped())
             return;
+        ctx.update(groupsFrom + (1.f - groupsFrom) * (float)groupCount /
+                                    (float)(groupCount + 1),
+                   "Reading pickers");
         menuDescribe->representativeOk =
             jplayDescribePickers(clipPaths[menuDescribe->representativeClip],
                                  menuDescribe->representativeStates);
+        logStage("full describe");
+        if (jplayDebugLogging())
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Picker menu: %zu clips, %zu shot groups, %llu ms total",
+                        clipPaths.size(), groupCount,
+                        (unsigned long long)(SDL_GetTicks() - describeStart));
     };
 
-    auto openMenu = [this, describeQueryId, menuDescribe, groupOfClip, pickableClipIds,
-                     clipPaths, firstPickerKey] {
+    auto openMenu = [this, describeQueryId, menuDescribe, pickableClipIds, clipPaths,
+                     firstPickerKey] {
+        // Cache what the worker read on the media (Media's metadata is written on
+        // the main thread only), whatever becomes of this menu: the values hold
+        // either way, and the next open over these clips then reads nothing.
+        for (size_t clipIndex = 0; clipIndex < menuDescribe->readValues.size(); ++clipIndex) {
+            const Clip* clip = timeline_.findClipById(pickableClipIds[clipIndex]);
+            auto media = clip ? timeline_.findMediaById(clip->mediaId) : nullptr;
+            if (!media || !media->meta().empty())
+                continue; // gone, or the background pass got there first
+            for (const auto& [valueKey, value] : menuDescribe->readValues[clipIndex])
+                media->setMetaValue(valueKey, value);
+        }
         if (describeQueryId != menuCascade_.queryId) // superseded by a newer open
             return;
         if (!menuDescribe->representativeOk)
             return;
         const size_t representativeClip = menuDescribe->representativeClip;
         const auto& groupChecks = menuDescribe->groupChecks;
+        const auto& groupOfClip = menuDescribe->groupOfClip;
 
         std::vector<int> appliedClipIds;
         if (!groupChecks.empty()) {
@@ -981,7 +1079,16 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
         startPickerDecorate(menuCascade_, menuDescribe->representativeStates);
     };
 
-    pickerWork_.submit(describeForMenu, openMenu);
+    // Several clips is a Python describe per shot, long enough on a big selection to
+    // owe the user a dialog — the same modal with a Cancel that the multi-clip
+    // commit puts up (startPickerCommit). It only shows past kProgressShowDelayMs,
+    // so a quick describe still just opens the menu.
+    runBackground(pickableClipIds.size() > 1,
+                  "Reading pickers (" + std::to_string(pickableClipIds.size()) + " clips)",
+                  describeForMenu, [openMenu](bool cancelled) {
+                      if (!cancelled)
+                          openMenu();
+                  });
 }
 
 // The values `key` currently takes across `clipIds`, deduplicated and in
@@ -1513,9 +1620,9 @@ void App::pollPickerDecorations() {
 }
 
 // Commit the navigated chain plus the final pick (`key`=`value`) to every clip the
-// cascade covers. The per-clip resolve chain (the Python-heavy part) runs off the
-// main thread — on pickerWork_ for one clip, and for several on the progress
-// worker, which puts a modal dialog with a Cancel in front of the wait; each
+// cascade covers. The per-clip resolve chain (the Python-heavy part) and the open
+// of each new media it lands on run off the main thread (runBackground: behind
+// the modal dialog with a Cancel for several clips, on pickerWork_ for one); each
 // clip's starting path is captured now on the main thread. The completion swaps
 // each clip's media on the main thread (replaceClipMedia touches the media pool /
 // undo / thumbnails, so it must not run on the worker).
@@ -1566,36 +1673,67 @@ void App::startPickerCommit(PickerCascade& c, const std::string& key, const std:
         return;
     }
     auto out = std::make_shared<std::vector<ClipResolve>>();
+    // The media the clips land on that the pool doesn't hold yet, opened on the
+    // worker (warmMedia). Should the pool gain one of them by the time apply runs,
+    // the pool's copy wins there.
+    auto warmed = std::make_shared<std::vector<std::shared_ptr<Media>>>();
+    auto pooled = std::make_shared<const std::set<std::string>>(pooledMediaIds());
+    const double fps = timeline_.fps;
 
     // The per-clip resolve. One Python round-trip per clip, two once the
     // top-of-picker step joins in, so a whole selection of them is long enough to
-    // owe the user a dialog: `pr` reports progress on the multi-clip path and is
-    // null on the single-clip one, which stays as immediate as it always was.
-    auto resolveAll = [starts, out, chain, commitKey, topKey](ProgressReporter* pr) {
+    // owe the user a dialog.
+    //
+    // Clips resolve on up to kResolveThreads threads at once. The time goes on NFS
+    // round trips (listdir / scandir / stat), and Python lets go of the GIL for
+    // each of those, so the clips' waits overlap even though only one thread runs
+    // Python at a time. Separate processes would gain nothing over that. Each
+    // thread takes the GIL per call (jplayResolvePath), and none is held here.
+    // Results keep the selection's order.
+    //
+    // Then the media they land on are opened here too: each open (directory scan,
+    // headers, get_path_values) is the same kind of NFS wait, and on the main
+    // thread it used to freeze the dialog at 100% for one open per clip.
+    auto resolveAll = [starts, out, warmed, pooled, fps, chain, commitKey,
+                       topKey](const TaskContext& ctx) {
+        constexpr size_t kResolveThreads = 8;
         const size_t n = starts->size();
-        for (size_t i = 0; i < n; ++i) {
-            if (pr) {
-                if (pr->cancelled())
-                    return;
-                pr->update((float)i / (float)n,
-                           "Resolving clip " + std::to_string(i + 1) + "/" + std::to_string(n));
-            }
+        std::vector<ClipResolve> res(n);
+        std::vector<char> ran; // a cancel leaves the rest unresolved
+        std::atomic<size_t> finished{ 0 };
+        ctx.update(0.f, "Resolving " + std::to_string(n) + " clips");
+        parallelFor(n, kResolveThreads, [&](size_t i) {
             const auto& s = (*starts)[i];
             std::string path;
             bool missed = false;
             bool ok = resolvePickerChain(s.from, chain, commitKey, path, &missed);
             if (ok)
                 path = topOfPicker(path, topKey); // no-op unless this is a multi-clip pick
-            out->push_back({ s.clipId, s.from, ok ? path : std::string(), ok, missed });
+            res[i] = { s.clipId, s.from, ok ? path : std::string(), ok, missed };
+            const size_t d = finished.fetch_add(1) + 1;
+            ctx.update((float)d / (float)n,
+                       "Resolved clip " + std::to_string(d) + "/" + std::to_string(n));
+        }, [&] { return ctx.stopped(); }, &ran);
+        std::vector<std::string> moved; // paths a clip will switch to
+        for (size_t i = 0; i < n; ++i) {
+            if (!ran[i])
+                continue;
+            if (res[i].ok && res[i].path != res[i].from)
+                moved.push_back(res[i].path);
+            out->push_back(std::move(res[i]));
         }
+        *warmed = warmMedia(moved, *pooled, fps, ctx);
     };
 
     // Apply what resolved -- on the main thread either way, since replaceClipMedia
     // touches the media pool / undo / thumbnails.
-    auto apply = [this, &c, id, key, value, out, onDone] {
+    auto apply = [this, &c, id, key, value, out, warmed, onDone] {
         if (id != c.queryId) // cancelled or superseded
             return;
         c.loading = false;
+        std::map<std::string, std::shared_ptr<Media>> warmedByPath;
+        for (const auto& m : *warmed)
+            warmedByPath[m->path()] = m;
 
         bool anyChanged = false;
         int missing = 0;    // the pick has no media for this clip: nothing loaded
@@ -1634,7 +1772,9 @@ void App::startPickerCommit(PickerCascade& c, const std::string& key, const std:
             if (sameAsNow) // already on it: the pick asked for nothing new
                 continue;
             const std::string before = clip->mediaId;
-            replaceClipMedia(*clip, r.path);
+            auto opened = warmedByPath.find(r.path);
+            replaceClipMedia(*clip, r.path,
+                             opened != warmedByPath.end() ? opened->second : nullptr);
             if (clip->mediaId == before) { // replace bailed (e.g. open failure)
                 ++openFailed;
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
@@ -1664,32 +1804,20 @@ void App::startPickerCommit(PickerCascade& c, const std::string& key, const std:
     };
 
     // Several clips is the slow case, so put a modal with a Cancel in front of it.
-    // beginProgress runs one task at a time; if something else already holds it,
-    // resolve on pickerWork_ as usual rather than dropping the commit.
-    if (multi && !progressActive()) {
-        auto cancelled = std::make_shared<bool>(false);
-        beginProgress("Switch Source: " + value +
-                          " (" + std::to_string(starts->size()) + " clips)",
-                      [resolveAll, cancelled](ProgressReporter& pr) {
-                          resolveAll(&pr);
-                          *cancelled = pr.cancelled();
-                      },
-                      [this, &c, id, apply, cancelled, onDone] {
-                          if (!*cancelled) {
-                              apply();
-                              return;
-                          }
-                          // Withdrawn mid-flight: nothing has been swapped yet (every
-                          // replaceClipMedia happens in apply), so the honest answer to a
-                          // cancelled request is to swap nothing at all.
-                          if (id == c.queryId)
-                              c.loading = false;
-                          setStatus("SWITCH CANCELLED");
-                          onDone();
-                      });
-    } else {
-        pickerWork_.submit([resolveAll](const std::atomic<bool>&) { resolveAll(nullptr); }, apply);
-    }
+    runBackground(multi, "Switch Source: " + value + " (" + std::to_string(starts->size()) + " clips)",
+                  resolveAll, [this, &c, id, apply, onDone](bool cancelled) {
+                      if (!cancelled) {
+                          apply();
+                          return;
+                      }
+                      // Withdrawn mid-flight: nothing has been swapped yet (every
+                      // replaceClipMedia happens in apply), so the honest answer to a
+                      // cancelled request is to swap nothing at all.
+                      if (id == c.queryId)
+                          c.loading = false;
+                      setStatus("SWITCH CANCELLED");
+                      onDone();
+                  });
 }
 
 // Switch `clipIds` to the media one picker pick names, synchronously. The
@@ -1706,53 +1834,74 @@ void App::startPickerCommit(PickerCascade& c, const std::string& key, const std:
 //   - clips whose pick resolves to the media they already have are reported as
 //     "unchanged" rather than counted as switched.
 //
-// Blocks for one resolve_path call per clip (each a directory scan), so a large
-// timeline takes a while — the same synchronous bargain App::controlOpen makes.
+// Blocks for one resolve_path call per clip (each a directory scan) plus an open
+// per new media — the same synchronous bargain App::controlOpen makes. Both run
+// several at once (parallelFor, warmMedia) so their NFS waits overlap, the way
+// startPickerCommit's worker does; the swaps stay on this thread, in order.
 std::vector<App::PickerSwitch> App::switchClipsByPicker(const std::string& key,
                                                         const std::string& value,
                                                         const std::vector<int>& clipIds) {
     std::vector<PickerSwitch> results;
     const std::vector<std::pair<std::string, std::string>> chain{ { key, value } };
 
-    bool anyChanged = false;
     for (int cid : clipIds) {
-        Clip* clip = timeline_.findClipById(cid);
+        const Clip* clip = timeline_.findClipById(cid);
         if (!clip || clip->mediaId.empty())
             continue;
         auto media = timeline_.findMediaById(clip->mediaId);
         if (!media)
             continue;
-
         PickerSwitch r;
         r.clipId = cid;
         r.from   = media->resolvedPath();
+        results.push_back(std::move(r));
+    }
 
-        std::string resolved;
-        if (!resolvePickerChain(r.from, chain, /*commitKey=*/std::string(), resolved)
-            || resolved.empty()) {
+    // The resolves: Python via the GIL per call, no App state. Empty on a miss.
+    constexpr size_t kResolveThreads = 8;
+    std::vector<std::string> resolved(results.size());
+    parallelFor(results.size(), kResolveThreads, [&](size_t i) {
+        std::string path;
+        if (resolvePickerChain(results[i].from, chain, /*commitKey=*/std::string(), path))
+            resolved[i] = std::move(path);
+    }, [] { return false; });
+
+    std::vector<std::string> moved; // paths a clip will switch to
+    for (size_t i = 0; i < results.size(); ++i)
+        if (!resolved[i].empty() && resolved[i] != results[i].from)
+            moved.push_back(resolved[i]);
+    std::map<std::string, std::shared_ptr<Media>> warmedByPath;
+    for (auto& m : warmMedia(moved, pooledMediaIds(), timeline_.fps, TaskContext(nullptr, nullptr)))
+        warmedByPath[m->path()] = std::move(m);
+
+    bool anyChanged = false;
+    for (size_t i = 0; i < results.size(); ++i) {
+        PickerSwitch& r = results[i];
+        if (resolved[i].empty()) {
             r.note = "no media for " + key + "=" + value;
-            results.push_back(std::move(r));
             continue;
         }
-        if (resolved == r.from) {
-            r.to = resolved;
+        if (resolved[i] == r.from) {
+            r.to = resolved[i];
             r.note = "already on this source";
-            results.push_back(std::move(r));
             continue;
         }
-
+        Clip* clip = timeline_.findClipById(r.clipId);
+        if (!clip)
+            continue;
         const std::string before = clip->mediaId;
-        replaceClipMedia(*clip, resolved);
+        auto opened = warmedByPath.find(resolved[i]);
+        replaceClipMedia(*clip, resolved[i],
+                         opened != warmedByPath.end() ? opened->second : nullptr);
         if (clip->mediaId == before) {
             // replaceClipMedia bails without swapping when the new media won't
             // open; it has already reported why in the status line.
-            r.note = "failed to open " + resolved;
+            r.note = "failed to open " + resolved[i];
         } else {
-            r.to = resolved;
+            r.to = resolved[i];
             r.switched = true;
             anyChanged = true;
         }
-        results.push_back(std::move(r));
     }
 
     // Same follow-up the interactive commit does: a new source means a new
@@ -1822,29 +1971,26 @@ void App::openClipRightClickMenu(const Clip& clip, float mx, float my, bool grow
         openClipContextMenu(clip, mx, my, growDown);
 }
 
-void App::replaceClipMedia(Clip& clip, const std::string& newPath) {
+void App::replaceClipMedia(Clip& clip, const std::string& newPath,
+                           std::shared_ptr<Media> opened) {
     ClipType type = ImageSeq::isSequencePath(newPath) ? ClipType::ImageSequence : ClipType::Video;
 
-    // Reuse an existing pool entry; otherwise create and open new media.
+    // Reuse an existing pool entry; otherwise take the one opened off-thread, or
+    // create and open new media here.
     auto media = timeline_.findMediaByPath(type, newPath);
+    if (!media && opened && opened->type() == type && opened->path() == newPath)
+        media = std::move(opened);
     if (!media) {
-        media = std::make_shared<Media>(type, newPath);
         std::string err;
-        if (!media->ensureOpen(err)) {
+        media = openMediaForPath(newPath, type, timeline_.fps, err);
+        if (!media) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to open %s: %s",
                         newPath.c_str(), err.c_str());
             setStatusWarn("FAILED TO OPEN " + fileLabel(newPath) + ": " + err);
             return;
         }
-        media->refreshMetadata();
-        {
-            std::map<std::string, std::string> vals;
-            jplayGetPathValues(newPath, vals);
-            for (auto& kv : vals)
-                media->setMetaValue(kv.first, std::move(kv.second));
-        }
-        timeline_.media[media->id()] = media;
     }
+    adoptMedia({ media });
     int64_t newFrames = std::max<int64_t>(media->info().frameCount, 1);
 
     std::string oldId = clip.mediaId;

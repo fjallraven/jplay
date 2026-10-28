@@ -155,9 +155,12 @@ bool jplayGetPathValues(const std::string& path,
 // path is what keeps that from dominating. A path the callback raises on gets an
 // empty map and does not abort the rest. Returns true if the callback ran (even
 // when every path came back empty); false if Python is not ready or the callback
-// is not registered.
+// is not registered. `beforePath`, when given, is called with the GIL held before
+// each path with its index — for progress reporting — and returning false stops
+// the batch there, leaving the remaining maps empty.
 bool jplayGetPathValues(const std::vector<std::string>& paths,
-                        std::vector<std::map<std::string, std::string>>& out);
+                        std::vector<std::map<std::string, std::string>>& out,
+                        const std::function<bool(size_t)>& beforePath = {});
 
 // The structural sequence/shot/department a media path resolves to (calls
 // get_path_context({"path": path})). Unlike get_path_values, this reports the

@@ -13,6 +13,7 @@
 #include "ImageSeq.h"
 #include "Layout.h"
 #include "MediaScan.h"
+#include "ParallelFor.h"
 #include "Preferences.h"
 #include "PythonBridge.h"
 #include "PythonStartup.h" // jplayPythonReady, for the deferred metadata tagging
@@ -25,6 +26,7 @@
 #include <cmath>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <thread>
 
 using namespace jplay;
@@ -4729,26 +4731,15 @@ void App::onDropText(const std::string& text, float x, float y) {
         bool cancelled = false;
     };
     auto q = std::make_shared<DropQuery>();
+    auto pooled = std::make_shared<const std::set<std::string>>(pooledMediaIds());
 
-    beginProgress("Resolving drop", [text, mode, fps, q](ProgressReporter& pr) {
+    beginProgress("Resolving drop", [text, mode, fps, q, pooled](ProgressReporter& pr) {
         pr.update(-1.f, "Looking up dropped item");
         q->claimed = jplayResolveDropText(text, mode, q->res, &pr);
-        for (size_t i = 0; i < q->res.paths.size() && !pr.cancelled(); ++i) {
-            pr.update(float(i) / float(q->res.paths.size()),
-                      "Opening source " + std::to_string(i + 1) + " of " +
-                          std::to_string(q->res.paths.size()));
-            std::string err;
-            auto media = openMediaForPath(q->res.paths[i], mediaTypeForPath(q->res.paths[i]),
-                                          fps, err, &q->deferredPathValues);
-            if (media)
-                q->warmed.push_back(std::move(media));
-            else
-                // The add loop calls ensureMedia for this path like any other,
-                // fails the same way and posts the status message from the main
-                // thread; nothing to report from here.
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "[drop] could not open %s: %s",
-                            q->res.paths[i].c_str(), err.c_str());
-        }
+        // A path that won't open is left to the add loop, whose ensureMedia fails
+        // the same way and posts the status message from the main thread.
+        q->warmed = warmMedia(q->res.paths, *pooled, fps, TaskContext(nullptr, &pr),
+                              &q->deferredPathValues);
         // The callback reports progress per batch of versions and stops at the
         // first one it starts after Cancel, so what came back is a partial answer
         // to a question the user withdrew -- not media to add.
@@ -5088,6 +5079,54 @@ std::shared_ptr<Media> App::openMediaForPath(const std::string& path, ClipType t
     return media;
 }
 
+std::set<std::string> App::pooledMediaIds() const {
+    std::set<std::string> ids;
+    for (const auto& kv : timeline_.media)
+        if (kv.second)
+            ids.insert(kv.first);
+    return ids;
+}
+
+// Each open is a directory scan, a header read and a get_path_values call: NFS
+// round trips, with the GIL let go for each, so several at once overlap their
+// waits. A path listed twice is opened once. Results keep `paths`' order.
+std::vector<std::shared_ptr<Media>> App::warmMedia(const std::vector<std::string>& paths,
+                                                   const std::set<std::string>& skipIds,
+                                                   double audioFps, const TaskContext& ctx,
+                                                   bool* deferredPathValues) {
+    constexpr size_t kWarmThreads = 8;
+    std::vector<std::string> todo;
+    std::set<std::string> seen;
+    for (const std::string& path : paths) {
+        const std::string id = Media::generateId(mediaTypeForPath(path), path);
+        if (!skipIds.count(id) && seen.insert(id).second)
+            todo.push_back(path);
+    }
+    const size_t n = todo.size();
+    std::vector<std::shared_ptr<Media>> opened(n);
+    std::atomic<size_t> finished{ 0 };
+    std::atomic<bool> deferred{ false };
+    if (n)
+        ctx.update(0.f, "Opening " + std::to_string(n) + (n == 1 ? " source" : " sources"));
+    parallelFor(n, kWarmThreads, [&](size_t i) {
+        std::string err;
+        bool mine = false; // openMediaForPath's flag, per thread
+        opened[i] = openMediaForPath(todo[i], mediaTypeForPath(todo[i]), audioFps, err, &mine);
+        if (!opened[i])
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "[jplay] could not open %s: %s",
+                        todo[i].c_str(), err.c_str());
+        if (mine)
+            deferred.store(true, std::memory_order_relaxed);
+        const size_t d = finished.fetch_add(1) + 1;
+        ctx.update((float)d / (float)n,
+                   "Opened source " + std::to_string(d) + " of " + std::to_string(n));
+    }, [&] { return ctx.stopped(); });
+    if (deferredPathValues && deferred.load(std::memory_order_relaxed))
+        *deferredPathValues = true;
+    opened.erase(std::remove(opened.begin(), opened.end(), nullptr), opened.end());
+    return opened;
+}
+
 void App::adoptMedia(const std::vector<std::shared_ptr<Media>>& warmed,
                      bool deferredPathValues) {
     for (const auto& media : warmed)
@@ -5424,51 +5463,32 @@ void App::findAndAttachAudioAll(const std::vector<int>* onlyClipIds) {
             // spread over the same threads.
             const size_t n = candidates->size();
             std::vector<char> ok(n, 0);
-            std::atomic<size_t> next{ 0 };
             std::atomic<size_t> done{ 0 };
-            const size_t nthreads = std::min<size_t>(n, 16);
-            auto worker = [&] {
-                for (;;) {
-                    if (pr.cancelled())
-                        return;
-                    const size_t i = next.fetch_add(1, std::memory_order_relaxed);
-                    if (i >= n)
-                        return;
-                    std::string err;
-                    auto asrc = AudioSource::open((*candidates)[i].audioPath, err);
-                    if (!asrc) {
-                        std::string alt;
-                        int64_t altOffset = 0;
-                        if (jplayDeriveAudio((*candidates)[i].target.path, alt, altOffset,
-                                             /*allowScan=*/true) &&
-                            alt != (*candidates)[i].audioPath) {
-                            asrc = AudioSource::open(alt, err);
-                            if (asrc) {
-                                (*candidates)[i].audioPath   = std::move(alt);
-                                (*candidates)[i].audioOffset = altOffset;
-                            }
+            parallelFor(n, 16, [&](size_t i) {
+                std::string err;
+                auto asrc = AudioSource::open((*candidates)[i].audioPath, err);
+                if (!asrc) {
+                    std::string alt;
+                    int64_t altOffset = 0;
+                    if (jplayDeriveAudio((*candidates)[i].target.path, alt, altOffset,
+                                         /*allowScan=*/true) &&
+                        alt != (*candidates)[i].audioPath) {
+                        asrc = AudioSource::open(alt, err);
+                        if (asrc) {
+                            (*candidates)[i].audioPath   = std::move(alt);
+                            (*candidates)[i].audioOffset = altOffset;
                         }
                     }
-                    if (asrc) {
-                        (*candidates)[i].durationSec = asrc->durationSeconds();
-                        ok[i] = 1;
-                    }
-                    done.fetch_add(1, std::memory_order_relaxed);
                 }
-            };
-            std::vector<std::thread> pool;
-            pool.reserve(nthreads);
-            for (size_t t = 0; t < nthreads; ++t)
-                pool.emplace_back(worker);
-            while (done.load(std::memory_order_relaxed) < n && !pr.cancelled()) {
-                const size_t d = done.load(std::memory_order_relaxed);
-                pr.update(0.5f + 0.5f * (float)d / (float)(n ? n : 1),
+                if (asrc) {
+                    (*candidates)[i].durationSec = asrc->durationSeconds();
+                    ok[i] = 1;
+                }
+                const size_t d = done.fetch_add(1, std::memory_order_relaxed) + 1;
+                pr.update(0.5f + 0.5f * (float)d / (float)n,
                           "Probing audio files (" + std::to_string(d) + "/" +
                           std::to_string(n) + ")…");
-                std::this_thread::sleep_for(std::chrono::milliseconds(30));
-            }
-            for (std::thread& th : pool)
-                th.join();
+            }, [&] { return pr.cancelled(); });
 
             for (size_t i = 0; i < n; ++i)
                 if (ok[i])

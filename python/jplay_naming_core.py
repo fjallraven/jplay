@@ -29,6 +29,7 @@ changes. Prefer the config, then a callback override, then this."""
 
 import os
 import re
+import sys
 import time
 import traceback
 import configparser
@@ -369,6 +370,57 @@ def _only_project_doc_path_in(directory):
 
 
 _PROJECT_PATH_CACHE = {}
+_AUTOFS_DIRS = None
+_PROJECT_DOC_RESOLVER = None
+
+
+def set_project_doc_resolver(resolver):
+    """Let a site answer _nearest_project_doc_path from the path alone, for the
+    trees whose layout it knows. `resolver(directory)` gets the _norm'd directory
+    and returns the governing document's path, "" when it knows none governs it,
+    or None to leave that directory to the disk walk. Pass None to remove it.
+
+    The walk stats two candidates and lists every level from the directory up to
+    the first document; on network storage, a deep tree that holds no document
+    anywhere pays that per uncached level, seconds per media. A site whose
+    projects publish their documents elsewhere (or not at all) knows that answer
+    without asking the disk."""
+    global _PROJECT_DOC_RESOLVER
+    _PROJECT_DOC_RESOLVER = resolver
+
+
+def _autofs_dirs():
+    """Roots of indirect autofs maps, read once from /proc/self/mounts. Linux
+    only: everywhere else the set is empty and the walk probes every level.
+
+    Such a directory holds only the map's keys, each a mount of its own, never a
+    file, so no project document can live there. Probing one for
+    "{dir}/{name}.jpproj" is still not free: every miss is a map lookup by the
+    automounter, which can take the better part of a second or more, and is
+    cached only for autofs's negative_timeout (60 s by default). The walk below
+    reaches the map root for every path under it, so on the first launch in a
+    minute that lookup landed on the UI thread ahead of the first picture.
+
+    Direct and offset triggers are left out: once mounted they are ordinary
+    directories with files in them, and this set is read only once."""
+    global _AUTOFS_DIRS
+    if _AUTOFS_DIRS is None and not sys.platform.startswith("linux"):
+        _AUTOFS_DIRS = frozenset()
+    if _AUTOFS_DIRS is None:
+        roots = set()
+        try:
+            with open("/proc/self/mounts") as f:
+                for line in f:
+                    fields = line.split()
+                    if (len(fields) >= 4 and fields[2] == "autofs"
+                            and "indirect" in fields[3].split(",")):
+                        # Octal escapes (\040 for a space) as the kernel writes them.
+                        roots.add(re.sub(r"\\([0-7]{3})",
+                                         lambda m: chr(int(m.group(1), 8)), fields[1]))
+        except OSError:
+            pass
+        _AUTOFS_DIRS = frozenset(roots)
+    return _AUTOFS_DIRS
 
 
 def clear_path_caches():
@@ -379,10 +431,19 @@ def clear_path_caches():
     _PROJECT_PATH_CACHE.clear()
 
 
-def _nearest_project_doc_path(directory):
+def _nearest_project_doc_path(directory, media_dir=False):
     """_norm'd path of the project document governing `directory`: the nearest
     ancestor (itself included) publishing one, or None when no ancestor publishes
     any.
+
+    `media_dir` says `directory` is the one a media file sits in, and that the
+    caller can do without an oddly named document there. Its own level then gets
+    the self-named probe only, not the directory scan: a frame-sequence folder
+    holds every frame of the run, and listing it over the network costs seconds.
+    _match_dir asks this way, since its floor only matters above the media
+    folder; get_project_path_from_media does not, as a document beside the media
+    is still its project. The skipped answer is cached under its own key, so it
+    never stands in for a full one.
 
     Within one directory the self-named spelling wins — "{dir}/{basename(dir)}"
     with ".jpproj" preferred over ".otio" — and a document named anything else is
@@ -405,17 +466,25 @@ def _nearest_project_doc_path(directory):
     """
     if directory in _PROJECT_PATH_CACHE:
         return _PROJECT_PATH_CACHE[directory]
+    if media_dir and (directory, "media") in _PROJECT_PATH_CACHE:
+        return _PROJECT_PATH_CACHE[(directory, "media")]
+    if _PROJECT_DOC_RESOLVER is not None:
+        resolved = _PROJECT_DOC_RESOLVER(directory)
+        if resolved is not None:
+            _PROJECT_PATH_CACHE[directory] = resolved or None
+            return resolved or None
 
     walked = directory
     seen = []           # levels still waiting on an answer, nearest first
     found = None
+    scan_skipped = False  # the media folder's own scan, see `media_dir`
     while walked:
         if walked in _PROJECT_PATH_CACHE:
             found = _PROJECT_PATH_CACHE[walked]   # an earlier walk already settled this level
             break
         seen.append(walked)
         name = os.path.basename(walked)
-        if name:
+        if name and walked not in _autofs_dirs():   # see _autofs_dirs
             for ext in (".jpproj", ".otio"):
                 candidate = f"{walked}/{name}{ext}"
                 if os.path.isfile(candidate):
@@ -423,7 +492,8 @@ def _nearest_project_doc_path(directory):
                     break
             if found:
                 break
-            unnamed = _only_project_doc_path_in(walked)
+            scan_skipped = media_dir and walked == directory
+            unnamed = None if scan_skipped else _only_project_doc_path_in(walked)
             if unnamed:
                 found = unnamed
                 break
@@ -435,18 +505,19 @@ def _nearest_project_doc_path(directory):
     # Every level walked shares the answer: a document found above governs them all,
     # and finding none above means none of them has one either.
     for level in seen:
-        _PROJECT_PATH_CACHE[level] = found
+        skipped = scan_skipped and level == directory
+        _PROJECT_PATH_CACHE[(level, "media") if skipped else level] = found
     return found
 
 
-def _project_root(directory):
+def _project_root(directory, media_dir=False):
     """Path of the directory `_nearest_project_doc_path` found its document in,
     or None."""
-    doc = _nearest_project_doc_path(directory)
+    doc = _nearest_project_doc_path(directory, media_dir)
     return doc.rpartition("/")[0] if doc else None
 
 
-def _match_dir(dirpath_norm):
+def _match_dir(dirpath_norm, media_dir=False):
     """First [dir:*] template matching an absolute directory path. Returns
     (match, template) or (None, None). Spans in the match index into
     `dirpath_norm`.
@@ -472,7 +543,7 @@ def _match_dir(dirpath_norm):
     match here says only how many levels are present, not that they mean what they
     are called; that is why _eff_kind prefers a filename group over this.
     """
-    root = _project_root(dirpath_norm)
+    root = _project_root(dirpath_norm, media_dir)  # media_dir: see _nearest_project_doc_path
     pos = 0 if root is None else len(root) + 1
     if pos >= len(dirpath_norm) and dirpath_norm:
         return None, None  # the media sits in the project root itself
@@ -538,7 +609,7 @@ def _analyze(path):
     info.directory = directory
     info.base = base
     info.fm, info.fname = _match_file(base)
-    info.dm, info.dtmpl = _match_dir(directory)
+    info.dm, info.dtmpl = _match_dir(directory, media_dir=_is_media(base))
     return info
 
 

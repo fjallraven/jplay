@@ -2560,7 +2560,10 @@ private:
     void openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my);
     // Swap `clip`'s media to `newPath`, matching the previous clip span where the
     // new media allows, and dropping the old media from the pool if now unused.
-    void replaceClipMedia(Clip& clip, const std::string& newPath);
+    // `opened`, when given, is `newPath`'s media already opened off the main thread
+    // (warmMedia, from startPickerCommit), used if the pool doesn't hold that path.
+    void replaceClipMedia(Clip& clip, const std::string& newPath,
+                          std::shared_ptr<Media> opened = nullptr);
     void openProjectDialog(); // pick a .jpproj or .otio; the extension picks the loader
     void saveProjectDialog();
     void saveProjectQuick(); // overwrite current file, or prompt if never saved
@@ -2671,6 +2674,16 @@ private:
                                                    bool* deferredPathValues = nullptr);
     void adoptMedia(const std::vector<std::shared_ptr<Media>>& warmed,
                     bool deferredPathValues = false);
+    // Off the main thread: openMediaForPath every distinct path in `paths` whose
+    // media id isn't in `skipIds` (see pooledMediaIds), several at once, for the
+    // main thread to adoptMedia afterwards. A path that won't open is logged and
+    // left out; the main thread's own ensureMedia then fails on it the same way
+    // and says so. Stops starting opens once `ctx` is stopped.
+    static std::vector<std::shared_ptr<Media>> warmMedia(const std::vector<std::string>& paths,
+                                                         const std::set<std::string>& skipIds,
+                                                         double audioFps, const TaskContext& ctx,
+                                                         bool* deferredPathValues = nullptr);
+    std::set<std::string> pooledMediaIds() const; // main thread; for warmMedia's skipIds
     // Add one media file as a clip on `track`. A negative `track` auto-picks a
     // suitable row (first matching-type or empty track). An explicit `track` whose
     // existing type conflicts with the file's kind is rejected (empty tracks accept
@@ -3596,6 +3609,14 @@ private:
     void beginProgress(const std::string& title,
                        std::function<void(ProgressReporter&)> work,
                        std::function<void()> onDone);
+    // Run `work` off the main thread, behind the modal progress dialog when
+    // `modal` is set and the dialog is free, and on pickerWork_ otherwise (a busy
+    // dialog falls back to the queue rather than dropping the work). `done` runs on
+    // the main thread afterwards, told whether the user cancelled the dialog;
+    // work dropped by pickerWork_.reset() never reaches it.
+    void runBackground(bool modal, const std::string& title,
+                       std::function<void(const TaskContext&)> work,
+                       std::function<void(bool cancelled)> done);
     void pollProgress();                          // main loop: finalize a finished worker
     void handleProgressEvent(const SDL_Event& e); // consume input while the dialog is up
     void renderProgressOverlay();                 // draw the modal overlay (call last)

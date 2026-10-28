@@ -59,3 +59,30 @@ private:
     mutable std::mutex mtx_;
     std::string message_;
 };
+
+// What a piece of background work sees of whichever runner it is on (see
+// App::runBackground): one stop check and one progress sink. Behind the modal
+// dialog both come from its ProgressReporter; on a WorkQueue the stop is the
+// queue's reset flag and there is no bar, so update() does nothing. The work
+// itself never has to ask which it got.
+class TaskContext {
+public:
+    TaskContext(const std::atomic<bool>* stop, ProgressReporter* reporter)
+        : stop_(stop), reporter_(reporter) {}
+
+    bool stopped() const {
+        return (stop_ && stop_->load(std::memory_order_relaxed)) ||
+               (reporter_ && reporter_->cancelled());
+    }
+    void update(float fraction, const std::string& message = std::string()) const {
+        if (reporter_)
+            reporter_->update(fraction, message);
+    }
+    // For Python callbacks that take a jplay.Progress of their own; null when
+    // there is no dialog.
+    ProgressReporter* reporter() const { return reporter_; }
+
+private:
+    const std::atomic<bool>* stop_;
+    ProgressReporter* reporter_;
+};

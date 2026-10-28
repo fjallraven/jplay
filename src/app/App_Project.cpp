@@ -11,6 +11,7 @@
 #include "Layout.h"
 #include "OtioExport.h"
 #include "OtioImport.h"
+#include "ParallelFor.h"
 #include "Preferences.h"
 #include "Project.h"
 #include "SkinColors.h"
@@ -468,7 +469,7 @@ void App::loadOtio(const std::string& path, bool shared) {
 //
 // Both halves are slow on a network share (a full tree walk, then one decoder
 // open per shot), so they run on the progress worker: the Python walk reports
-// the directory it is visiting, the open loop reports "n/total", and Cancel
+// the directory it is visiting, the parallel opens report "n/total", and Cancel
 // aborts either. Everything that touches the app's state — tearing down the
 // previous project's background jobs and swapping the timeline in — happens in
 // the completion on the main thread, so a cancelled or empty scan leaves the
@@ -494,46 +495,61 @@ void App::createProjectFromDirectory(const std::string& root) {
             if (!out->inspectOk || pr.cancelled())
                 return;
 
+            // The opens, several at once: each is a directory scan, a header read
+            // and a get_path_values call, NFS waits that overlap across threads
+            // (Python lets go of the GIL for each). Null where a media won't open.
+            constexpr size_t kOpenThreads = 8;
+            const size_t total = discovered.size();
+            std::vector<std::shared_ptr<Media>> opened(total);
+            std::atomic<size_t> finished{ 0 };
+            pr.update(0.f, "Opening " + std::to_string(total) + " media");
+            parallelFor(total, kOpenThreads, [&](size_t i) {
+                const DiscoveredShot& ds = discovered[i];
+                ClipType type = ImageSeq::isSequencePath(ds.path) ? ClipType::ImageSequence
+                                                                 : ClipType::Video;
+                auto media = std::make_shared<Media>(type, ds.path);
+                if (media->refreshMetadata()) { // need the frame count now to lay clips out
+                    media->setName(!ds.shot.empty() ? ds.shot
+                                                    : fs::path(ds.path).stem().string());
+                    // Every naming-convention value the path carries, rather than a
+                    // fixed department/version/asset triple: which groups a path fills
+                    // is the convention's business, so a take-named tree would
+                    // otherwise get its tag written under `version` with `take` left
+                    // unset, and a department living in the filename would be lost.
+                    // The mismatch desyncs pickerDivergenceIndex until the Component
+                    // Picker re-reads the path for itself. Same loop as unpackClip's.
+                    std::map<std::string, std::string> vals;
+                    jplayGetPathValues(media->resolvedPath(), vals);
+                    for (auto& kv : vals)
+                        media->setMetaValue(kv.first, std::move(kv.second));
+                    opened[i] = std::move(media);
+                } else {
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                                "[create-from-dir] cannot open, skipping: %s", ds.path.c_str());
+                }
+                const size_t d = finished.fetch_add(1) + 1;
+                pr.update((float)d / (float)total,
+                          "Opened " + std::to_string(d) + "/" + std::to_string(total) + ": " +
+                              fs::path(ds.path).filename().string());
+            }, [&] { return pr.cancelled(); });
+            if (pr.cancelled()) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                            "[create-from-dir] cancelled after %zu/%zu media",
+                            finished.load(), total);
+                return;
+            }
+
+            // The layout, in discovery order.
             Timeline& tl = out->tl;
             int64_t cursor = 0;
             std::string curSeqName;
             bool haveSeq = false;
-            size_t index = 0;
 
-            for (const auto& ds : discovered) {
-                if (pr.cancelled()) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                                "[create-from-dir] cancelled after %zu/%zu media",
-                                index, discovered.size());
-                    return;
-                }
-                ++index;
-                pr.update((float)index / (float)discovered.size(),
-                          "Opening " + std::to_string(index) + "/" +
-                          std::to_string(discovered.size()) + ": " +
-                          fs::path(ds.path).filename().string());
-
-                ClipType type = ImageSeq::isSequencePath(ds.path) ? ClipType::ImageSequence
-                                                                 : ClipType::Video;
-
-                auto media = std::make_shared<Media>(type, ds.path);
-                if (!media->refreshMetadata()) { // need the frame count now to lay clips out
-                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                                "[create-from-dir] cannot open, skipping: %s", ds.path.c_str());
+            for (size_t i = 0; i < total; ++i) {
+                const DiscoveredShot& ds = discovered[i];
+                const std::shared_ptr<Media>& media = opened[i];
+                if (!media)
                     continue;
-                }
-                media->setName(!ds.shot.empty() ? ds.shot : fs::path(ds.path).stem().string());
-                // Every naming-convention value the path carries, rather than a
-                // fixed department/version/asset triple: which groups a path fills is
-                // the convention's business, so a take-named tree would otherwise get
-                // its tag written under `version` with `take` left unset, and a
-                // department living in the filename would be lost. The mismatch
-                // desyncs pickerDivergenceIndex until the Component Picker re-reads
-                // the path for itself. Same loop as unpackClip's.
-                std::map<std::string, std::string> vals;
-                jplayGetPathValues(media->resolvedPath(), vals);
-                for (auto& kv : vals)
-                    media->setMetaValue(kv.first, std::move(kv.second));
                 int64_t frames = std::max<int64_t>(media->info().frameCount, 1);
                 if (jplayDebugLogging())
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -2104,6 +2120,23 @@ void App::beginProgress(const std::string& title,
         work(progress_);
         progressWorkerDone_.store(true, std::memory_order_release);
     });
+}
+
+// The one place that chooses between the dialog and the picker queue, so work
+// that may or may not owe the user a dialog is written once against TaskContext.
+// The cancel is read in the completion, before anything resets progress_.
+void App::runBackground(bool modal, const std::string& title,
+                        std::function<void(const TaskContext&)> work,
+                        std::function<void(bool cancelled)> done) {
+    if (modal && !progressActive()) {
+        beginProgress(title,
+                      [work](ProgressReporter& pr) { work(TaskContext(nullptr, &pr)); },
+                      [this, done] { done(progress_.cancelled()); });
+        return;
+    }
+    pickerWork_.submit(
+        [work](const std::atomic<bool>& stop) { work(TaskContext(&stop, nullptr)); },
+        [done] { done(false); });
 }
 
 // Called every frame from the run loop: when the worker has finished, join it and

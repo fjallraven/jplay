@@ -439,7 +439,8 @@ bool jplayGetPathValues(const std::string& path,
 }
 
 bool jplayGetPathValues(const std::vector<std::string>& paths,
-                        std::vector<std::map<std::string, std::string>>& out) {
+                        std::vector<std::map<std::string, std::string>>& out,
+                        const std::function<bool(size_t)>& beforePath) {
     out.assign(paths.size(), {});
     if (!jplayPythonReady() || paths.empty())
         return false;
@@ -450,6 +451,8 @@ bool jplayGetPathValues(const std::vector<std::string>& paths,
         if (it == registry.end())
             return false;
         for (size_t i = 0; i < paths.size(); ++i) {
+            if (beforePath && !beforePath(i))
+                break;
             // Per-path guard: one unrecognised path must cost its own values only,
             // not every path queued behind it.
             try {
