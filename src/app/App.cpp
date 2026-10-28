@@ -2051,7 +2051,10 @@ void App::handleEvent(SDL_Event& e) {
     if (appIconHandleEvent(e))
         return;
     // The clip right-click popup is top-most: let it consume events first (it
-    // only claims them while open).
+    // only claims them while open). Flown out of the clip popup, the picker table
+    // shares the events with it instead.
+    if (routeClipFlyoutEvent(e))
+        return;
     if (clipMenu_.handleEvent(e))
         return;
     if (clipToolboxMenu_.handleEvent(e))
@@ -3954,6 +3957,8 @@ bool App::pointOverOpenMenu(float x, float y) const {
         (ocioLookMenuOpen_     && in(ocioLookMenuRect_)) ||
         (ocioInputCsMenuOpen_  && in(ocioInputCsMenuRect_)))
         return true;
+    if (pickerFlyoutLoadingRect_.w > 0.0f && in(pickerFlyoutLoadingRect_))
+        return true;
     return clipMenu_.pointInPopup(x, y) || clipToolboxMenu_.pointInPopup(x, y) ||
            fitMenu_.pointInPopup(x, y) || trackMenu_.pointInPopup(x, y) ||
            rulerMenu_.pointInPopup(x, y) ||
@@ -4463,6 +4468,7 @@ void App::render() {
     clipMenu_.render(renderer_);                               // clip right-click popup, top-most
     renderPickerLoading(menuCascade_, clipMenu_.tableBounds()); // LOADING over a just-clicked picker column
     clipToolboxMenu_.render(renderer_);                        // info-bar toolbox popup, top-most
+    renderPickerFlyoutLoading();                               // its picker flyout, while it loads
     fitMenu_.render(renderer_);                                // info-bar zoom-fit popup, top-most
     trackMenu_.render(renderer_);                              // track-header burger popup, top-most
     rulerMenu_.render(renderer_);                              // ruler right-click export popup, top-most

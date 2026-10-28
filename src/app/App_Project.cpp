@@ -2127,7 +2127,8 @@ void App::beginProgress(const std::string& title,
 // The cancel is read in the completion, before anything resets progress_.
 void App::runBackground(bool modal, const std::string& title,
                         std::function<void(const TaskContext&)> work,
-                        std::function<void(bool cancelled)> done) {
+                        std::function<void(bool cancelled)> done,
+                        std::shared_ptr<ProgressReporter> reporter) {
     if (modal && !progressActive()) {
         beginProgress(title,
                       [work](ProgressReporter& pr) { work(TaskContext(nullptr, &pr)); },
@@ -2135,7 +2136,9 @@ void App::runBackground(bool modal, const std::string& title,
         return;
     }
     pickerWork_.submit(
-        [work](const std::atomic<bool>& stop) { work(TaskContext(&stop, nullptr)); },
+        [work, reporter](const std::atomic<bool>& stop) {
+            work(TaskContext(&stop, reporter.get()));
+        },
         [done] { done(false); });
 }
 

@@ -2139,6 +2139,17 @@ private:
     PickerCascade panelCascade_;
     float pickerMenuX_ = 0, pickerMenuY_ = 0; // clipMenu_ anchor
     bool pickerMenuGrowDown_ = false;          // anchor is the table's top, not its bottom
+    // The clip popup's "Switch Source" row the table hangs off when it was opened
+    // as that row's flyout (empty otherwise: centered on the anchor). While set,
+    // the two popups act as one menu: see routeClipFlyoutEvent.
+    SDL_FRect pickerMenuBeside_{};
+    bool pickerFlyout_ = false;
+    // The flyout's describe in flight: its progress, shown beside the row in place
+    // of the table once it has run past kProgressShowDelayMs (null otherwise), and
+    // where that panel was last drawn, for the hit tests (empty when it isn't).
+    std::shared_ptr<ProgressReporter> pickerFlyoutProgress_;
+    uint64_t pickerFlyoutStart_ = 0;
+    SDL_FRect pickerFlyoutLoadingRect_{};
 
     // One picker as a view sees it, derived from the cascade + a describe_pickers
     // result by buildPickerColumns(). The clip menu maps these to table columns,
@@ -2153,7 +2164,7 @@ private:
 
     // Info-bar toolbox popup: clip-level actions, opened from the toolbox icon
     // left of "Show in Sequence". Grows upward from the button. Also carries the
-    // clip right-click menu, which adds the Clip Range header band below.
+    // clip right-click menu, whose "Source Range" row flies out the Clip Range panel.
     ContextMenu clipToolboxMenu_;
 
     // Info-bar zoom-fit popup, opened from the caret on the "Fit" button. Grows
@@ -2168,7 +2179,7 @@ private:
     // audio), opened at the cursor. See openRulerMenu.
     ContextMenu rulerMenu_;
 
-    // "Clip Range" header on the clip right-click popup: a ruler showing the cut
+    // "Clip Range" panel on the clip right-click popup: a ruler showing the cut
     // range within the full source, editable in/out fields, and the two range
     // presets. -1 when the popup has no range section (a clip whose media is
     // gone). Frame values are shown in media numbering — the
@@ -2513,6 +2524,10 @@ private:
     // flight (no-op otherwise). Used over the clip menu's table only; the
     // Clip Source panel deliberately shows no overlay.
     void renderPickerLoading(const PickerCascade& c, const SDL_FRect& bounds);
+    // The picker flyout's describe running slow: a small panel beside the clip
+    // popup's "Switch Source" row with its message and progress bar, standing in
+    // for the table until it opens.
+    void renderPickerFlyoutLoading();
     // "Unpack Clip": for every option of picker `key` other than the clip's
     // current one, add a new clip mirroring the source clip's span but with its
     // media resolved to that option, stacked on the first free track below.
@@ -2534,7 +2549,7 @@ private:
     // Clip-actions popup (copy / copy source path / paste / unpack), anchored at
     // the cursor. Copy and paste act on the selection, like Ctrl+C / Ctrl+V.
     void openClipContextMenu(const Clip& clip, float mx, float my, bool growDown);
-    // The popup's Clip Range band: drawn into / driven by the box ContextMenu
+    // The popup's Clip Range panel: drawn into / driven by the box ContextMenu
     // reserves for it. handleEvent returns true when the band consumed the event.
     struct ClipRangeLayout {
         SDL_FRect title, ruler, ends, inField, outField, srcBtn, shotBtn;
@@ -2558,14 +2573,25 @@ private:
     // first clip as the representative for building columns; the final commit
     // applies the navigated chain to every listed clip. Several clips also stop
     // the menu at the config's multi_select_picker — see buildPickerColumns.
+    // beside: open as the flyout of that clip popup row rather than at the cursor.
     void openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my,
-                            bool growDown = false);
+                            bool growDown = false, const SDL_FRect* beside = nullptr);
+    // While the picker is flown out of the clip popup, hand each mouse event to
+    // whichever of the two the cursor is over. True = consumed.
+    bool routeClipFlyoutEvent(const SDL_Event& e);
+    // Fold the picker flyout: its query is dropped and the table closed.
+    void closeClipPickerFlyout();
+    // Close the picker table — and the clip popup too when it hangs off one, for
+    // a pick that is done with both (a commit, a drag out).
+    void closeClipPickerMenu();
     // Seed `c` for `clipIds` and describe them the way the menu opens: with several
     // clips, narrowed to those the first picker applies to, a representative among
     // them, and the commit column merged across their shots (selectionStates).
     // `done` gets the representative's describe; the Clip Source panel uses this too.
+    // `reporter`: see runBackground (ignored when the modal dialog takes the work).
     void startSelectionDescribe(PickerCascade& c, const std::vector<int>& clipIds, bool modal,
-                                std::function<void(bool ok, const std::vector<PickerState>& states)> done);
+                                std::function<void(bool ok, const std::vector<PickerState>& states)> done,
+                                std::shared_ptr<ProgressReporter> reporter = nullptr);
     // Swap `clip`'s media to `newPath`, matching the previous clip span where the
     // new media allows, and dropping the old media from the pool if now unused.
     // `opened`, when given, is `newPath`'s media already opened off the main thread
@@ -3622,9 +3648,12 @@ private:
     // dialog falls back to the queue rather than dropping the work). `done` runs on
     // the main thread afterwards, told whether the user cancelled the dialog;
     // work dropped by pickerWork_.reset() never reaches it.
+    // `reporter`, on the queue path only, is the progress sink the work reports
+    // into and the cancel it also checks, for a host that shows progress its own way.
     void runBackground(bool modal, const std::string& title,
                        std::function<void(const TaskContext&)> work,
-                       std::function<void(bool cancelled)> done);
+                       std::function<void(bool cancelled)> done,
+                       std::shared_ptr<ProgressReporter> reporter = nullptr);
     void pollProgress();                          // main loop: finalize a finished worker
     void handleProgressEvent(const SDL_Event& e); // consume input while the dialog is up
     void renderProgressOverlay();                 // draw the modal overlay (call last)

@@ -63,7 +63,8 @@ private:
 // What a piece of background work sees of whichever runner it is on (see
 // App::runBackground): one stop check and one progress sink. Behind the modal
 // dialog both come from its ProgressReporter; on a WorkQueue the stop is the
-// queue's reset flag and there is no bar, so update() does nothing. The work
+// queue's reset flag and there is no bar, so update() does nothing — unless the
+// host handed in a reporter of its own to draw (the clip menu's picker flyout). The work
 // itself never has to ask which it got.
 class TaskContext {
 public:

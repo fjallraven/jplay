@@ -34,6 +34,12 @@ inline void setColor(SDL_Renderer* r, SDL_Color c) {
 }
 
 bool hasChildren(const ContextMenu::Item& it) { return !it.children.empty(); }
+bool hasPanel(const ContextMenu::Item& it) { return !hasChildren(it) && it.panel.render; }
+bool hasSide(const ContextMenu::Item& it) {
+    return !hasChildren(it) && !hasPanel(it) && it.sideOpen;
+}
+// Opens something beside it on hover: a child list, a host panel or a host popup.
+bool hasFlyout(const ContextMenu::Item& it) { return hasChildren(it) || hasPanel(it) || hasSide(it); }
 
 // A row's label color: grey when the row is disabled, else its own packed
 // 0xRRGGBB when it carries one, else the menu's own text color.
@@ -76,14 +82,13 @@ int ContextMenu::rowIndexAt(const std::vector<Item>& items, float dy) {
 }
 
 void ContextMenu::open(float x, float y, float winW, float winH, std::vector<Item> items,
-                       Header header, bool growDown) {
+                       bool growDown) {
+    setOpenParent(-1); // fold the old items' side popup before they go
     items_ = std::move(items);
     columns_.clear();
     table_ = false;
     grid_ = false;
     growDown_ = growDown;
-    header_ = std::move(header);
-    headerRect_ = {};
     anchorX_ = x;
     anchorY_ = y;
     winW_ = winW;
@@ -102,14 +107,14 @@ void ContextMenu::open(float x, float y, float winW, float winH, std::vector<Ite
 }
 
 void ContextMenu::openTable(float x, float y, float winW, float winH, std::vector<Column> columns,
-                            bool keepMinSizes, bool growDown) {
+                            bool keepMinSizes, bool growDown, const SDL_FRect& beside) {
+    setOpenParent(-1);
     columns_ = std::move(columns);
     items_.clear();
     table_ = true;
     grid_ = false;
     growDown_ = growDown;
-    header_ = {};
-    headerRect_ = {};
+    beside_ = beside;
     anchorX_ = x;
     anchorY_ = y;
     winW_ = winW;
@@ -136,6 +141,39 @@ void ContextMenu::openGrid(float x, float y, float winW, float winH, std::vector
     gridCols_ = std::max(1, cols);
     hoverCell_ = -1;
     gridRect_ = {};
+}
+
+void ContextMenu::close() {
+    setOpenParent(-1);
+    open_ = false;
+    hoverRoot_ = -1;
+    hoverChild_ = -1;
+    hoverCol_ = -1;
+    hoverItem_ = -1;
+    hoverCell_ = -1;
+    loading_ = false;
+    dragCol_ = -1;
+    dragItem_ = -1;
+}
+
+void ContextMenu::setOpenParent(int row) {
+    if (row == openParent_)
+        return;
+    const int old = openParent_;
+    openParent_ = row;
+    // Copies: a hook may reopen this very menu, replacing items_ under it.
+    if (old >= 0 && old < (int)items_.size() && hasSide(items_[old])) {
+        Action close = items_[old].sideClose;
+        if (close)
+            close();
+    }
+    if (row >= 0 && row < (int)items_.size() && openParent_ == row && hasSide(items_[row])) {
+        // rootRect_ is from the last render, which is what the cursor was over.
+        const SDL_FRect rowRect{ rootRect_.x, rootRect_.y - rootScroll_ + rowTop(items_, row),
+                                 rootRect_.w, kRowH };
+        auto open = items_[row].sideOpen;
+        open(rowRect);
+    }
 }
 
 float ContextMenu::gridHeight(int items, int cols) {
@@ -221,9 +259,15 @@ void ContextMenu::layoutTable(SDL_Renderer* r) {
     for (float w : widths) totalW += w;
     float totalH = (float)(visRows_ + 1) * kRowH; // +1 header row
 
-    // Center the table horizontally on the cursor; anchor its bottom there and
-    // grow upward (or its top, growing down, when asked), then clamp on screen.
+    // Center the table horizontally on the cursor — or hang it off the side of
+    // `beside_`, flipping left when it would overflow — anchor its bottom there
+    // and grow upward (or its top, growing down, when asked), then clamp on screen.
     float x0 = anchorX_ - totalW * 0.5f;
+    if (beside_.w > 0.0f) {
+        x0 = beside_.x + beside_.w - 1.0f;
+        if (x0 + totalW > winW_)
+            x0 = beside_.x - totalW + 1.0f;
+    }
     float y0 = growDown_ ? anchorY_ : anchorY_ - totalH;
     if (x0 + totalW > winW_) x0 = winW_ - totalW;
     if (x0 < 0) x0 = 0;
@@ -262,9 +306,14 @@ bool ContextMenu::pointInPopup(float x, float y) const {
     }
     // The parts, not listBounds(): a flyout is offset from the rows it hangs off,
     // so their union box spans ground neither panel actually covers.
-    if (in(rootRect_) || in(headerRect_))
+    if (in(rootRect_))
         return true;
     return openParent_ >= 0 && in(childRect_);
+}
+
+bool ContextMenu::panelOpen() const {
+    return open_ && !table_ && !grid_ && openParent_ >= 0 &&
+           openParent_ < (int)items_.size() && hasPanel(items_[openParent_]);
 }
 
 SDL_FRect ContextMenu::listBounds() const {
@@ -280,7 +329,6 @@ SDL_FRect ContextMenu::listBounds() const {
         r = std::max(r, o.x + o.w);
         b = std::max(b, o.y + o.h);
     };
-    join(headerRect_);
     if (openParent_ >= 0)
         join(childRect_);
     return { l, t, r - l, b - t };
@@ -357,31 +405,33 @@ void ContextMenu::layout(SDL_Renderer* r) {
     if (table_) { layoutTable(r); return; }
     if (grid_) { layoutGrid(); return; }
 
-    bool anyChild = std::any_of(items_.begin(), items_.end(), hasChildren);
-    float w = std::max(listWidth(r, items_, anyChild), header_.minW);
-    // The header band sits above the rows; both move as one block.
-    const float hh = header_.render ? header_.h : 0.0f;
+    bool anyChild = std::any_of(items_.begin(), items_.end(), hasFlyout);
+    float w = listWidth(r, items_, anyChild);
     float fullH = listHeight(items_);
-    float h = std::min(fullH, std::max(kRowH, winH_ - hh)); // clamp tall lists; they scroll
+    float h = std::min(fullH, std::max(kRowH, winH_)); // clamp tall lists; they scroll
 
     // Anchor at the cursor and grow upward — or downward from it when the host
     // asked for that — then clamp on screen.
     float x0 = anchorX_;
-    float y0 = growDown_ ? anchorY_ : anchorY_ - h - hh;
+    float y0 = growDown_ ? anchorY_ : anchorY_ - h;
     if (x0 + w > winW_) x0 = winW_ - w;
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
-    if (y0 + h + hh > winH_) y0 = winH_ - h - hh;
-    headerRect_ = SDL_FRect{ x0, y0, w, hh };
-    rootRect_ = SDL_FRect{ x0, y0 + hh, w, h };
+    if (y0 + h > winH_) y0 = winH_ - h;
+    rootRect_ = SDL_FRect{ x0, y0, w, h };
     rootScroll_ = std::clamp(rootScroll_, 0.0f, std::max(0.0f, fullH - h));
 
-    if (openParent_ >= 0 && openParent_ < (int)items_.size() && hasChildren(items_[openParent_])) {
+    // A side row's popup is the host's own: nothing to lay out here.
+    if (openParent_ >= 0 && openParent_ < (int)items_.size() && hasFlyout(items_[openParent_]) &&
+        !hasSide(items_[openParent_])) {
         // Reset the submenu scroll when a different submenu opens.
         if (openParent_ != scrolledParent_) { childScroll_ = 0; scrolledParent_ = openParent_; }
-        const auto& kids = items_[openParent_].children;
-        float cw = listWidth(r, kids, false);
-        float fullCh = listHeight(kids);
+        const Item& parent = items_[openParent_];
+        const auto& kids = parent.children;
+        // A panel is the size its host asked for and never scrolls.
+        const bool panel = hasPanel(parent);
+        float cw = panel ? parent.panel.minW : listWidth(r, kids, false);
+        float fullCh = panel ? parent.panel.h : listHeight(kids);
         float ch = std::min(fullCh, winH_);
         // Fly out to the right of the parent; flip to the left if it would overflow.
         float cx = rootRect_.x + rootRect_.w - 1.0f;
@@ -545,10 +595,13 @@ bool ContextMenu::handleEvent(const SDL_Event& e) {
         }
     }
 
-    // The header band owns its controls: give it first refusal on everything, so
+    // An open panel owns its controls: give it first refusal on everything, so
     // clicking a field or typing into it isn't read as a row click / dismissal.
-    if (header_.handle && header_.handle(e, headerRect_))
-        return true;
+    if (panelOpen()) {
+        const Panel& p = items_[openParent_].panel;
+        if (p.handle && p.handle(e, childRect_))
+            return true;
+    }
 
     switch (e.type) {
     case SDL_EVENT_MOUSE_MOTION: {
@@ -563,7 +616,7 @@ bool ContextMenu::handleEvent(const SDL_Event& e) {
             hoverRoot_ = rr;
             hoverChild_ = -1;
             // Hovering a parent opens its submenu; hovering a leaf closes any open one.
-            openParent_ = hasChildren(items_[rr]) ? rr : -1;
+            setOpenParent(hasFlyout(items_[rr]) ? rr : -1);
         } else {
             hoverRoot_ = -1; // keep openParent_ so the cursor can travel to the submenu
         }
@@ -597,8 +650,8 @@ bool ContextMenu::handleEvent(const SDL_Event& e) {
         }
         int rr = rootRowAt(x, y);
         if (rr >= 0) {
-            if (hasChildren(items_[rr])) {
-                openParent_ = (openParent_ == rr) ? -1 : rr; // toggle its submenu
+            if (hasFlyout(items_[rr])) {
+                setOpenParent(openParent_ == rr ? -1 : rr); // toggle its submenu
                 hoverChild_ = -1;
                 return true;
             }
@@ -799,7 +852,7 @@ void ContextMenu::render(SDL_Renderer* r) {
                                 items[i].disabled ? kShortcutOff : kShortcutTxt,
                                 sc.c_str());
             }
-            if (reserveArrow && hasChildren(items[i])) {
+            if (reserveArrow && hasFlyout(items[i])) {
                 setColor(r, kMark);
                 drawArrow(r, box.x + box.w - kArrowW + 4.0f, cy);
             }
@@ -819,21 +872,20 @@ void ContextMenu::render(SDL_Renderer* r) {
         }
     };
 
-    // Header band: the popup skin plus its own outline (which reads as the rule
-    // between the band and the rows); the host draws the content inside it.
-    if (header_.render && headerRect_.h > 0.0f) {
-        setColor(r, kListBg);
-        jplay::fillRect(r, &headerRect_);
-        header_.render(r, headerRect_);
-        setColor(r, kBorder);
-        jplay::drawRect(r, &headerRect_);
-    }
-
-    bool anyChild = std::any_of(items_.begin(), items_.end(), hasChildren);
+    bool anyChild = std::any_of(items_.begin(), items_.end(), hasFlyout);
     // Keep the parent row highlighted while its submenu is open.
     int rootHover = (openParent_ >= 0) ? openParent_ : hoverRoot_;
     drawList(rootRect_, items_, rootHover, anyChild, rootScroll_);
 
-    if (openParent_ >= 0 && openParent_ < (int)items_.size())
+    if (panelOpen() && childRect_.h > 0.0f) {
+        // The popup skin and outline; the host draws the content inside it.
+        setColor(r, kListBg);
+        jplay::fillRect(r, &childRect_);
+        items_[openParent_].panel.render(r, childRect_);
+        setColor(r, kBorder);
+        jplay::drawRect(r, &childRect_);
+    } else if (openParent_ >= 0 && openParent_ < (int)items_.size() &&
+               hasChildren(items_[openParent_])) {
         drawList(childRect_, items_[openParent_].children, hoverChild_, false, childScroll_);
+    }
 }

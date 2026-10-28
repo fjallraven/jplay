@@ -26,11 +26,12 @@
 
 using namespace jplay;
 
-// ---- Clip Range band on the clip right-click popup. Base (1x) sizes; every one
+// ---- Clip Range panel, flown out from the clip right-click popup's "Source
+// Range" row. Base (1x) sizes; every one
 // is multiplied by dpiScale where it is used, since the band draws text and the
 // font is loaded at 10 * dpiScale.
 namespace {
-constexpr float kRangeBandH  = 78.0f;  // total band height reserved (matches the rows below)
+constexpr float kRangeBandH  = 78.0f;  // total height of the flyout panel
 constexpr float kRangePad    = 4.0f;
 constexpr float kRangeFieldW = 46.0f;  // in / out entry boxes
 constexpr float kRangeBtnPad = 7.0f;   // text inset inside a range button
@@ -421,19 +422,34 @@ void App::openClipContextMenu(const Clip& clip, float mx, float my, bool growDow
             items.push_back(std::move(it));
         }
     };
-    // The metadata picker panels (also Ctrl+right-click), replacing this menu. They
-    // take its place: the edge the menu grew from — top when it dropped from the
-    // cursor, bottom when it rose — stays put, and the picker grows the same way.
-    // The bounds are read in the action, after the click closed the menu, which
-    // leaves its last layout in place.
+    // The metadata picker panels (also Ctrl+right-click), flown out beside the row
+    // like a submenu: lined up with its top when the menu dropped from the cursor,
+    // its bottom when it rose, and growing the same way. The describe they are
+    // built from only starts once the cursor is on the row.
     {
         ContextMenu::Item it;
         it.label = "Switch Source";
-        it.shortcut = "Ctrl+RMB";
-        it.action = [this, mx, my, growDown] {
-            SDL_FRect b = clipToolboxMenu_.listBounds();
-            float y = b.h <= 0.0f ? my : growDown ? b.y : b.y + b.h;
-            openClipPickerMenu(selectedClipIds_, mx, y, growDown);
+        //it.shortcut = "Ctrl+RMB";
+        it.sideOpen = [this, growDown](const SDL_FRect& row) {
+            float y = growDown ? row.y : row.y + row.h;
+            openClipPickerMenu(selectedClipIds_, row.x + row.w, y, growDown, &row);
+        };
+        it.sideClose = [this] { closeClipPickerFlyout(); };
+        items.push_back(std::move(it));
+    }
+    sep();
+    // The Clip Range panel, flying out beside its row, for the clicked clip alone
+    // (the other rows act on the whole selection, but one ruler can only describe
+    // one clip).
+    clipRangeClipId_ = timeline_.findMediaById(clip.mediaId) ? clip.id : -1;
+    if (clipRangeClipId_ >= 0) {
+        ContextMenu::Item it;
+        it.label = "Source Range";
+        it.panel.h = kRangeBandH * dpiScale;
+        it.panel.minW = clipRangeBandW(timeline_.findShotById(clip.shotId) != nullptr);
+        it.panel.render = [this](SDL_Renderer* r, const SDL_FRect& box) { renderClipRangeHeader(r, box); };
+        it.panel.handle = [this](const SDL_Event& e, const SDL_FRect& box) {
+            return clipRangeHandleEvent(e, box);
         };
         items.push_back(std::move(it));
     }
@@ -504,24 +520,11 @@ void App::openClipContextMenu(const Clip& clip, float mx, float my, bool growDow
     if (!items.empty() && items.back().separator)
         items.pop_back();
 
-    // Clip Range band above the rows, for the clicked clip alone (the rows act on
-    // the whole selection, but one ruler can only describe one clip).
-    ContextMenu::Header hdr;
-    clipRangeClipId_ = timeline_.findMediaById(clip.mediaId) ? clip.id : -1;
-    if (clipRangeClipId_ >= 0) {
-        hdr.h = kRangeBandH * dpiScale;
-        hdr.minW = clipRangeBandW(timeline_.findShotById(clip.shotId) != nullptr);
-        hdr.render = [this](SDL_Renderer* r, const SDL_FRect& box) { renderClipRangeHeader(r, box); };
-        hdr.handle = [this](const SDL_Event& e, const SDL_FRect& box) {
-            return clipRangeHandleEvent(e, box);
-        };
-    }
-
     // ContextMenu anchors its bottom edge at the given y and grows upward, which
     // is what a timeline clip wants: the rows stay clear of the tracks below.
     // Over the player frame there is nothing below to keep clear and the click is
     // usually high up, so the caller asks for the menu to drop from the cursor.
-    clipToolboxMenu_.open(mx, my, winW_, winH_, std::move(items), std::move(hdr), growDown);
+    clipToolboxMenu_.open(mx, my, winW_, winH_, std::move(items), growDown);
 }
 
 // ------------------------------------------------------------- Clip Range band
@@ -563,7 +566,8 @@ float App::clipRangeBandW(bool hasShot) const {
 
 // Sub-rects of the band, derived from the box alone so the render and the event
 // pass can never drift. The Shot Range button is only laid out when the clip
-// belongs to a shot. Both buttons are label-width and sit left-aligned.
+// belongs to a shot. Both buttons are label-width: Source Range sits left,
+// Shot Range right, under the in / out fields they line up with.
 App::ClipRangeLayout App::clipRangeLayout(const SDL_FRect& box, bool hasShot) const {
     const float s = dpiScale;
     ClipRangeLayout L;
@@ -578,10 +582,8 @@ App::ClipRangeLayout App::clipRangeLayout(const SDL_FRect& box, bool hasShot) co
     gapTop(in, 3.0f * s);
     SDL_FRect buttons = cutTop(in, 16.0f * s);
     L.srcBtn = cutLeft(buttons, clipRangeBtnW("Source Range"));
-    if (hasShot) {
-        gapLeft(buttons, kRangeGap * s);
-        L.shotBtn = cutLeft(buttons, clipRangeBtnW("Shot Range"));
-    }
+    if (hasShot)
+        L.shotBtn = cutRight(buttons, clipRangeBtnW("Shot Range"));
     return L;
 }
 
@@ -727,12 +729,15 @@ void App::endClipRangeEdit(bool apply) {
 }
 
 // The popup closing (row action, Escape, click outside) ends any live edit, so
-// text input never stays on with no field to receive it.
+// text input never stays on with no field to receive it. So does the panel alone
+// folding away, which hovering another row does with the popup still up.
 void App::clipRangeCloseIfMenuClosed() {
-    if (clipRangeClipId_ >= 0 && !clipToolboxMenu_.isOpen()) {
+    if (clipRangeClipId_ < 0)
+        return;
+    if (!clipToolboxMenu_.panelOpen())
         endClipRangeEdit(false);
+    if (!clipToolboxMenu_.isOpen())
         clipRangeClipId_ = -1;
-    }
 }
 
 // Set the clip's source range, keeping its position on the timeline: sourceOffset
@@ -797,13 +802,23 @@ void App::applyClipRange(int clipId, int64_t inSrc, int64_t outSrc) {
 // chain to every selected clip (see startPickerCommit). Just seeds the cascade
 // state and hands off to rebuildClipPickerMenu, which builds the columns.
 // growDown: (mx, my) is the table's top edge rather than its bottom.
-void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my, bool growDown) {
+// beside: the clip popup row this opens as the flyout of (see routeClipFlyoutEvent).
+void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my, bool growDown,
+                             const SDL_FRect* beside) {
     if (clipIds.empty())
         return;
 
     buildMetaPickers(); // load the config picker list on first use (needs Python)
     if (metaPickers_.empty())
         return;
+
+    pickerFlyout_ = beside != nullptr;
+    pickerMenuBeside_ = beside ? *beside : SDL_FRect{};
+    // A flyout gets no dialog (below), so it reports into one of its own instead,
+    // drawn beside the row while the describe runs (renderPickerFlyoutLoading).
+    // A fresh one per open: a superseded describe keeps writing to its own.
+    pickerFlyoutProgress_ = beside ? std::make_shared<ProgressReporter>() : nullptr;
+    pickerFlyoutStart_ = SDL_GetTicks();
 
     // Labels and colors, whenever they arrive, go into the table in place — see
     // relabelClipPickerMenu. A decoration that lands after the menu was dismissed
@@ -819,16 +834,85 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
     // Several clips is a Python describe per shot, long enough on a big selection to
     // owe the user a dialog — the same modal with a Cancel that the multi-clip
     // commit puts up (startPickerCommit). It only shows past kProgressShowDelayMs,
-    // so a quick describe still just opens the menu.
-    startSelectionDescribe(menuCascade_, clipIds, /*modal=*/clipIds.size() > 1,
+    // so a quick describe still just opens the menu. Not for a flyout, though: that
+    // starts on a mere hover, and a cursor passing over the row on its way to
+    // another must not leave a modal behind it.
+    startSelectionDescribe(menuCascade_, clipIds, /*modal=*/!beside && clipIds.size() > 1,
                            [this](bool ok, const std::vector<PickerState>& states) {
+                               pickerFlyoutProgress_.reset(); // the table takes over
                                if (!ok)
                                    return;
                                rebuildClipPickerMenu(states, /*navigating=*/false);
                                // The annotations follow separately, so the columns
                                // are up as soon as the option lists are known.
                                startPickerDecorate(menuCascade_, states);
-                           });
+                           }, pickerFlyoutProgress_);
+}
+
+void App::renderPickerFlyoutLoading() {
+    pickerFlyoutLoadingRect_ = {};
+    if (!pickerFlyout_ || !pickerFlyoutProgress_ || clipMenu_.isOpen() ||
+        !clipToolboxMenu_.isOpen())
+        return;
+    if (SDL_GetTicks() - pickerFlyoutStart_ < kProgressShowDelayMs)
+        return; // a quick describe just opens the table, with no flash before it
+
+    // Palette: the progress dialog's (renderProgressOverlay) on the popup skin.
+    const SDL_Color kMsgText { 210, 214, 222, 255 };
+    const SDL_Color kTrackBg {  42,  43,  50, 255 };
+    const SDL_Color kFill    {  90, 130, 200, 255 };
+    const float s = dpiScale;
+    const float pad = 8.0f * s, barH = 6.0f * s, gap = 6.0f * s;
+    const float glyphH = textFont_.lineHeight();
+    const float w = 200.0f * s;
+    const float h = pad + glyphH + gap + barH + pad;
+
+    // Beside the row as the table will be: right of the popup, flipped left when
+    // there is no room, lined up with the row's top or bottom as the popup grew.
+    const SDL_FRect& row = pickerMenuBeside_;
+    float x = row.x + row.w - 1.0f;
+    if (x + w > winW_)
+        x = row.x - w + 1.0f;
+    float y = pickerMenuGrowDown_ ? row.y : row.y + row.h - h;
+    x = std::clamp(x, 0.0f, std::max(0.0f, winW_ - w));
+    y = std::clamp(y, 0.0f, std::max(0.0f, winH_ - h));
+    const SDL_FRect box{ x, y, w, h };
+    pickerFlyoutLoadingRect_ = box;
+
+    auto setC = [&](SDL_Color c) { SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a); };
+    setC(jplay::colors().dropBg);
+    jplay::fillRect(renderer_, &box);
+    setC(jplay::colors().borderStrong);
+    jplay::drawRect(renderer_, &box);
+
+    // The worker's message, elided to fit; "Loading" until it has said anything.
+    std::string msg = pickerFlyoutProgress_->message();
+    if (msg.empty())
+        msg = "Loading";
+    while (msg.size() > 1 && textFont_.measure(renderer_, msg.c_str()) > w - 2.0f * pad)
+        msg.erase(msg.size() - 1);
+    textFont_.draw(renderer_, x + pad, y + pad, kMsgText, msg.c_str());
+
+    // Determinate fill, or a sweeping segment while the total is unknown.
+    const SDL_FRect track{ x + pad, y + pad + glyphH + gap, w - 2.0f * pad, barH };
+    setC(kTrackBg);
+    jplay::fillRect(renderer_, &track);
+    setC(kFill);
+    const float frac = pickerFlyoutProgress_->fraction();
+    if (frac >= 0.0f) {
+        const SDL_FRect fill{ track.x, track.y, track.w * std::clamp(frac, 0.0f, 1.0f), track.h };
+        jplay::fillRect(renderer_, &fill);
+    } else {
+        const float period = 1200.0f;
+        const float phase = (float)(SDL_GetTicks() % (uint64_t)period) / period;
+        const float segW = track.w * 0.3f;
+        const float sx = track.x + (track.w + segW) * phase - segW;
+        const float x0 = std::max(sx, track.x), x1 = std::min(sx + segW, track.x + track.w);
+        if (x1 > x0) {
+            const SDL_FRect seg{ x0, track.y, x1 - x0, track.h };
+            jplay::fillRect(renderer_, &seg);
+        }
+    }
 }
 
 // Seed cascade `c` for `clipIds` and run the describe its view is built from, then
@@ -839,7 +923,8 @@ void App::openClipPickerMenu(const std::vector<int>& clipIds, float mx, float my
 // superseded or cancelled describe drops it.
 void App::startSelectionDescribe(
     PickerCascade& c, const std::vector<int>& clipIds, bool modal,
-    std::function<void(bool ok, const std::vector<PickerState>& states)> done) {
+    std::function<void(bool ok, const std::vector<PickerState>& states)> done,
+    std::shared_ptr<ProgressReporter> reporter) {
     // Skip clips with no media so a stray selection can't block the menu.
     std::vector<int> pickableClipIds;
     std::vector<std::string> clipPaths;
@@ -1129,7 +1214,7 @@ void App::startSelectionDescribe(
                   describeForMenu, [openMenu](bool cancelled) {
                       if (!cancelled)
                           openMenu();
-                  });
+                  }, std::move(reporter));
 }
 
 // The values `key` currently takes across `clipIds`, deduplicated and in
@@ -1374,7 +1459,7 @@ void App::rebuildClipPickerMenu(const std::vector<PickerState>& states, bool nav
                     clipMenu_.setLoading(true);
                     startPickerCommit(menuCascade_, key, value, [this] {
                         clipMenu_.setLoading(false);
-                        clipMenu_.close();
+                        closeClipPickerMenu();
                     });
                 };
                 // A commit row can also be carried out onto the tracks instead of
@@ -1428,7 +1513,7 @@ void App::rebuildClipPickerMenu(const std::vector<PickerState>& states, bool nav
     }
 
     clipMenu_.openTable(pickerMenuX_, pickerMenuY_, winW_, winH_, std::move(columns), navigating,
-                        pickerMenuGrowDown_);
+                        pickerMenuGrowDown_, pickerMenuBeside_);
 }
 
 // An armed commit row of the open menu moved past the drag threshold: carry that
@@ -1438,7 +1523,79 @@ void App::rebuildClipPickerMenu(const std::vector<PickerState>& states, bool nav
 bool App::beginClipMenuDrag(const std::string& key, const std::string& value,
                             const std::string& label) {
     const int alignId = menuCascade_.clipIds.size() == 1 ? menuCascade_.clipIds.front() : -1;
-    return beginPickerDrag(menuCascade_, key, { value }, label, alignId);
+    if (!beginPickerDrag(menuCascade_, key, { value }, label, alignId))
+        return false;
+    closeClipPickerMenu(); // the drag has the pick now: the popup it came from goes too
+    return true;
+}
+
+// Clip popup's "Switch Source" row folding (another row hovered, the popup
+// closed): the flyout goes with it, including a describe that has not landed yet —
+// bumping the query id is what stops that one from opening the table later.
+void App::closeClipPickerFlyout() {
+    if (!pickerFlyout_)
+        return;
+    pickerFlyout_ = false;
+    if (pickerFlyoutProgress_) {
+        pickerFlyoutProgress_->requestCancel(); // the worker stops at its next checkpoint
+        pickerFlyoutProgress_.reset();
+    }
+    ++menuCascade_.queryId;
+    menuCascade_.loading = false;
+    clipMenu_.close();
+}
+
+void App::closeClipPickerMenu() {
+    // Cleared first so the popup's fold doesn't take this for a hover-away and
+    // bump the query id under a commit that is finishing.
+    const bool flyout = pickerFlyout_;
+    pickerFlyout_ = false;
+    clipMenu_.close();
+    if (flyout)
+        clipToolboxMenu_.close();
+}
+
+// The picker table flown out of the clip popup and the popup itself act as one
+// menu. On their own each would claim every mouse event while open — the table
+// reads a click on the popup as one outside it and closes, and swallows the motion
+// that lets the popup hover its other rows — so here the cursor decides: over the
+// table, the table; anywhere else, the popup, whose outside click closes both.
+bool App::routeClipFlyoutEvent(const SDL_Event& e) {
+    // The loading panel standing in for the table only has to keep a press or a
+    // scroll on it from reading as one outside the popup, which would close it.
+    if (pickerFlyoutLoadingRect_.w > 0.0f) {
+        if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+            inRect(pickerFlyoutLoadingRect_, e.button.x, e.button.y))
+            return true;
+        if (e.type == SDL_EVENT_MOUSE_WHEEL &&
+            inRect(pickerFlyoutLoadingRect_, e.wheel.mouse_x, e.wheel.mouse_y))
+            return true;
+    }
+    if (!pickerFlyout_ || !clipMenu_.isOpen() || !clipToolboxMenu_.isOpen())
+        return false;
+    switch (e.type) {
+    case SDL_EVENT_MOUSE_MOTION:
+        // The table sees all motion: it clears its column hover off it, and an
+        // armed row carried past the threshold is handed over as a drag.
+        clipMenu_.handleEvent(e);
+        if (!clipMenu_.isOpen() || clipMenu_.pointInPopup(e.motion.x, e.motion.y))
+            return true;
+        return clipToolboxMenu_.handleEvent(e);
+    case SDL_EVENT_MOUSE_WHEEL:
+        if (clipMenu_.pointInPopup(e.wheel.mouse_x, e.wheel.mouse_y))
+            return clipMenu_.handleEvent(e);
+        return clipToolboxMenu_.handleEvent(e);
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        if (clipMenu_.pointInPopup(e.button.x, e.button.y))
+            return clipMenu_.handleEvent(e);
+        return clipToolboxMenu_.handleEvent(e);
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+        // An armed row is released wherever the cursor is (see ContextMenu).
+        return clipMenu_.handleEvent(e) || clipToolboxMenu_.handleEvent(e);
+    default:
+        // Escape included: the popup closing folds the flyout along with it.
+        return clipToolboxMenu_.handleEvent(e);
+    }
 }
 
 // A decoration instalment landed for the open menu. Taken into the live table

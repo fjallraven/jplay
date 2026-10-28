@@ -20,6 +20,19 @@ public:
     // A table option that can be carried out of the menu: see Item::dragOut.
     using DragOut = std::function<bool()>;
 
+    // A host-drawn flyout hung off a list row in place of a child list (see
+    // Item::panel). The popup sizes it `minW` x `h`, places it beside the row as
+    // it would a submenu, fills it with the popup skin and calls render() to draw
+    // its content. While it is showing, every event is offered to handle() first,
+    // so the panel can host its own controls (fields, buttons) without a click
+    // there dismissing the popup.
+    struct Panel {
+        float h = 0.0f;
+        float minW = 0.0f;
+        std::function<void(SDL_Renderer*, const SDL_FRect&)> render;
+        std::function<bool(const SDL_Event&, const SDL_FRect&)> handle; // true = consumed
+    };
+
     struct Item {
         // A group divider: a thin rule instead of a row. Takes no hover, no click
         // and no label; list mode only.
@@ -43,6 +56,19 @@ public:
         // carry). Table mode only.
         DragOut dragOut;
         std::vector<Item> children;   // non-empty => submenu parent
+        // render set => the row is a flyout parent like a submenu one (arrow,
+        // opens on hover), but what flies out is this host panel, not a list.
+        // Ignored when children are set. List mode only.
+        Panel panel;
+        // Set => the row is a flyout parent whose flyout is a popup the host
+        // owns (another ContextMenu, say): the row shows the arrow and stays
+        // highlighted while open like any submenu parent, but nothing is drawn
+        // here. sideOpen runs as the row opens — on hover, or a click — with the
+        // row's rect, so the host can place its popup beside it; sideClose runs
+        // as it folds (another row hovered, a toggle click, the menu closing).
+        // Ignored when children or a panel are set. List mode only.
+        std::function<void(const SDL_FRect& row)> sideOpen;
+        Action sideClose;
         // Row fill for color-picker style lists: packed 0xRRGGBB, 0 = the normal
         // popup fill. The row is painted in the color instead of the selected /
         // hover fill, which shows as an outline instead. List mode only.
@@ -72,31 +98,13 @@ public:
 
     void setTextFont(TextFont* f) { textFont_ = f; }
 
-    // An optional host-drawn band pinned above the rows (list mode only). The
-    // popup reserves `h` pixels there, widens to at least `minW`, fills the band
-    // with the popup skin and calls render() to draw its content. While the menu
-    // is open every event is offered to handle() first, so the band can host its
-    // own controls (fields, buttons) without a click there dismissing the popup.
-    struct Header {
-        float h = 0.0f;
-        float minW = 0.0f;
-        std::function<void(SDL_Renderer*, const SDL_FRect&)> render;
-        std::function<bool(const SDL_Event&, const SDL_FRect&)> handle; // true = consumed
-    };
-
     // Open with the popup's bottom-left anchored near (x, y); it grows upward.
     // Clamped to stay within the winW x winH window.
     // growDown: anchor the top-left at (x, y) and grow downward instead, for a
     // host whose click point has the room below it rather than above (the player
     // frame, as against a timeline clip with the tracks underneath).
-    // (Two overloads rather than a defaulted `Header header = {}`: GCC parses a
-    // default argument before the nested Header's member initializers, so the
-    // empty braces there fail to convert.)
     void open(float x, float y, float winW, float winH, std::vector<Item> items,
-              Header header, bool growDown = false);
-    void open(float x, float y, float winW, float winH, std::vector<Item> items) {
-        open(x, y, winW, winH, std::move(items), Header{});
-    }
+              bool growDown = false);
 
     // Open as a table: columns laid out side by side, each with a header label
     // pinned at the bottom and its options growing upward. The bottom-left is
@@ -106,8 +114,12 @@ public:
     // navigation click that rebuilds the columns) so the panel doesn't jump
     // smaller; leave false for a genuinely fresh open.
     // growDown: anchor the top-left at (x, y) instead and grow downward, as open()'s.
+    // beside: when non-empty, the table hangs off this rect's right edge instead
+    // of centering on x — flipped to its left edge when there is no room — as a
+    // submenu does off its parent row (see Item::sideOpen).
     void openTable(float x, float y, float winW, float winH, std::vector<Column> columns,
-                   bool keepMinSizes = false, bool growDown = false);
+                   bool keepMinSizes = false, bool growDown = false,
+                   const SDL_FRect& beside = {});
 
     // Open as a swatch grid: the items laid out left-to-right, top-to-bottom in
     // `cols` columns and painted in their Item::rowColor with no label — a color
@@ -139,10 +151,12 @@ public:
     // taken; the check marks and the click actions stay as they were.
     bool relabelTable(const std::vector<std::vector<Label>>& columns);
 
-    void close() { open_ = false; openParent_ = -1; hoverRoot_ = -1; hoverChild_ = -1;
-                   hoverCol_ = -1; hoverItem_ = -1; hoverCell_ = -1; loading_ = false;
-                   dragCol_ = -1; dragItem_ = -1; }
+    void close();
     bool isOpen() const { return open_; }
+    // True while a row's Item::panel is the open flyout. For a host whose panel
+    // holds state (a focused field) that must end when the flyout goes, which
+    // hovering another row does without closing the menu.
+    bool panelOpen() const;
 
     // Table "busy" state: while set, the panel stays open but option clicks are
     // ignored (a background query is resolving the click). Escape and a click
@@ -154,7 +168,7 @@ public:
     bool handleEvent(const SDL_Event& e);
 
     // True if the point falls on the open popup, in whichever mode it was opened
-    // (list rows and header band, table columns, swatch grid) or on an open
+    // (list rows, table columns, swatch grid) or on an open
     // flyout. False once it is closed. The popup already swallows the events that
     // land there; this is for a host whose widgets read the cursor position
     // directly each frame rather than from motion events, which would otherwise
@@ -165,8 +179,8 @@ public:
     // the popup overlays everything.
     void render(SDL_Renderer* r);
 
-    // Bounding box of the list popup as last laid out: the rows, the header band
-    // and any open submenu. Empty in table/grid mode, and until the first render
+    // Bounding box of the list popup as last laid out: the rows and any open
+    // submenu or panel. Empty in table/grid mode, and until the first render
     // after open() (layout runs there). For a host that opens the menu on hover
     // and needs to know when the cursor has left it.
     SDL_FRect listBounds() const;
@@ -211,11 +225,12 @@ private:
     int hoverRoot_ = -1;   // hovered root row, -1 = none
     int openParent_ = -1;  // root row whose submenu is open, -1 = none
     int hoverChild_ = -1;  // hovered submenu row, -1 = none
+    // Every change of openParent_ goes through here, so a row's sideOpen /
+    // sideClose hooks run exactly once per open / fold.
+    void setOpenParent(int row);
 
     SDL_FRect rootRect_{};  // recomputed in layout()
-    SDL_FRect childRect_{}; // valid only when openParent_ >= 0
-    Header    header_;      // list mode only; render unset = no header band
-    SDL_FRect headerRect_{}; // the band above rootRect_ (empty when no header)
+    SDL_FRect childRect_{}; // submenu or panel; valid only when openParent_ >= 0
 
     // Scroll offsets (pixels) for when a list is taller than the window and gets
     // clamped to it; each list/submenu scrolls independently via the wheel.
@@ -227,6 +242,7 @@ private:
     std::vector<Column> columns_;
     std::vector<SDL_FRect> colRects_; // per-column rect (header + options), recomputed in layout
     float tableY0_ = 0;               // top of the table
+    SDL_FRect beside_{};              // openTable's beside: empty = center on the anchor
     int tableRows_ = 0;               // option rows above the header (max column length)
     int visRows_ = 0;                 // visible option rows (<= tableRows_ when clamped to window)
     std::vector<float> colScroll_;    // per-column option scroll offset (pixels), parallel to columns_
