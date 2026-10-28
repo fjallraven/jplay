@@ -107,7 +107,8 @@ void ContextMenu::open(float x, float y, float winW, float winH, std::vector<Ite
 }
 
 void ContextMenu::openTable(float x, float y, float winW, float winH, std::vector<Column> columns,
-                            bool keepMinSizes, bool growDown, const SDL_FRect& beside) {
+                            bool keepMinSizes, bool growDown, const SDL_FRect& beside,
+                            float maxH) {
     setOpenParent(-1);
     columns_ = std::move(columns);
     items_.clear();
@@ -115,6 +116,7 @@ void ContextMenu::openTable(float x, float y, float winW, float winH, std::vecto
     grid_ = false;
     growDown_ = growDown;
     beside_ = beside;
+    maxTableH_ = maxH;
     anchorX_ = x;
     anchorY_ = y;
     winW_ = winW;
@@ -127,6 +129,7 @@ void ContextMenu::openTable(float x, float y, float winW, float winH, std::vecto
     hoverItem_ = -1;
     colRects_.clear();
     colScroll_.clear();
+    colSb_.clear();
     loading_ = false; // fresh columns: not waiting on a query
     if (!keepMinSizes) {
         minColWidths_.clear();  // fresh open: forget a prior cascade's min sizes
@@ -154,6 +157,13 @@ void ContextMenu::close() {
     loading_ = false;
     dragCol_ = -1;
     dragItem_ = -1;
+    for (ScrollbarDrag& sb : colSb_)
+        sb.dragging = false;
+}
+
+bool ContextMenu::scrollDragging() const {
+    return std::any_of(colSb_.begin(), colSb_.end(),
+                       [](const ScrollbarDrag& sb) { return sb.dragging; });
 }
 
 void ContextMenu::setOpenParent(int row) {
@@ -250,10 +260,20 @@ void ContextMenu::layoutTable(SDL_Renderer* r) {
     tableRows_ = std::max(tableRows_, minTableRows_);
     minTableRows_ = tableRows_;
 
-    // Cap the table to 60% of the window height (reserving the header row);
-    // longer columns then scroll independently within this shared viewport.
-    int maxTotalRows = std::max(1, (int)(winH_ * 0.6f / kRowH));
+    // Cap the table to 60% of the window height, and to the host's maxH when it
+    // gave one (reserving the header row); longer columns then scroll
+    // independently within this shared viewport.
+    float capH = winH_ * 0.6f;
+    if (maxTableH_ > 0.0f)
+        capH = std::min(capH, maxTableH_);
+    int maxTotalRows = std::max(1, (int)(capH / kRowH));
     visRows_ = std::min(tableRows_, std::max(1, maxTotalRows - 1));
+
+    // A column that scrolls gets its bar beside the labels rather than over them.
+    // After the sticky sizes: the bar comes and goes with the cap, not the content.
+    for (size_t c = 0; c < columns_.size(); ++c)
+        if ((int)columns_[c].items.size() > visRows_)
+            widths[c] += scrollbarStripW(1.0f, true);
 
     float totalW = 0.0f;
     for (float w : widths) totalW += w;
@@ -283,6 +303,7 @@ void ContextMenu::layoutTable(SDL_Renderer* r) {
 
     // Keep per-column scroll offsets sized to the column set and in range.
     colScroll_.resize(columns_.size(), 0.0f);
+    colSb_.resize(columns_.size());
     for (size_t c = 0; c < columns_.size(); ++c) {
         float maxS = std::max(0.0f, (float)((int)columns_[c].items.size() - visRows_) * kRowH);
         colScroll_[c] = std::clamp(colScroll_[c], 0.0f, maxS);
@@ -361,12 +382,11 @@ bool ContextMenu::tableCellAt(float x, float y, int& col, int& item) const {
             continue;
         col = (int)c;
         if (y >= hy) { item = -1; return true; } // header row at the bottom
-        // Options are bottom-aligned just above the header (item n-1 nearest it)
-        // and shifted by this column's scroll; solve which option row y hits.
+        // Options are top-aligned (item 0 at the top) and scrolled up by this
+        // column's scroll; solve which option row y hits.
         int n = (int)columns_[c].items.size();
         float scroll = (c < colScroll_.size()) ? colScroll_[c] : 0.0f;
-        int k = (int)((hy - (y - scroll)) / kRowH) + 1; // 1 = nearest the header
-        int i = n - k;
+        int i = (int)((y - tableY0_ + scroll) / kRowH);
         item = (i >= 0 && i < n) ? i : -1;
         return true;
     }
@@ -477,6 +497,12 @@ bool ContextMenu::handleEvent(const SDL_Event& e) {
         switch (e.type) {
         case SDL_EVENT_MOUSE_MOTION: {
             float x = e.motion.x, y = e.motion.y;
+            // A held scrollbar takes the motion wherever the cursor has gone.
+            for (size_t c = 0; c < colSb_.size(); ++c)
+                if (colSb_[c].dragging) {
+                    colSb_[c].drag(y, colScroll_[c], 1.0f);
+                    return true;
+                }
             // An armed dragOut row that has travelled far enough is the host's
             // gesture now, not a click. It closes the menu when it takes over;
             // when it declines (nothing to carry) the arm just goes, leaving the
@@ -512,7 +538,7 @@ bool ContextMenu::handleEvent(const SDL_Event& e) {
                 col >= 0 && col < (int)colScroll_.size()) {
                 float maxS = std::max(0.0f,
                     (float)((int)columns_[col].items.size() - visRows_) * kRowH);
-                colScroll_[col] = std::clamp(colScroll_[col] + e.wheel.y * kRowH * 2.0f,
+                colScroll_[col] = std::clamp(colScroll_[col] - e.wheel.y * kRowH * 2.0f,
                                              0.0f, maxS);
             }
             return true;
@@ -520,6 +546,11 @@ bool ContextMenu::handleEvent(const SDL_Event& e) {
         case SDL_EVENT_MOUSE_BUTTON_DOWN: {
             int col, item;
             if (tableCellAt(e.button.x, e.button.y, col, item)) {
+                // The bar first: it is drawn inside the column, so a press on it
+                // would otherwise read as a press on the option behind it.
+                if (e.button.button == SDL_BUTTON_LEFT && col < (int)colSb_.size() &&
+                    colSb_[col].press(e.button.x, e.button.y, colScroll_[col], 1.0f))
+                    return true;
                 // Run the option's action but keep the panel open: the action
                 // kicks off a background query and calls setLoading(true); the
                 // host swaps in the result (or closes) when it completes. Ignore
@@ -552,6 +583,9 @@ bool ContextMenu::handleEvent(const SDL_Event& e) {
             // after all, so run what the row has always done on press. Released
             // anywhere — the row is what was grabbed, not the pixel under the
             // cursor, which is how the Clip Source panel reads the same gesture.
+            // Not consumed either way, as for the armed row below.
+            for (ScrollbarDrag& sb : colSb_)
+                sb.dragging = false;
             if (dragCol_ < 0)
                 return false;
             Action a = columns_[dragCol_].items[dragItem_].action;
@@ -719,12 +753,12 @@ void ContextMenu::render(SDL_Renderer* r) {
             setColor(r, colHovered ? kTableBgHot : kTableBg);
             jplay::fillRect(r, &rect);
 
-            // Options: bottom-aligned just above the header, offset by the column's
-            // scroll and clipped to the option viewport (above the header row).
+            // Options: top-aligned from the table's top, scrolled up by the
+            // column's scroll and clipped to the option viewport (above the header row).
             SDL_Rect clip{ (int)rect.x, (int)tableY0_, (int)rect.w, (int)(visRows_ * kRowH) };
             SDL_SetRenderClipRect(r, &clip);
             for (int i = 0; i < n; ++i) {
-                float ry = hy - (float)(n - i) * kRowH + scroll;
+                float ry = tableY0_ + (float)i * kRowH - scroll;
                 if (ry + kRowH <= tableY0_ || ry >= hy)
                     continue; // scrolled out of the viewport
                 float cy = ry + kRowH * 0.5f;
@@ -748,14 +782,11 @@ void ContextMenu::render(SDL_Renderer* r) {
             }
             SDL_SetRenderClipRect(r, nullptr);
 
-            // Scroll hints when this column has more options than fit.
-            if (n > visRows_) {
-                setColor(r, kMark);
-                if (scroll < (float)(n - visRows_) * kRowH - 0.5f)
-                    drawChevron(r, rect.x + rect.w - 8.0f, tableY0_ + 5.0f, true);
-                if (scroll > 0.5f)
-                    drawChevron(r, rect.x + rect.w - 8.0f, hy - 5.0f, false);
-            }
+            // Scrollbar over the option viewport when this column has more
+            // options than fit (draws nothing otherwise); grabbable.
+            if (c < colSb_.size())
+                drawScrollbar(r, SDL_FRect{ rect.x, tableY0_, rect.w, visRows_ * kRowH },
+                              (float)n * kRowH, scroll, 1.0f, false, colSb_[c]);
 
             // Header row pinned at the bottom of the column.
             SDL_FRect hrect{ rect.x, hy, rect.w, kRowH };

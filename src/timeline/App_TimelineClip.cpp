@@ -1512,8 +1512,10 @@ void App::rebuildClipPickerMenu(const std::vector<PickerState>& states, bool nav
         return;
     }
 
+    // As a flyout, no taller than the clip popup it hangs off; longer columns scroll.
+    const float maxH = pickerFlyout_ ? clipToolboxMenu_.listBounds().h : 0.0f;
     clipMenu_.openTable(pickerMenuX_, pickerMenuY_, winW_, winH_, std::move(columns), navigating,
-                        pickerMenuGrowDown_, pickerMenuBeside_);
+                        pickerMenuGrowDown_, pickerMenuBeside_, maxH);
 }
 
 // An armed commit row of the open menu moved past the drag threshold: carry that
@@ -1577,8 +1579,11 @@ bool App::routeClipFlyoutEvent(const SDL_Event& e) {
     case SDL_EVENT_MOUSE_MOTION:
         // The table sees all motion: it clears its column hover off it, and an
         // armed row carried past the threshold is handed over as a drag.
+        // A held scrollbar keeps it even off the table, so the popup can't hover
+        // another row and fold the flyout mid-drag.
         clipMenu_.handleEvent(e);
-        if (!clipMenu_.isOpen() || clipMenu_.pointInPopup(e.motion.x, e.motion.y))
+        if (!clipMenu_.isOpen() || clipMenu_.scrollDragging() ||
+            clipMenu_.pointInPopup(e.motion.x, e.motion.y))
             return true;
         return clipToolboxMenu_.handleEvent(e);
     case SDL_EVENT_MOUSE_WHEEL:

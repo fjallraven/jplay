@@ -1,6 +1,7 @@
 #pragma once
 
 #include "TextFont.h"
+#include "Widgets.h"
 
 #include <SDL3/SDL.h>
 
@@ -90,7 +91,7 @@ public:
     };
 
     // A vertical column of a table menu: a header label pinned at the bottom of
-    // the column, with its options stacked above it (top row = items[0]).
+    // the column, with its options stacked from the top down (top row = items[0]).
     struct Column {
         std::string label;
         std::vector<Item> items;
@@ -107,7 +108,7 @@ public:
               bool growDown = false);
 
     // Open as a table: columns laid out side by side, each with a header label
-    // pinned at the bottom and its options growing upward. The bottom-left is
+    // pinned at the bottom and its options stacked from the top. The bottom-left is
     // anchored near (x, y); clamped to stay within the window.
     // keepMinSizes: keep the accumulated sticky column widths / row count instead
     // of resetting them. Set when re-opening in place during a cascade (a
@@ -117,9 +118,11 @@ public:
     // beside: when non-empty, the table hangs off this rect's right edge instead
     // of centering on x — flipped to its left edge when there is no room — as a
     // submenu does off its parent row (see Item::sideOpen).
+    // maxH: when > 0, the table (header included) is no taller than this — the
+    // popup it flies out of, say; longer columns scroll within it.
     void openTable(float x, float y, float winW, float winH, std::vector<Column> columns,
                    bool keepMinSizes = false, bool growDown = false,
-                   const SDL_FRect& beside = {});
+                   const SDL_FRect& beside = {}, float maxH = 0.0f);
 
     // Open as a swatch grid: the items laid out left-to-right, top-to-bottom in
     // `cols` columns and painted in their Item::rowColor with no label — a color
@@ -153,6 +156,9 @@ public:
 
     void close();
     bool isOpen() const { return open_; }
+    // True while a table column's scrollbar is held: the motion is the bar's
+    // wherever the cursor goes, so a host routing it elsewhere should not.
+    bool scrollDragging() const;
     // True while a row's Item::panel is the open flyout. For a host whose panel
     // holds state (a focused field) that must end when the flyout goes, which
     // hovering another row does without closing the menu.
@@ -243,9 +249,11 @@ private:
     std::vector<SDL_FRect> colRects_; // per-column rect (header + options), recomputed in layout
     float tableY0_ = 0;               // top of the table
     SDL_FRect beside_{};              // openTable's beside: empty = center on the anchor
+    float maxTableH_ = 0;             // openTable's maxH: 0 = only the window cap
     int tableRows_ = 0;               // option rows above the header (max column length)
     int visRows_ = 0;                 // visible option rows (<= tableRows_ when clamped to window)
     std::vector<float> colScroll_;    // per-column option scroll offset (pixels), parallel to columns_
+    std::vector<ScrollbarDrag> colSb_; // per-column grabbable scrollbar, parallel to columns_
     int hoverCol_ = -1;               // hovered column, -1 = none
     int hoverItem_ = -1;              // hovered option index within hoverCol_, -1 = none/header
     bool loading_ = false;            // a click's background query is in flight (see setLoading)
