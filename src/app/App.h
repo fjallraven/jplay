@@ -3521,7 +3521,7 @@ private:
     // adds a row).
     void copySelectedClips();
     void pasteClips();
-    // Ctrl+V with image / sequence / video paths on the system clipboard (files
+    // Ctrl+V with image / sequence / video / audio paths on the system clipboard (files
     // copied in the file manager, or path text). From the launcher it starts a new
     // project and places them; on an empty timeline it places them; with clips on
     // the timeline it only adds them to the SOURCES bin. Returns false, doing

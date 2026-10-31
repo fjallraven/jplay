@@ -4634,7 +4634,7 @@ void App::addMediaFolder(const std::string& dir) {
 
 bool App::pasteSourcesFromClipboard() {
     // Folders expand to the media they hold, as a folder drop does; anything that
-    // is not an image, image sequence or video is left out. Content that is not a
+    // is not an image, image sequence, video or audio file is left out. Content that is not a
     // path list (a node copied out of Nuke or ComfyUI) goes to Python's
     // resolve_clipboard, whose parsers sites can extend.
     std::vector<std::string> sources = clipboardFilePaths();
@@ -4647,7 +4647,7 @@ bool App::pasteSourcesFromClipboard() {
             for (std::string& m : MediaScan::collectDirectoryMedia(std::filesystem::u8path(p)))
                 if (!isAudioPath(m))
                     paths.push_back(std::move(m));
-        } else if (ImageSeq::isSequencePath(p) || MediaScan::isVideoPath(p)) {
+        } else if (ImageSeq::isSequencePath(p) || MediaScan::isVideoPath(p) || isAudioPath(p)) {
             paths.push_back(p);
         }
     }
