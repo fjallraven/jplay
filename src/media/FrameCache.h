@@ -1,0 +1,184 @@
+#pragma once
+
+#include "Media.h"
+
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+struct CacheKey {
+    std::string media;   // Media::id — frames are shared by every clip on this media
+    int64_t frame = -1;  // source frame within the media
+    bool operator==(const CacheKey& o) const { return frame == o.frame && media == o.media; }
+};
+
+struct CacheKeyHash {
+    size_t operator()(const CacheKey& k) const {
+        return std::hash<std::string>()(k.media) ^ (std::hash<int64_t>()(k.frame) * 0x9E3779B97F4A7C15ull);
+    }
+};
+
+// LRU frame cache with a pool of background reader threads. The UI thread
+// republishes its wanted set every tick between beginRequests()/endRequests();
+// workers always pick the lowest-priority-value pending request, so the
+// playhead frame loads first and prefetch fills outward from it.
+class FrameCache {
+public:
+    FrameCache(size_t maxBytes, int numThreads);
+    ~FrameCache();
+
+    FramePtr get(const CacheKey& key); // touches LRU; nullptr if absent
+    bool has(const CacheKey& key);
+    // How many of `keys`, from the first, are resident before the first that is
+    // not: has() over a run of frames under one lock.
+    int residentRun(const std::vector<CacheKey>& keys);
+    // Insert an already-decoded frame (e.g. lifted from a hover-preview decode) so
+    // playback can reuse it. Stored outside the current wanted set, so it is among
+    // the first evicted under pressure and never displaces playhead-wanted frames.
+    void put(const CacheKey& key, FramePtr frame);
+    void snapshotKeys(std::vector<CacheKey>& out); // for cache-strip drawing
+
+    // One wanted set per tick: beginRequests(), a request() per frame, then
+    // endRequests() publishes the batch. request() only stages on the calling
+    // thread, so all three must be called from that one thread (the UI thread).
+    void beginRequests();
+    // The media's decoder is opened lazily on a worker thread the first time one
+    // of its frames is pulled, so a freshly-loaded project never blocks the UI.
+    void request(const CacheKey& key, std::shared_ptr<Media> media, int64_t srcFrame, int priority);
+    // Publish the batch; drops all not-yet-started requests. `holdOnScreen`
+    // re-arms the hold the first frames get at startup (see firstFrameHold_): while
+    // the batch's on-screen frames (priority <= 0) are still to read, no worker
+    // starts a prefetch read, so a paused seek is not slowed by the fill around it.
+    void endRequests(bool holdOnScreen = false);
+
+    // A media whose frames the workers could not read: the decoder wouldn't open,
+    // or readFrame kept failing. Without this a source that opens but decodes to
+    // nothing (a half-written render, an unreadable frame) leaves the player on
+    // LOADING for ever with nothing said anywhere. Cleared by clear(), and by the
+    // first frame of that media that does decode.
+    bool mediaFailed(const std::string& mediaId) const;
+
+    // Where the read that brought `key` in spent its time (see ReadTiming). False
+    // for a frame with none: not resident, or from a source that does not time its
+    // reads. `firstShowing` is true on the first call for this read and false after
+    // it: the Playback Timings panel asks as a frame reaches the screen, so a frame
+    // shown again on the next lap of a loop is told apart from one just read.
+    bool readTiming(const CacheKey& key, ReadTiming& out, bool& firstShowing);
+    int threadCount() const { return (int)workers_.size(); }
+    // Frames per second the pool has actually read while every worker was busy:
+    // what a full fill sustains, with the workers sharing disk and memory bandwidth.
+    // A lone read run 8 ways would be far more than that. Over the last few seconds
+    // of such reading, so a switch to other media moves it; 0 until there has been
+    // enough (a pool that never fills, such as one reading a single video).
+    double fillRateCeiling() const;
+
+    void clear(); // drop cached frames + pending work (in-flight reads finish and are discarded)
+    // clear() for one media: its frames go, and reads of it already in flight are
+    // discarded on arrival, while every other media's frames stay. For a change to
+    // what the media's frames contain (an EXR layer switch) rather than to the
+    // cache as a whole.
+    void dropMedia(const std::string& mediaId);
+    // Bumped by clear(). A caller that skips re-submitting an unchanged wanted set
+    // watches this so a flushed cache is refilled rather than left empty.
+    uint64_t generation() const;
+    size_t bytesUsed() const;
+    size_t bytesMax() const { return maxBytes_; }
+    void setMaxBytes(size_t maxBytes); // resize the budget; evicts immediately if shrunk
+    size_t avgFrameBytes() const; // mean resident frame size (0 when empty) — for sizing a prefetch window to the budget
+
+private:
+    struct Pending {
+        CacheKey key;
+        std::shared_ptr<Media> media;
+        int64_t srcFrame = 0;
+        int priority = 0;
+    };
+    struct Entry {
+        FramePtr frame;
+        // What this frame counted for when it was admitted. Frame::bytes() can grow
+        // after the fact -- an EXR frame builds its 8-bit buffer the first time
+        // something asks for one (Frame::rgba8) -- and subtracting the grown value
+        // from a total the smaller one went into would underflow it. So the total is
+        // only ever moved by this number, and get() refreshes the pair together for
+        // the frames that actually grow: the displayed one a scope or the inspector
+        // just looked at.
+        size_t bytes = 0;
+        uint64_t tick = 0;
+        uint64_t wantEpoch = 0; // last beginRequests() epoch that re-requested this frame
+        int wantPrio = 0;       // its priority in that epoch (lower = nearer the playhead)
+        ReadTiming timing;      // the read that brought it in
+        bool timingShown = false; // readTiming() has reported it once
+    };
+
+    void workerLoop();
+    // Trims to budget, moving each evicted frame into `doomed` instead of
+    // destroying it. Freeing a frame is slow -- tens of MB of munmap for a large
+    // one -- so the caller drops `doomed` after releasing the lock. Doing it under
+    // the lock made the UI thread block for hundreds of ms behind a burst of
+    // evictions, in whichever of its two cache calls landed first.
+    void evictLocked(std::vector<FramePtr>& doomed);
+
+    mutable std::mutex mtx_;
+    std::condition_variable cv_;
+    std::vector<std::thread> workers_;
+    bool stop_ = false;
+    uint64_t generation_ = 0; // bumped by clear(); stale in-flight results are dropped
+
+    // The wanted set is staged on the UI thread and committed by endRequests()
+    // under a single lock. Locking per request cost thousands of contended
+    // lock/unlock pairs and a linear dedup scan of pending_ every tick, both on
+    // the UI thread; hashed dedup and one lock replace that.
+    std::vector<Pending> staged_;
+    std::unordered_set<CacheKey, CacheKeyHash> stagedKeys_;
+
+    std::vector<Pending> pending_;
+    // Reads a worker is currently inside, each against the generation() it was
+    // started for. clear() cannot stop a read that is already running -- the
+    // result is discarded when it arrives -- so a bare "is it in flight" answer
+    // would let endRequests() skip re-requesting a frame whose only read is
+    // already doomed, dropping it out of the wanted set until the next refresh
+    // (half a second later) with nothing decoding it in the meantime. The
+    // generation is what tells a live read from a doomed one. `cancel` is the
+    // read's ReadCancel flag: set once its frame leaves the wanted set, or the
+    // read is doomed, so it stops at its next block instead of running out.
+    struct Inflight {
+        uint64_t gen = 0;
+        std::shared_ptr<std::atomic<bool>> cancel;
+    };
+    std::unordered_map<CacheKey, Inflight, CacheKeyHash> inflight_;
+    std::unordered_set<std::string> busyVideos_; // media ids a worker is currently decoding (one worker per video)
+    std::unordered_set<std::string> failedMedia_; // media ids whose reads failed (see mediaFailed)
+    std::unordered_map<CacheKey, Entry, CacheKeyHash> map_;
+    // Bumped per media by dropMedia(): generation_ for one media. A read admits its
+    // frame only if its media's count is still what it was when the read started.
+    // Absent = 0; a media is only entered here once it has been dropped.
+    std::unordered_map<std::string, uint64_t> mediaEpoch_;
+    uint64_t mediaEpochLocked(const std::string& mediaId) const {
+        auto it = mediaEpoch_.find(mediaId);
+        return it == mediaEpoch_.end() ? 0 : it->second;
+    }
+    // While up, no prefetch read (priority > 0) starts as long as an on-screen read
+    // is in flight. Up from construction for the first frames, and re-armed by
+    // endRequests(true) for the on-screen frames of a paused seek.
+    bool firstFrameHold_ = true;
+    int holdReads_ = 0; // on-screen reads in flight while the hold is up
+    // Those reads by key, counted: the worker that finishes one releases its count.
+    // A key can be entered by endRequests() too, for an on-screen frame a prefetch
+    // read had already started on before the seek landed there.
+    std::unordered_map<CacheKey, int, CacheKeyHash> heldReads_;
+    // fillRateCeiling(): time spent with every worker reading, and the reads that
+    // finished in it, both halved each time the time passes kFillWindowNs.
+    void accountFillLocked(); // at every change of busy_
+    int busy_ = 0;            // workers inside a read
+    uint64_t fillMarkNs_ = 0; // when busy_ last changed
+    double fillNs_ = 0.0;
+    double fillReads_ = 0.0;
+    size_t totalBytes_ = 0;
+    size_t maxBytes_;
+    uint64_t tick_ = 0;
+    uint64_t wantEpoch_ = 0; // bumped by beginRequests(); defines the current wanted set
+};

@@ -1,0 +1,439 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to stamp (e.g. 1.2.0-rc1). Blank = 0.0.0-<branch>.<sha>.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  VCPKG_COMMIT: c95f39b145ca15c4e2d4d73435647179a1a96dfd
+  # temporary: since autobuilds are wiped monthly, use latest tag
+  FFMPEG_TAG: latest
+  LINUX_GLIBC_MAX: "2.34"
+
+jobs:
+  # Resolve the version once, so both platforms stamp and name identically.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      is_release: ${{ steps.v.outputs.is_release }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+            is_release=true
+          elif [ -n "$INPUT_VERSION" ]; then
+            version="$INPUT_VERSION"
+            is_release=false
+          else
+            version="0.0.0-${GITHUB_REF_NAME//\//-}.${GITHUB_SHA::7}"
+            is_release=false
+          fi
+          # Anything carrying a pre-release suffix (1.2.0-rc1) is not "latest".
+          case "$version" in
+            *-*) prerelease=true ;;
+            *)   prerelease=false ;;
+          esac
+          printf 'version=%s\n'    "$version"    >> "$GITHUB_OUTPUT"
+          printf 'is_release=%s\n' "$is_release" >> "$GITHUB_OUTPUT"
+          printf 'prerelease=%s\n' "$prerelease" >> "$GITHUB_OUTPUT"
+          printf 'Building **%s** (release=%s, prerelease=%s)\n' \
+            "$version" "$is_release" "$prerelease" >> "$GITHUB_STEP_SUMMARY"
+
+  # The naming/discovery layer is plain Python shipped as-is into the bundle, so
+  # it is worth checking before a release is cut and costs seconds. The suite is
+  # stdlib-only and stubs the embedded `jplay` module itself, so it needs neither
+  # a build nor the interpreter vcpkg resolves for the bundle.
+  tests:
+    name: python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run python tests
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          tests=(tests/test_*.py)
+          if [ ${#tests[@]} -eq 0 ]; then
+            echo "No tests/test_*.py found"; exit 1
+          fi
+          # Every suite runs even after one fails, so a red build names all of
+          # them rather than only the first. Each is its own main() returning
+          # non-zero on failure; the statuses are collected and re-raised here.
+          failed=()
+          for t in "${tests[@]}"; do
+            echo ""
+            echo "===== $t ====="
+            if ! python "$t"; then
+              failed+=("$t")
+            fi
+          done
+          echo ""
+          if [ ${#failed[@]} -ne 0 ]; then
+            echo "FAILED: ${failed[*]}" >> "$GITHUB_STEP_SUMMARY"
+            echo "FAILED: ${failed[*]}"
+            exit 1
+          fi
+          echo "All ${#tests[@]} python suites passed." >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: [version, tests]
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-2022
+            container: ""
+            triplet: x64-windows-release
+            ffmpeg_asset: ffmpeg-n8.1-latest-win64-gpl-8.1.zip
+          - name: linux-x64
+            os: ubuntu-latest
+            container: almalinux:9
+            triplet: jplay-x64-linux
+            ffmpeg_asset: ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      STAGE: jplay-${{ needs.version.outputs.version }}-${{ matrix.name }}
+    steps:
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          dnf -y install dnf-plugins-core
+          dnf config-manager --set-enabled crb   # libXtst, libXScrnSaver, ibus, nasm
+          dnf -y install epel-release            # autoconf-archive, ninja-build
+          # No curl in the list on purpose: the image ships curl-minimal, which
+          # provides the binary and conflicts with the full package.
+          dnf -y --setopt=install_weak_deps=False install \
+            gcc gcc-c++ make cmake ninja-build nasm binutils glibc-devel \
+            git tar xz bzip2 zip unzip zstd patch diffutils file which \
+            perl perl-FindBin perl-IPC-Cmd perl-Data-Dumper python3 \
+            autoconf autoconf-archive automake libtool libtool-ltdl-devel \
+            pkgconf-pkg-config libxcrypt-devel libuuid-devel \
+            libX11-devel libXext-devel libXrandr-devel libXcursor-devel \
+            libXi-devel libXfixes-devel libXtst-devel libXScrnSaver-devel \
+            libXinerama-devel libxkbcommon-devel \
+            wayland-devel wayland-protocols-devel \
+            mesa-libEGL-devel mesa-libGL-devel \
+            alsa-lib-devel pulseaudio-libs-devel systemd-devel dbus-devel \
+            ibus-devel
+
+          # el9's autoconf is 2.69, but vcpkg regenerates CPython's configure script
+          # (python3 comes in via pybind11) and its configure.ac requires 2.71+. The
+          # dnf autoconf above stays -- automake and m4 depend on it -- this just
+          # shadows it from /usr/local/bin, which precedes /usr/bin on PATH.
+          #
+          # 2.71 rather than the latest on purpose: it is what ubuntu-22.04 shipped,
+          # so the autoreconf-using ports keep seeing the version this workflow has
+          # been building against all along.
+          curl -fsSL -O https://ftp.gnu.org/gnu/autoconf/autoconf-2.71.tar.xz
+          tar xf autoconf-2.71.tar.xz
+          cd autoconf-2.71
+          ./configure --prefix=/usr/local
+          make -j"$(nproc)"
+          make install
+          cd ..
+          rm -rf autoconf-2.71 autoconf-2.71.tar.xz
+          autoconf --version | head -n1
+          # The checkout is owned by the runner user, not the container root, so
+          # git refuses to read it until the path is marked safe. cmake/version.cmake
+          # shells out to git during the build.
+          git config --global --add safe.directory '*'
+
+      - uses: actions/checkout@v4
+
+      - name: Checkout vcpkg
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 1
+
+      - name: Bootstrap vcpkg (Linux)
+        if: runner.os == 'Linux'
+        run: ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: Bootstrap vcpkg (Windows)
+        if: runner.os == 'Windows'
+        run: .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-cache
+          key: vcpkg-${{ matrix.name }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'custom-ports/**', 'custom-triplets/**') }}
+          restore-keys: |
+            vcpkg-${{ matrix.name }}-${{ env.VCPKG_COMMIT }}-
+
+      - name: Configure
+        shell: bash
+        env:
+          VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-cache,readwrite
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/vcpkg-cache"
+          if [ "$RUNNER_OS" = Windows ]; then
+            generator=(-A x64)
+          else
+            generator=(-G Ninja -DCMAKE_BUILD_TYPE=Release)
+          fi
+          cmake -S . -B build "${generator[@]}" \
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
+            -DJPLAY_VERSION="$VERSION" \
+            -DJPLAY_BUNDLE_PYTHON=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Install
+        shell: bash
+        run: cmake --install build --config Release --prefix "dist/$STAGE"
+
+      # Movie export drives a separate ffmpeg process, so the encoder set comes from
+      # this GPL build rather than the LGPL libavcodec jplay links. Keeping it a
+      # separate program is what confines GPL to this binary. Static build: no
+      # sibling DLLs to collide with our own avcodec.
+      - name: Bundle GPL ffmpeg
+        shell: bash
+        env:
+          ASSET: ${{ matrix.ffmpeg_asset }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_TAG"
+          curl -sSL --fail --retry 3 -o "$ASSET" "$base/$ASSET"
+          curl -sSL --fail --retry 3 -o checksums.sha256 "$base/checksums.sha256"
+          # The tag is rolling, so the expected hash travels with the build.
+          # Narrowing the list to our one asset keeps a checksums file that has
+          # grown new entries from turning into a "no such file" failure, and
+          # the awk exits non-zero if the asset is not listed at all.
+          awk -v a="$ASSET" '$2 == a { print; found = 1 } END { exit !found }' checksums.sha256 > expected.sha256
+          sha256sum -c expected.sha256
+          SHA256=$(cut -d' ' -f1 expected.sha256)
+          mkdir -p ffmpeg-gpl
+          case "$ASSET" in
+            *.zip)    7z x -y -offmpeg-gpl "$ASSET" > /dev/null ;;
+            *.tar.xz) tar -xJf "$ASSET" -C ffmpeg-gpl ;;
+          esac
+          exe=$(find ffmpeg-gpl -type f \( -name ffmpeg -o -name ffmpeg.exe \) | head -n1)
+          lic=$(find ffmpeg-gpl -type f -name 'LICENSE*' | head -n1)
+          if [ -z "$exe" ] || [ -z "$lic" ]; then
+            echo "ffmpeg or its licence missing from $ASSET"; exit 1
+          fi
+          cp "$exe" "dist/$STAGE/"
+          chmod +x "dist/$STAGE/$(basename "$exe")"
+          cp "$lic" "dist/$STAGE/FFMPEG-LICENSE.txt"
+          echo "FFMPEG_EXE=$(basename "$exe")" >> "$GITHUB_ENV"
+          ver=$("dist/$STAGE/$(basename "$exe")" -hide_banner -version | head -n1)
+          cat > "dist/$STAGE/FFMPEG-README.txt" <<EOF
+          jplay bundles a GPL-licensed ffmpeg, invoked as a separate program to
+          encode movie exports. jplay itself links the LGPL FFmpeg libraries and is
+          not covered by the GPL.
+
+          Binary: BtbN/FFmpeg-Builds release $FFMPEG_TAG, asset $ASSET
+          sha256: $SHA256
+          Version: $ver
+          Corresponding source and build scripts:
+            https://github.com/BtbN/FFmpeg-Builds/releases/tag/$FFMPEG_TAG
+          The release tag above is rolling and its assets are replaced in place;
+          the sha256 and version identify the exact build shipped here.
+          EOF
+
+      - name: Verify bundled ffmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          cfg=$("dist/$STAGE/$FFMPEG_EXE" -hide_banner -version)
+          for want in --enable-gpl --enable-libx264 --enable-libx265 --enable-libmp3lame; do
+            case "$cfg" in
+              *"$want"*) ;;
+              *) echo "bundled ffmpeg is missing $want"; exit 1 ;;
+            esac
+          done
+          case "$cfg" in
+            *--enable-nonfree*)
+              echo "bundled ffmpeg is nonfree and cannot be redistributed"; exit 1 ;;
+          esac
+          enc=$("dist/$STAGE/$FFMPEG_EXE" -hide_banner -encoders -v quiet | tail -n +11 | wc -l)
+          dec=$("dist/$STAGE/$FFMPEG_EXE" -hide_banner -decoders -v quiet | tail -n +11 | wc -l)
+          echo "GPL ffmpeg OK: $enc encoders, $dec decoders."
+
+      - name: Check bundled libraries resolve (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          # The stdlib extensions are dlopen'ed, so the executable's ldd never
+          # covers them; a missing lib there only shows up as a failed import.
+          missing=""
+          for f in "dist/$STAGE/jplay" "dist/$STAGE"/pyhome/lib/python3.*/lib-dynload/*.so; do
+            nf=$(ldd "$f" | grep 'not found' || true)
+            [ -z "$nf" ] || missing+="${f#dist/$STAGE/}:"$'\n'"$nf"$'\n'
+          done
+          if [ -n "$missing" ]; then
+            echo "Unresolved shared libraries:"
+            echo "$missing"
+            exit 1
+          fi
+          echo "All shared libraries resolve."
+
+      # copy all windows dll needed
+      - name: Check bundled DLLs are installed (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for dll in build/Release/*.dll; do
+            name=$(basename "$dll")
+            [ -f "dist/$STAGE/$name" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "DLLs in build/Release not installed into the bundle:"
+            printf '  %s\n' "${missing[@]}"
+            exit 1
+          fi
+          echo "All build/Release DLLs are in the bundle."
+
+      - name: Check glibc baseline (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          worst=0.0
+          fail=0
+          while IFS= read -r f; do
+            file -b "$f" | grep -q "^ELF" || continue
+            # || true: a file with no glibc references at all makes grep exit 1,
+            # which pipefail would otherwise turn into a failed step.
+            v=$(readelf -V "$f" 2>/dev/null \
+                | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//; s/\.$//' \
+                | sort -V | tail -n1 || true)
+            [ -n "$v" ] || continue
+            if [ "$(printf '%s\n%s\n' "$v" "$LINUX_GLIBC_MAX" | sort -V | tail -n1)" \
+                 != "$LINUX_GLIBC_MAX" ]; then
+              printf '%s needs GLIBC_%s\n' "${f#dist/$STAGE/}" "$v"
+              fail=1
+            fi
+            worst=$(printf '%s\n%s\n' "$worst" "$v" | sort -V | tail -n1)
+          done < <(find "dist/$STAGE" -type f)
+          if [ "$fail" = 1 ]; then
+            echo "Built against a newer glibc than $LINUX_GLIBC_MAX; this will not load on AlmaLinux/RHEL 9."
+            exit 1
+          fi
+          echo "Highest glibc requirement is GLIBC_$worst (baseline $LINUX_GLIBC_MAX)."
+
+      - name: Archive (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: dist
+        run: 7z a -tzip -mx=7 "../$STAGE.zip" "$STAGE" > /dev/null
+
+      - name: Archive (Linux)
+        if: runner.os == 'Linux'
+        working-directory: dist
+        run: tar -czf "../$STAGE.tar.gz" "$STAGE"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.STAGE }}
+          path: |
+            ${{ env.STAGE }}.zip
+            ${{ env.STAGE }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+      - name: Collect vcpkg logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          set -uo pipefail
+          logs=$(find vcpkg/buildtrees -maxdepth 3 -name '*.log' -printf '%T@ %p\n' 2>/dev/null \
+                 | sort -rn | head -n 12 | cut -d' ' -f2-)
+          if [ -z "$logs" ]; then
+            echo "No vcpkg logs found under vcpkg/buildtrees."
+            exit 0
+          fi
+          while IFS= read -r f; do
+            printf '\n===== %s =====\n' "$f"
+            tail -n 200 "$f"
+          done <<< "$logs"
+
+      - name: Upload vcpkg logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vcpkg-logs-${{ matrix.name }}
+          path: vcpkg/buildtrees/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release:
+    needs: [version, build]
+    if: needs.version.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: jplay-*
+          merge-multiple: true
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          ls -l artifacts
+          flags=()
+          if [ "$PRERELEASE" = true ]; then
+            flags+=(--prerelease)
+          fi
+          prev=$(git tag --list 'v*' --sort=-v:refname \
+                 | grep -vx "$GITHUB_REF_NAME" | head -n1 || true)
+          if [ "$PRERELEASE" != true ] && [ -n "$prev" ]; then
+            flags+=(--generate-notes)
+            echo "Generating notes against previous tag $prev."
+          else
+            flags+=(--notes "jplay $VERSION")
+            echo "Skipping generated notes (prerelease=$PRERELEASE, previous tag='$prev')."
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "jplay $VERSION" \
+            "${flags[@]}" \
+            artifacts/*.zip artifacts/*.tar.gz
